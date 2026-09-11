@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::build::BuildRequest;
-use crate::moonraker::McuInventory;
+use crate::moonraker::{McuInventory, McuTransport};
 use crate::plan::UpdatePlan;
 
 /// A selected MCU paired with the exact build request derived from Moonraker.
@@ -12,6 +12,8 @@ pub struct PreparedBuild {
     pub target_name: String,
     /// MCU identifier reported by the running firmware.
     pub mcu: String,
+    /// The revalidated transport used by a later flashing backend.
+    pub transport: Option<McuTransport>,
     /// Klipper build inputs ready for a later, explicit build operation.
     pub request: BuildRequest,
 }
@@ -31,6 +33,15 @@ pub enum PreparationError {
         planned_mcu: String,
         /// MCU identifier currently reported by Moonraker.
         discovered_mcu: String,
+    },
+    /// The plan and live inventory disagree about the selected transport.
+    TransportMismatch {
+        /// Moonraker's MCU object name.
+        target_name: String,
+        /// Transport captured when the plan was made.
+        planned_transport: Option<McuTransport>,
+        /// Transport currently reported by Moonraker.
+        discovered_transport: Option<McuTransport>,
     },
 }
 
@@ -54,6 +65,14 @@ impl fmt::Display for PreparationError {
             } => write!(
                 formatter,
                 "MCU target {target_name:?} changed from {planned_mcu:?} to {discovered_mcu:?}"
+            ),
+            Self::TransportMismatch {
+                target_name,
+                planned_transport,
+                discovered_transport,
+            } => write!(
+                formatter,
+                "MCU target {target_name:?} transport changed from {planned_transport:?} to {discovered_transport:?}"
             ),
         }
     }
@@ -87,10 +106,18 @@ pub fn prepare_build(
             discovered_mcu: discovered_mcu.mcu.clone(),
         });
     }
+    if planned_target.transport != discovered_mcu.transport {
+        return Err(PreparationError::TransportMismatch {
+            target_name: target_name.to_owned(),
+            planned_transport: planned_target.transport.clone(),
+            discovered_transport: discovered_mcu.transport.clone(),
+        });
+    }
 
     Ok(PreparedBuild {
         target_name: target_name.to_owned(),
         mcu: discovered_mcu.mcu.clone(),
+        transport: discovered_mcu.transport.clone(),
         request: BuildRequest {
             kconfig: discovered_mcu.kconfig.clone(),
             config_path,
