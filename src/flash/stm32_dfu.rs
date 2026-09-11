@@ -1,7 +1,6 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-nusb`.
 
 use dfu_nusb::DfuNusb;
-use futures::executor::block_on;
 use nusb::MaybeFuture;
 
 use crate::flash::FlashResult;
@@ -150,8 +149,12 @@ pub fn flash_system(
     target: Stm32DfuTarget,
     firmware: &[u8],
 ) -> Result<FlashResult, Stm32DfuError> {
-    block_on(async {
-        let (device, interface) = find_device(identity)?;
-        flash_device(device, interface, target, firmware).await
-    })
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("Tokio runtime should initialize")
+        .block_on(async {
+            let (device, interface) = find_device(identity)?;
+            flash_device(device, interface, target, firmware).await
+        })
 }

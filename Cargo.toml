@@ -6,7 +6,6 @@ license = "GPL-3.0-only"
 
 [dependencies]
 dfu-nusb = "0.2.0"
-futures = "0.3.31"
 nusb = "0.2.7"
 picoboot = { version = "0.2.6", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
