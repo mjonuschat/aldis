@@ -5,7 +5,6 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
-dfu-rs = "0.2.1"
 dfu-nusb = "0.2.0"
 futures = "0.3.31"
 nusb = "0.2.7"

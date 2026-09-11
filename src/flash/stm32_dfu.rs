@@ -1,7 +1,8 @@
-//! STM32 USB-DFU backend boundaries backed by `dfu-rs`.
+//! STM32 USB-DFU backend boundaries backed by `dfu-nusb`.
 
-use dfu_rs::{DEFAULT_USB_TIMEOUT, Device, DfuType, search_for_dfu};
+use dfu_nusb::DfuNusb;
 use futures::executor::block_on;
+use nusb::MaybeFuture;
 
 use crate::flash::FlashResult;
 
@@ -64,8 +65,8 @@ pub fn target_from_kconfig(
 pub enum Stm32DfuError {
     /// Embedded Kconfig did not select exactly one STM32 flash-start symbol.
     InvalidFlashStartConfiguration,
-    /// DFU enumeration failed.
-    Discovery(dfu_rs::Error),
+    /// DFU enumeration or device opening failed.
+    Discovery(nusb::Error),
     /// No DFU device matched the explicitly configured USB identity.
     DeviceNotFound(Stm32DfuDevice),
     /// More than one DFU device matched the configured USB identity.
@@ -73,23 +74,28 @@ pub enum Stm32DfuError {
         device: Stm32DfuDevice,
         matches: usize,
     },
-    /// The configured erase geometry is invalid.
-    InvalidErasePageSize,
     /// The DFU transport rejected an operation.
-    Transport(dfu_rs::Error),
+    Transport(dfu_nusb::Error),
+    /// The device reset before readback verification could occur.
+    DeviceResetBeforeVerification,
     /// Uploaded bytes did not match the firmware artifact.
     VerificationMismatch,
 }
 
 /// Finds exactly one internal-flash DFU device matching `identity`.
-pub async fn find_device(identity: Stm32DfuDevice) -> Result<Device, Stm32DfuError> {
-    let matches = search_for_dfu(DEFAULT_USB_TIMEOUT, Some(DfuType::InternalFlash))
-        .await
+pub fn find_device(identity: Stm32DfuDevice) -> Result<(nusb::DeviceInfo, u8), Stm32DfuError> {
+    let matches = nusb::list_devices()
+        .wait()
         .map_err(Stm32DfuError::Discovery)?
-        .into_iter()
         .filter(|device| {
-            let info = device.info();
-            info.vid() == identity.vendor_id && info.pid() == identity.product_id
+            device.vendor_id() == identity.vendor_id && device.product_id() == identity.product_id
+        })
+        .filter_map(|device| {
+            let interface_number = device
+                .interfaces()
+                .find(|interface| interface.class() == 0xfe && interface.subclass() == 0x01)
+                .map(|interface| interface.interface_number());
+            interface_number.map(|interface_number| (device, interface_number))
         })
         .collect::<Vec<_>>();
     match matches.len() {
@@ -104,34 +110,33 @@ pub async fn find_device(identity: Stm32DfuDevice) -> Result<Device, Stm32DfuErr
 
 /// Erases, writes, and reads back one STM32 application image.
 pub async fn flash_device(
-    device: &Device,
+    device_info: nusb::DeviceInfo,
+    interface_number: u8,
     target: Stm32DfuTarget,
     firmware: &[u8],
 ) -> Result<FlashResult, Stm32DfuError> {
-    if target.erase_page_size == 0 {
-        return Err(Stm32DfuError::InvalidErasePageSize);
-    }
-    device
-        .erase(
-            target.application_start,
-            firmware.len(),
-            target.erase_page_size,
-        )
+    let device = device_info.open().await.map_err(Stm32DfuError::Discovery)?;
+    let interface = device
+        .detach_and_claim_interface(interface_number)
         .await
-        .map_err(Stm32DfuError::Transport)?;
-    device
-        .download(target.application_start, firmware)
+        .map_err(Stm32DfuError::Discovery)?;
+    let mut dfu = DfuNusb::open(device, interface, 0)
         .await
-        .map_err(Stm32DfuError::Transport)?;
-    let readback = device
-        .upload(target.application_start, firmware.len())
-        .await
+        .map_err(Stm32DfuError::Transport)?
+        .into_sync_dfu();
+    dfu.override_address(target.application_start);
+    let dfu = dfu
+        .download_from_slice(firmware)
+        .map_err(Stm32DfuError::Transport)?
+        .ok_or(Stm32DfuError::DeviceResetBeforeVerification)?;
+    let (_dfu, readback) = dfu
+        .upload_from_address(target.application_start, firmware.len())
         .map_err(Stm32DfuError::Transport)?;
     if readback != firmware {
         return Err(Stm32DfuError::VerificationMismatch);
     }
     Ok(FlashResult {
-        pages_written: firmware.len().div_ceil(target.erase_page_size) as u32,
+        pages_written: 0,
         padded_bytes: firmware.len(),
     })
 }
@@ -146,7 +151,7 @@ pub fn flash_system(
     firmware: &[u8],
 ) -> Result<FlashResult, Stm32DfuError> {
     block_on(async {
-        let device = find_device(identity).await?;
-        flash_device(&device, target, firmware).await
+        let (device, interface) = find_device(identity)?;
+        flash_device(device, interface, target, firmware).await
     })
 }
