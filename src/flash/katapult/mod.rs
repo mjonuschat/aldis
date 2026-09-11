@@ -1,6 +1,7 @@
 //! Katapult bootloader frame encoding and transport-neutral session logic.
 
 pub mod backend;
+pub mod bootstrap;
 pub mod can;
 pub mod endpoint;
 pub mod serial;
