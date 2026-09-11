@@ -19,6 +19,17 @@
           "CANBUS_FREQUENCY": 1000000
         },
         "mcu_kconfig": "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32G0B1=y\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\n"
+      },
+      "configfile": {
+        "settings": {
+          "mcu": {
+            "serial": "/dev/serial/by-id/usb-Klipper_stm32f429xx_320050000F50304738313820-if00"
+          },
+          "mcu toolhead": {
+            "canbus_uuid": "e7819ed8e7d3",
+            "canbus_interface": "can0"
+          }
+        }
       }
     }
   }

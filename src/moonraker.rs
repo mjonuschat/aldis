@@ -18,7 +18,26 @@ pub struct Mcu {
     pub version: Option<String>,
     pub mcu: String,
     pub canbus_frequency_hz: Option<u64>,
+    /// The configured host transport, if Moonraker exposed one for this MCU.
+    pub transport: Option<McuTransport>,
     pub kconfig: String,
+}
+
+/// An explicitly configured host transport for one MCU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McuTransport {
+    /// A serial device path from the MCU's `serial` setting.
+    Serial {
+        /// The configured device path.
+        device: String,
+    },
+    /// A CAN interface and Katapult identity from the MCU's settings.
+    Can {
+        /// The configured SocketCAN interface.
+        interface: String,
+        /// The six-byte Katapult CAN UUID.
+        uuid: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -81,12 +100,12 @@ impl MoonrakerClient {
 
     pub fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
         let object_names = self.mcu_object_names()?;
-        let body = serde_json::to_string(&json!({
-            "objects": object_names
-                .iter()
-                .map(|name| (name, Value::Null))
-                .collect::<BTreeMap<_, _>>(),
-        }))?;
+        let mut objects = object_names
+            .iter()
+            .map(|name| (name.clone(), Value::Null))
+            .collect::<BTreeMap<_, _>>();
+        objects.insert("configfile".to_owned(), Value::Null);
+        let body = serde_json::to_string(&json!({ "objects": objects }))?;
         let response = self
             .agent
             .post(&self.endpoint("/printer/objects/query"))
@@ -129,10 +148,17 @@ impl MoonrakerClient {
 
 pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
     let response: ObjectQueryResponse = serde_json::from_str(response)?;
+    let settings = response
+        .result
+        .status
+        .get("configfile")
+        .and_then(|status| status.settings.clone())
+        .unwrap_or_default();
     let mcus = response
         .result
         .status
         .into_iter()
+        .filter(|(name, _)| name != "configfile")
         .map(|(name, status)| {
             let mcu = status
                 .mcu_constants
@@ -149,6 +175,11 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
                     "MCU object {name:?} does not expose mcu_kconfig"
                 ))
             })?;
+            let transport = settings
+                .get(&name)
+                .map(|settings| parse_transport(&name, settings))
+                .transpose()?
+                .flatten();
 
             Ok(Mcu {
                 name,
@@ -159,6 +190,7 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
                     .mcu_constants
                     .get("CANBUS_FREQUENCY")
                     .and_then(Value::as_u64),
+                transport,
                 kconfig,
             })
         })
@@ -171,6 +203,41 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
     }
 
     Ok(McuInventory { mcus })
+}
+
+fn parse_transport(
+    name: &str,
+    settings: &McuSettings,
+) -> Result<Option<McuTransport>, MoonrakerError> {
+    let Some(canbus_uuid) = settings.canbus_uuid.as_deref() else {
+        return Ok(settings.serial.as_ref().map(|device| McuTransport::Serial {
+            device: device.clone(),
+        }));
+    };
+    let interface = settings.canbus_interface.as_deref().ok_or_else(|| {
+        MoonrakerError::InvalidResponse(format!(
+            "MCU object {name:?} configures canbus_uuid without canbus_interface"
+        ))
+    })?;
+    if interface.is_empty() {
+        return Err(MoonrakerError::InvalidResponse(format!(
+            "MCU object {name:?} configures an empty canbus_interface"
+        )));
+    }
+    let uuid = u64::from_str_radix(canbus_uuid.trim_start_matches("0x"), 16).map_err(|_| {
+        MoonrakerError::InvalidResponse(format!(
+            "MCU object {name:?} configures an invalid canbus_uuid"
+        ))
+    })?;
+    if uuid > 0xffff_ffff_ffff {
+        return Err(MoonrakerError::InvalidResponse(format!(
+            "MCU object {name:?} configures a canbus_uuid larger than six bytes"
+        )));
+    }
+    Ok(Some(McuTransport::Can {
+        interface: interface.to_owned(),
+        uuid,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -195,8 +262,24 @@ struct ObjectQueryResult {
 
 #[derive(Deserialize)]
 struct McuStatus {
+    #[serde(default)]
     app: Option<String>,
+    #[serde(default)]
     mcu_version: Option<String>,
+    #[serde(default)]
     mcu_constants: BTreeMap<String, Value>,
+    #[serde(default)]
     mcu_kconfig: Option<String>,
+    #[serde(default)]
+    settings: Option<BTreeMap<String, McuSettings>>,
+}
+
+#[derive(Clone, Deserialize)]
+struct McuSettings {
+    #[serde(default)]
+    serial: Option<String>,
+    #[serde(default)]
+    canbus_uuid: Option<String>,
+    #[serde(default)]
+    canbus_interface: Option<String>,
 }
