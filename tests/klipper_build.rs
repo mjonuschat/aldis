@@ -57,6 +57,32 @@ fn builds_with_an_explicit_kconfig_and_copies_the_artifact() {
 }
 
 #[test]
+fn copies_uf2_artifact_for_a_no_bootloader_rp2040_build() {
+    let root = temporary_directory("rp2040");
+    let source_dir = root.join("klipper");
+    let config_path = root.join("run/mcu/.config");
+    let artifact_path = root.join("artifacts/mcu.bin");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory should exist");
+    fs::write(source_dir.join("out/klipper.uf2"), b"uf2 firmware").expect("fixture artifact");
+    let builder = KlipperBuilder::new(&source_dir, FakeRunner::success());
+
+    let artifact = builder
+        .build(&BuildRequest {
+            kconfig: "CONFIG_MACH_RPXXXX=y\nCONFIG_RPXXXX_FLASH_START_0100=y\n".to_owned(),
+            config_path,
+            artifact_path: artifact_path.clone(),
+        })
+        .expect("build should succeed");
+
+    assert_eq!(
+        fs::read(&artifact_path).expect("copied artifact"),
+        b"uf2 firmware"
+    );
+    assert_eq!(artifact.byte_count, 12);
+    fs::remove_dir_all(root).expect("test directory cleanup");
+}
+
+#[test]
 fn preserves_make_stderr_when_kconfig_expansion_fails() {
     let root = temporary_directory("failure");
     let source_dir = root.join("klipper");

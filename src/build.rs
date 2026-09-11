@@ -213,7 +213,7 @@ where
             action: "create the artifact directory",
             source,
         })?;
-        let source_artifact = self.source_dir.join("out/klipper.bin");
+        let source_artifact = self.source_dir.join(output_artifact_name(&request.kconfig));
         fs::copy(&source_artifact, &request.artifact_path).map_err(|source| BuildError::Io {
             action: "copy Klipper's firmware artifact",
             source,
@@ -253,6 +253,20 @@ where
                 output: Box::new(output),
             })
         }
+    }
+}
+
+fn output_artifact_name(kconfig: &str) -> &'static str {
+    if kconfig
+        .lines()
+        .any(|line| line.trim() == "CONFIG_MACH_RPXXXX=y")
+        && !kconfig
+            .lines()
+            .any(|line| line.trim() == "CONFIG_RPXXXX_FLASH_START_4000=y")
+    {
+        "out/klipper.uf2"
+    } else {
+        "out/klipper.bin"
     }
 }
 
