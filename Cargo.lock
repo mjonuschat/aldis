@@ -199,7 +199,7 @@ dependencies = [
 [[package]]
 name = "dfu-core"
 version = "0.11.1"
-source = "git+https://github.com/mjonuschat/dfu-core?rev=4a5116e#4a5116e5cc0beca92939797b41193f111d9fd0c0"
+source = "git+https://github.com/mjonuschat/dfu-core?rev=80b2f2a#80b2f2aed6a98d72035b72af23520e5022b4d70d"
 dependencies = [
  "bytes",
  "displaydoc",

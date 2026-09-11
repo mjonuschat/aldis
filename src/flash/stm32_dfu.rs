@@ -1,8 +1,8 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-nusb`.
 
-use dfu_core::DfuIo;
 use dfu_nusb::DfuNusb;
 use nusb::MaybeFuture;
+use nusb::transfer::TransferError;
 
 use crate::flash::FlashResult;
 
@@ -132,10 +132,10 @@ pub async fn flash_device(
     if readback != firmware {
         return Err(Stm32DfuError::VerificationMismatch);
     }
-    let dfu = dfu
-        .manifest_without_wait()
-        .map_err(Stm32DfuError::Transport)?;
-    dfu.usb_reset().map_err(Stm32DfuError::Transport)?;
+    match dfu.manifest_without_wait() {
+        Ok(_) | Err(dfu_nusb::Error::Transfer(TransferError::Stall)) => {}
+        Err(error) => return Err(Stm32DfuError::Transport(error)),
+    }
     Ok(FlashResult {
         reported_pages: None,
         padded_bytes: firmware.len(),
