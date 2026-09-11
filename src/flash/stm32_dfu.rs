@@ -49,10 +49,10 @@ pub fn target_from_kconfig(
         })
         .collect();
     if selected.len() != 1 {
-        return Err(Stm32DfuError::InvalidErasePageSize);
+        return Err(Stm32DfuError::InvalidFlashStartConfiguration);
     }
-    let offset =
-        u32::from_str_radix(selected[0], 16).map_err(|_| Stm32DfuError::InvalidErasePageSize)?;
+    let offset = u32::from_str_radix(selected[0], 16)
+        .map_err(|_| Stm32DfuError::InvalidFlashStartConfiguration)?;
     Ok(Stm32DfuTarget {
         application_start: 0x0800_0000 + offset,
         erase_page_size,
@@ -62,6 +62,8 @@ pub fn target_from_kconfig(
 /// A native STM32 DFU transfer failure.
 #[derive(Debug)]
 pub enum Stm32DfuError {
+    /// Embedded Kconfig did not select exactly one STM32 flash-start symbol.
+    InvalidFlashStartConfiguration,
     /// DFU enumeration failed.
     Discovery(dfu_rs::Error),
     /// No DFU device matched the explicitly configured USB identity.
