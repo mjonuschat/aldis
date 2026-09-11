@@ -3,6 +3,7 @@
 pub mod katapult;
 pub mod picoboot;
 pub mod stm32_dfu;
+pub mod usb_bootloader;
 
 /// Result details shared by native flashing backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

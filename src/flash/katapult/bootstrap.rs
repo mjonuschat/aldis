@@ -6,6 +6,9 @@ use std::time::Duration;
 use super::backend::KatapultBackend;
 use super::can::{CanError, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport};
 use super::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
+use crate::flash::usb_bootloader::{
+    SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
+};
 
 /// A failure while transitioning a CAN MCU into a ready Katapult session.
 #[derive(Debug)]
@@ -21,6 +24,10 @@ pub enum CanBootstrapError<E> {
 pub enum SerialBootstrapError {
     /// The running USB device did not re-enumerate as Katapult.
     Bootloader(UsbBootloaderError),
+    /// The observed bootloader is unsupported or cannot be used safely.
+    Selection(UsbBootloaderSelectionError),
+    /// A supported but non-Katapult bootloader appeared at the selected topology.
+    UnexpectedBootloader(SelectedUsbBootloader),
     /// The detected Katapult serial device could not be opened.
     Open(serialport::Error),
 }
@@ -37,12 +44,17 @@ pub fn bootstrap_system_serial(
     poll_interval: Duration,
     read_timeout: Duration,
 ) -> Result<KatapultBackend<KatapultSerialTransport<SystemSerialIo>>, SerialBootstrapError> {
-    let bootloader_device = SystemSerialIo::request_and_find_usb_bootloader(
+    let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
         running_device,
         bootloader_timeout,
         poll_interval,
     )
     .map_err(SerialBootstrapError::Bootloader)?;
+    let bootloader_device =
+        match select_usb_bootloader(bootloader).map_err(SerialBootstrapError::Selection)? {
+            SelectedUsbBootloader::Katapult { serial_device, .. } => serial_device,
+            bootloader => return Err(SerialBootstrapError::UnexpectedBootloader(bootloader)),
+        };
     let io = SystemSerialIo::open(&bootloader_device, baud_rate, read_timeout)
         .map_err(SerialBootstrapError::Open)?;
     Ok(KatapultBackend::new(KatapultSerialTransport::new(io)))

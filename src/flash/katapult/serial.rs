@@ -14,15 +14,17 @@ use std::time::Instant;
 
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
+use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
 
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
 pub const BOOTLOADER_ENTRY_REQUEST: &[u8] = b"~ \x1c Request Serial Bootloader!! ~";
 
-const KATAPULT_USB_ID: &str = "1d50:6177";
-
 /// Returns whether USB identity fields identify a Katapult bootloader.
 pub fn is_katapult_usb(usb_id: &str, manufacturer: &str) -> bool {
-    usb_id.eq_ignore_ascii_case(KATAPULT_USB_ID) || manufacturer.eq_ignore_ascii_case("katapult")
+    matches!(
+        crate::flash::usb_bootloader::classify_usb_identity(usb_id, manufacturer),
+        Some(UsbBootloaderKind::Katapult)
+    )
 }
 
 /// Sends and receives bounded byte chunks from a serial device.
@@ -156,20 +158,35 @@ impl SystemSerialIo {
         Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, usb_tty)
     }
 
-    /// Requests USB bootloader entry and returns its re-enumerated sysfs device path.
-    ///
-    /// The path identifies the same physical USB topology as the running serial
-    /// device. Native USB bootloader backends use it to avoid selecting an
-    /// unrelated device with the same vendor and product identifiers.
-    pub fn request_and_find_usb_device(
+    /// Requests USB bootloader entry and returns the observed bootloader at the same topology.
+    pub fn request_and_observe_usb_bootloader(
         path: &Path,
         timeout: Duration,
         poll_interval: Duration,
         matches: impl Fn(&str, &str) -> bool,
-    ) -> Result<PathBuf, UsbBootloaderError> {
+    ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
         Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, |usb_path| {
-            Some(usb_path.to_path_buf())
+            let identity = usb_identity(usb_path);
+            Some(ObservedUsbBootloader {
+                sysfs_path: usb_path.to_path_buf(),
+                usb_id: identity.usb_id,
+                manufacturer: identity.manufacturer,
+                serial_device: usb_tty(usb_path),
+            })
         })
+    }
+
+    /// Requests USB bootloader entry and observes any re-enumerated identity.
+    ///
+    /// Callers must classify the observation before selecting a flashing
+    /// backend. This avoids treating the application Kconfig as evidence of
+    /// which bootloader is installed.
+    pub fn request_and_observe_any_usb_bootloader(
+        path: &Path,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
+        Self::request_and_observe_usb_bootloader(path, timeout, poll_interval, |_, _| true)
     }
 
     /// Requests USB bootloader entry and waits for a matching USB identity.
@@ -202,6 +219,7 @@ impl SystemSerialIo {
         loop {
             let identity = usb_identity(&usb_path);
             if identity != initial_identity
+                && identity.is_complete()
                 && matches(&identity.usb_id, &identity.manufacturer)
                 && let Some(result) = ready(&usb_path)
             {
@@ -239,6 +257,14 @@ pub enum UsbBootloaderError {
 struct UsbIdentity {
     usb_id: String,
     manufacturer: String,
+}
+
+impl UsbIdentity {
+    fn is_complete(&self) -> bool {
+        self.usb_id
+            .split_once(':')
+            .is_some_and(|(vendor, product)| !vendor.is_empty() && !product.is_empty())
+    }
 }
 
 fn usb_device_path(device: &Path) -> Option<PathBuf> {
@@ -305,5 +331,28 @@ impl SerialIo for SystemSerialIo {
         let mut buffer = [0_u8; 256];
         let count = self.port.read(&mut buffer)?;
         Ok(buffer[..count].to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UsbIdentity;
+
+    #[test]
+    fn rejects_the_transient_empty_usb_identity_during_disconnect() {
+        assert!(
+            !UsbIdentity {
+                usb_id: ":".to_owned(),
+                manufacturer: String::new(),
+            }
+            .is_complete()
+        );
+        assert!(
+            UsbIdentity {
+                usb_id: "2e8a:0003".to_owned(),
+                manufacturer: "raspberry pi".to_owned(),
+            }
+            .is_complete()
+        );
     }
 }

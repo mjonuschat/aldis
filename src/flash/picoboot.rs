@@ -7,8 +7,9 @@ use picoboot::{Access, Picoboot};
 
 use crate::flash::FlashResult;
 use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
-
-const PICOBOOT_USB_IDS: &[&str] = &["2e8a:0003", "2e8a:000f"];
+use crate::flash::usb_bootloader::{
+    SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
+};
 
 /// A decoded contiguous UF2 image suitable for PicoBoot flash commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,17 +56,17 @@ pub fn bootstrap_system_serial(
     timeout: Duration,
     poll_interval: Duration,
 ) -> Result<FlashResult, PicoBootBootstrapError> {
-    let bootloader_path = SystemSerialIo::request_and_find_usb_device(
+    let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
         running_device,
         timeout,
         poll_interval,
-        |usb_id, _| {
-            PICOBOOT_USB_IDS
-                .iter()
-                .any(|id| usb_id.eq_ignore_ascii_case(id))
-        },
     )
     .map_err(PicoBootBootstrapError::Bootloader)?;
+    let bootloader_path =
+        match select_usb_bootloader(bootloader).map_err(PicoBootBootstrapError::Selection)? {
+            SelectedUsbBootloader::PicoBoot { sysfs_path } => sysfs_path,
+            bootloader => return Err(PicoBootBootstrapError::UnexpectedBootloader(bootloader)),
+        };
     flash_system_at_path(&bootloader_path, firmware).map_err(PicoBootBootstrapError::Flash)
 }
 
@@ -74,6 +75,10 @@ pub fn bootstrap_system_serial(
 pub enum PicoBootBootstrapError {
     /// The running device did not re-enumerate as PicoBoot.
     Bootloader(UsbBootloaderError),
+    /// The observed bootloader is unsupported or cannot be used safely.
+    Selection(UsbBootloaderSelectionError),
+    /// A supported but non-PicoBoot bootloader appeared at the selected topology.
+    UnexpectedBootloader(SelectedUsbBootloader),
     /// The native transfer failed after PicoBoot appeared.
     Flash(PicoBootError),
 }

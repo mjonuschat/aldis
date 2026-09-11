@@ -9,6 +9,9 @@ use nusb::transfer::TransferError;
 
 use crate::flash::FlashResult;
 use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
+use crate::flash::usb_bootloader::{
+    SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
+};
 
 /// An explicitly selected STM32 DFU USB identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +92,10 @@ pub enum Stm32DfuError {
 pub enum Stm32DfuBootstrapError {
     /// The running USB serial MCU did not re-enumerate as STM32 ROM DFU.
     Bootloader(UsbBootloaderError),
+    /// The observed bootloader is unsupported or cannot be used safely.
+    Selection(UsbBootloaderSelectionError),
+    /// A supported but non-STM32 bootloader appeared at the selected topology.
+    UnexpectedBootloader(SelectedUsbBootloader),
     /// Native DfuSe flashing failed after ROM DFU appeared.
     Flash(Stm32DfuError),
 }
@@ -101,13 +108,17 @@ pub fn bootstrap_system_serial(
     timeout: Duration,
     poll_interval: Duration,
 ) -> Result<FlashResult, Stm32DfuBootstrapError> {
-    let bootloader_path = SystemSerialIo::request_and_find_usb_device(
+    let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
         running_device,
         timeout,
         poll_interval,
-        |usb_id, _| usb_id.eq_ignore_ascii_case("0483:df11"),
     )
     .map_err(Stm32DfuBootstrapError::Bootloader)?;
+    let bootloader_path =
+        match select_usb_bootloader(bootloader).map_err(Stm32DfuBootstrapError::Selection)? {
+            SelectedUsbBootloader::Stm32Dfu { sysfs_path } => sysfs_path,
+            bootloader => return Err(Stm32DfuBootstrapError::UnexpectedBootloader(bootloader)),
+        };
     flash_system_at_path(
         Stm32DfuDevice::ROM_BOOTLOADER,
         &bootloader_path,
