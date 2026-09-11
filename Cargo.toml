@@ -5,6 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
+dfu-core = "0.11.1"
 dfu-nusb = "0.2.0"
 nusb = "0.2.7"
 picoboot = { version = "0.2.6", default-features = false }

@@ -526,6 +526,7 @@ dependencies = [
 name = "mcu-update"
 version = "0.1.0"
 dependencies = [
+ "dfu-core",
  "dfu-nusb",
  "nusb",
  "picoboot",
