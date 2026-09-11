@@ -1,6 +1,7 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-rs`.
 
 use dfu_rs::{DEFAULT_USB_TIMEOUT, Device, DfuType, search_for_dfu};
+use futures::executor::block_on;
 
 use crate::flash::FlashResult;
 
@@ -102,5 +103,20 @@ pub async fn flash_device(
     Ok(FlashResult {
         pages_written: firmware.len().div_ceil(target.erase_page_size) as u32,
         padded_bytes: firmware.len(),
+    })
+}
+
+/// Discovers the selected STM32 DFU device and flashes it synchronously.
+///
+/// Call only after the coordinator has stopped Klipper and the operator has
+/// explicitly approved the physical update.
+pub fn flash_system(
+    identity: Stm32DfuDevice,
+    target: Stm32DfuTarget,
+    firmware: &[u8],
+) -> Result<FlashResult, Stm32DfuError> {
+    block_on(async {
+        let device = find_device(identity).await?;
+        flash_device(&device, target, firmware).await
     })
 }
