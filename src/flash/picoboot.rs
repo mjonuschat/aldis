@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use futures::executor::block_on;
 use picoboot::{Access, Picoboot};
 
 use crate::flash::FlashResult;
@@ -95,52 +94,57 @@ pub fn decode_uf2(firmware: &[u8]) -> Result<Uf2Image, Uf2Error> {
 /// Writes, reads back, and starts one Klipper UF2 image through PicoBoot.
 pub fn flash_system(firmware: &[u8]) -> Result<FlashResult, PicoBootError> {
     let image = decode_uf2(firmware).map_err(PicoBootError::Uf2)?;
-    block_on(async {
-        let mut devices = Picoboot::list_devices(None)
-            .await
-            .map_err(PicoBootError::Transport)?;
-        let device = match devices.len() {
-            0 => return Err(PicoBootError::DeviceNotFound),
-            1 => devices.remove(0),
-            count => return Err(PicoBootError::AmbiguousDevice(count)),
-        };
-        let mut picoboot = Picoboot::new(device)
-            .await
-            .map_err(PicoBootError::Transport)?;
-        let connection = picoboot.connect().await.map_err(PicoBootError::Transport)?;
-        connection
-            .set_exclusive_access(Access::ExclusiveAndEject)
-            .await
-            .map_err(PicoBootError::Transport)?;
-        connection
-            .exit_xip()
-            .await
-            .map_err(PicoBootError::Transport)?;
-        connection
-            .flash_erase(
-                image.address,
-                (image.bytes.len() as u32).div_ceil(picoboot::SECTOR_SIZE) * picoboot::SECTOR_SIZE,
-            )
-            .await
-            .map_err(PicoBootError::Transport)?;
-        connection
-            .flash_write(image.address, &image.bytes)
-            .await
-            .map_err(PicoBootError::Transport)?;
-        let readback = connection
-            .flash_read(image.address, image.bytes.len() as u32)
-            .await
-            .map_err(PicoBootError::Transport)?;
-        if readback != image.bytes {
-            return Err(PicoBootError::VerificationMismatch);
-        }
-        connection
-            .reboot(Duration::from_millis(500))
-            .await
-            .map_err(PicoBootError::Transport)?;
-        Ok(FlashResult {
-            reported_pages: None,
-            padded_bytes: image.bytes.len(),
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("Tokio runtime should initialize")
+        .block_on(async {
+            let mut devices = Picoboot::list_devices(None)
+                .await
+                .map_err(PicoBootError::Transport)?;
+            let device = match devices.len() {
+                0 => return Err(PicoBootError::DeviceNotFound),
+                1 => devices.remove(0),
+                count => return Err(PicoBootError::AmbiguousDevice(count)),
+            };
+            let mut picoboot = Picoboot::new(device)
+                .await
+                .map_err(PicoBootError::Transport)?;
+            let connection = picoboot.connect().await.map_err(PicoBootError::Transport)?;
+            connection
+                .set_exclusive_access(Access::ExclusiveAndEject)
+                .await
+                .map_err(PicoBootError::Transport)?;
+            connection
+                .exit_xip()
+                .await
+                .map_err(PicoBootError::Transport)?;
+            connection
+                .flash_erase(
+                    image.address,
+                    (image.bytes.len() as u32).div_ceil(picoboot::SECTOR_SIZE)
+                        * picoboot::SECTOR_SIZE,
+                )
+                .await
+                .map_err(PicoBootError::Transport)?;
+            connection
+                .flash_write(image.address, &image.bytes)
+                .await
+                .map_err(PicoBootError::Transport)?;
+            let readback = connection
+                .flash_read(image.address, image.bytes.len() as u32)
+                .await
+                .map_err(PicoBootError::Transport)?;
+            if readback != image.bytes {
+                return Err(PicoBootError::VerificationMismatch);
+            }
+            connection
+                .reboot(Duration::from_millis(500))
+                .await
+                .map_err(PicoBootError::Transport)?;
+            Ok(FlashResult {
+                reported_pages: None,
+                padded_bytes: image.bytes.len(),
+            })
         })
-    })
 }
