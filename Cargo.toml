@@ -18,4 +18,4 @@ ureq = "3.4.1"
 socketcan = { version = "4.0.0", default-features = false }
 
 [patch.crates-io]
-dfu-core = { git = "https://github.com/mjonuschat/dfu-core", rev = "f4b6a5f" }
+dfu-core = { git = "https://github.com/mjonuschat/dfu-core", rev = "84d54c8" }

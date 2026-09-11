@@ -75,8 +75,6 @@ pub enum Stm32DfuError {
     },
     /// The DFU transport rejected an operation.
     Transport(dfu_nusb::Error),
-    /// The device reset before readback verification could occur.
-    DeviceResetBeforeVerification,
     /// Uploaded bytes did not match the firmware artifact.
     VerificationMismatch,
 }
@@ -107,7 +105,7 @@ pub fn find_device(identity: Stm32DfuDevice) -> Result<(nusb::DeviceInfo, u8), S
     }
 }
 
-/// Erases, writes, and reads back one STM32 application image.
+/// Erases, writes, reads back, and manifests one STM32 application image.
 pub async fn flash_device(
     device_info: nusb::DeviceInfo,
     interface_number: u8,
@@ -125,15 +123,16 @@ pub async fn flash_device(
         .into_sync_dfu();
     dfu.override_address(target.application_start);
     let dfu = dfu
-        .download_from_slice(firmware)
-        .map_err(Stm32DfuError::Transport)?
-        .ok_or(Stm32DfuError::DeviceResetBeforeVerification)?;
-    let (_dfu, readback) = dfu
+        .download_without_manifest_from_slice(firmware)
+        .map_err(Stm32DfuError::Transport)?;
+    let (dfu, readback) = dfu
         .upload_from_address(target.application_start, firmware.len())
         .map_err(Stm32DfuError::Transport)?;
     if readback != firmware {
         return Err(Stm32DfuError::VerificationMismatch);
     }
+    dfu.manifest_without_wait()
+        .map_err(Stm32DfuError::Transport)?;
     Ok(FlashResult {
         reported_pages: None,
         padded_bytes: firmware.len(),

@@ -199,7 +199,7 @@ dependencies = [
 [[package]]
 name = "dfu-core"
 version = "0.11.1"
-source = "git+https://github.com/mjonuschat/dfu-core?rev=f4b6a5f#f4b6a5f880af42f5a3e3a013406dbcef87e22d68"
+source = "git+https://github.com/mjonuschat/dfu-core?rev=84d54c8#84d54c8bb3ec0f364984e0a64c55901a17023200"
 dependencies = [
  "bytes",
  "displaydoc",
@@ -527,7 +527,6 @@ name = "mcu-update"
 version = "0.1.0"
 dependencies = [
  "dfu-nusb",
- "futures",
  "nusb",
  "picoboot",
  "serde",
