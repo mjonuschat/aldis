@@ -6,6 +6,8 @@ pub mod can;
 pub mod endpoint;
 pub mod serial;
 pub mod session;
+#[cfg(target_os = "linux")]
+pub mod system;
 
 const HEADER: [u8; 2] = [0x01, 0x88];
 const TRAILER: [u8; 2] = [0x99, 0x03];
