@@ -48,14 +48,22 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
             .is_empty()
     );
 
-    let artifact = coordinator
-        .execute(pending.approve())
+    let update = coordinator
+        .execute_and_flash(pending.approve(), |prepared, firmware| {
+            assert_eq!(prepared.target_name, "mcu toolhead");
+            assert_eq!(firmware, b"firmware");
+            Ok::<_, ()>(mcu_update::flash::FlashResult {
+                pages_written: 1,
+                padded_bytes: 64,
+            })
+        })
         .expect("approved build should succeed");
 
     assert_eq!(
-        fs::read(&artifact.path).expect("copied artifact"),
+        fs::read(&update.artifact.path).expect("copied artifact"),
         b"firmware"
     );
+    assert_eq!(update.flash.pages_written, 1);
     let service_commands = service_runner.commands.lock().expect("runner lock");
     assert_eq!(
         service_commands

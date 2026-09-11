@@ -3,6 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::build::{BuildArtifact, BuildError, CommandRunner, KlipperBuilder};
+use crate::flash::FlashResult;
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
@@ -51,6 +52,26 @@ pub enum CoordinatorError {
     UnexpectedKlipperState(ServiceState),
     /// Klipper's build pipeline failed.
     Build(BuildError),
+}
+
+/// Failure while executing an approved build and its caller-supplied flash operation.
+#[derive(Debug)]
+pub enum FlashCoordinatorError<E> {
+    /// The service transition or Klipper build failed.
+    Coordinator(CoordinatorError),
+    /// The completed artifact could not be read for flashing.
+    Artifact(std::io::Error),
+    /// The selected native backend failed.
+    Flash(E),
+}
+
+/// The completed build and native flash result for one approved MCU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedUpdate {
+    /// The immutable firmware artifact built by Klipper.
+    pub artifact: BuildArtifact,
+    /// Protocol-reported transfer details.
+    pub flash: FlashResult,
 }
 
 impl fmt::Display for CoordinatorError {
@@ -143,5 +164,20 @@ where
         self.builder
             .build(&approved.pending.prepared.request)
             .map_err(CoordinatorError::Build)
+    }
+
+    /// Builds an approved target, then invokes `flash` only after Klipper is stopped.
+    pub fn execute_and_flash<E>(
+        &self,
+        approved: ApprovedBuild,
+        flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, E>,
+    ) -> Result<CompletedUpdate, FlashCoordinatorError<E>> {
+        let prepared = approved.pending.prepared.clone();
+        let artifact = self
+            .execute(approved)
+            .map_err(FlashCoordinatorError::Coordinator)?;
+        let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
+        let flash = flash(&prepared, &firmware).map_err(FlashCoordinatorError::Flash)?;
+        Ok(CompletedUpdate { artifact, flash })
     }
 }
