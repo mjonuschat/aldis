@@ -40,7 +40,7 @@ fn builds_with_an_explicit_kconfig_and_copies_the_artifact() {
     let commands = runner.commands.lock().expect("runner lock");
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0].program, "make");
-    assert_eq!(commands[0].current_dir, source_dir);
+    assert_eq!(commands[0].current_dir, Some(source_dir));
     assert_eq!(
         commands[0].arguments,
         vec![

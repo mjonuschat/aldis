@@ -32,8 +32,8 @@ pub struct BuildCommand {
     pub program: String,
     /// Explicit command arguments.
     pub arguments: Vec<String>,
-    /// Directory in which the command runs.
-    pub current_dir: PathBuf,
+    /// Optional directory in which the command runs.
+    pub current_dir: Option<PathBuf>,
 }
 
 /// Captured result of a command invocation.
@@ -93,11 +93,12 @@ pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
-        let output = Command::new(&command.program)
-            .args(&command.arguments)
-            .current_dir(&command.current_dir)
-            .output()
-            .map_err(CommandError::Spawn)?;
+        let mut process = Command::new(&command.program);
+        process.args(&command.arguments);
+        if let Some(current_dir) = &command.current_dir {
+            process.current_dir(current_dir);
+        }
+        let output = process.output().map_err(CommandError::Spawn)?;
 
         Ok(CommandOutput {
             success: output.status.success(),
@@ -234,7 +235,7 @@ where
         let command = BuildCommand {
             program: "make".to_owned(),
             arguments,
-            current_dir: self.source_dir.clone(),
+            current_dir: Some(self.source_dir.clone()),
         };
         let output = self
             .runner
