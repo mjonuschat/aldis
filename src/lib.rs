@@ -1,5 +1,6 @@
 pub mod build;
 pub mod coordinator;
+pub mod flash;
 pub mod moonraker;
 pub mod plan;
 pub mod prepare;
