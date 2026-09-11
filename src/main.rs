@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 use mcu_update::moonraker::{McuInventory, MoonrakerClient};
+use mcu_update::plan::{UpdatePlan, build_update_plan};
 
 const DEFAULT_MOONRAKER_URL: &str = "http://127.0.0.1:7125";
 
@@ -11,12 +12,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
 
-    if command != "inspect" {
-        print_usage();
-        return ExitCode::from(2);
-    }
-
-    let moonraker_url = match parse_inspect_arguments(arguments.collect()) {
+    let moonraker_url = match parse_moonraker_arguments(&command, arguments.collect()) {
         Ok(url) => url,
         Err(message) => {
             eprintln!("error: {message}");
@@ -27,7 +23,11 @@ fn main() -> ExitCode {
     let client = MoonrakerClient::new(&moonraker_url);
     match client.discover_mcus() {
         Ok(inventory) => {
-            print_inventory(&moonraker_url, &inventory);
+            match command.as_str() {
+                "inspect" => print_inventory(&moonraker_url, &inventory),
+                "plan" => print_plan(&moonraker_url, &build_update_plan(&inventory)),
+                _ => unreachable!("command validation happens while parsing arguments"),
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -37,11 +37,53 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_inspect_arguments(arguments: Vec<String>) -> Result<String, String> {
+fn parse_moonraker_arguments(command: &str, arguments: Vec<String>) -> Result<String, String> {
+    if !matches!(command, "inspect" | "plan") {
+        return Err(format!("unknown command {command:?}"));
+    }
+
     match arguments.as_slice() {
         [] => Ok(DEFAULT_MOONRAKER_URL.to_owned()),
         [flag, url] if flag == "--moonraker" => Ok(url.clone()),
         _ => Err("expected no arguments or --moonraker URL".to_owned()),
+    }
+}
+
+fn print_plan(moonraker_url: &str, plan: &UpdatePlan) {
+    println!("phase: plan");
+    println!("Moonraker: {moonraker_url}");
+    println!("MCUs: {}", plan.targets.len());
+    println!("\nKlipper lifecycle:");
+    println!(
+        "  discovery: {}",
+        if plan.klipper.runs_during_discovery {
+            "running"
+        } else {
+            "not running"
+        }
+    );
+    println!(
+        "  stop: {}",
+        if plan.klipper.stops_before_first_build_or_flash {
+            "immediately before the first selected build or flash"
+        } else {
+            "not required by this plan"
+        }
+    );
+    println!(
+        "  restart: {}",
+        if plan.klipper.restarts_automatically {
+            "automatic"
+        } else {
+            "explicit operator action after the run"
+        }
+    );
+
+    for target in &plan.targets {
+        println!("\n{} ({})", target.name, target.mcu);
+        for step in &target.steps {
+            println!("  - {}", step.label());
+        }
     }
 }
 
@@ -67,5 +109,5 @@ fn print_inventory(moonraker_url: &str, inventory: &McuInventory) {
 }
 
 fn print_usage() {
-    eprintln!("usage: mcu-update inspect [--moonraker URL]");
+    eprintln!("usage: mcu-update <inspect|plan> [--moonraker URL]");
 }
