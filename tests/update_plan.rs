@@ -1,4 +1,4 @@
-use mcu_update::moonraker::parse_inventory;
+use mcu_update::moonraker::{McuTransport, parse_inventory};
 use mcu_update::plan::{UpdateStep, build_update_plan};
 
 #[test]
@@ -14,6 +14,20 @@ fn plans_sequential_updates_without_changing_service_state() {
     assert_eq!(plan.targets.len(), 2);
     assert_eq!(plan.targets[0].name, "mcu");
     assert_eq!(plan.targets[1].name, "mcu toolhead");
+    assert_eq!(
+        plan.targets[0].transport,
+        Some(McuTransport::Serial {
+            device: "/dev/serial/by-id/usb-Klipper_stm32f429xx_320050000F50304738313820-if00"
+                .to_owned(),
+        })
+    );
+    assert_eq!(
+        plan.targets[1].transport,
+        Some(McuTransport::Can {
+            interface: "can0".to_owned(),
+            uuid: 0xe781_9ed8_e7d3,
+        })
+    );
     assert_eq!(
         plan.targets[1].steps,
         vec![

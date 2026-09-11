@@ -1,4 +1,4 @@
-use crate::moonraker::McuInventory;
+use crate::moonraker::{McuInventory, McuTransport};
 
 /// A read-only description of the update work required for discovered MCUs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +27,8 @@ pub struct PlannedMcu {
     pub name: String,
     /// The MCU identifier reported by the running firmware.
     pub mcu: String,
+    /// The configured host transport retained from read-only discovery.
+    pub transport: Option<McuTransport>,
     /// The ordered actions that would be taken for this MCU.
     pub steps: Vec<UpdateStep>,
 }
@@ -89,6 +91,7 @@ pub fn build_update_plan(inventory: &McuInventory) -> UpdatePlan {
             .map(|mcu| PlannedMcu {
                 name: mcu.name.clone(),
                 mcu: mcu.mcu.clone(),
+                transport: mcu.transport.clone(),
                 steps: steps.clone(),
             })
             .collect(),
