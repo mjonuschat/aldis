@@ -1,0 +1,46 @@
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use mcu_update::moonraker::parse_inventory;
+use mcu_update::plan::build_update_plan;
+use mcu_update::prepare::prepare_build;
+
+#[test]
+fn prepares_a_selected_planned_mcu_without_writing_files() {
+    let inventory =
+        parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("fixture should parse");
+    let plan = build_update_plan(&inventory);
+    let root = unique_temporary_path();
+    let config_path = root.join("toolhead/.config");
+    let artifact_path = root.join("artifacts/toolhead.bin");
+
+    let prepared = prepare_build(
+        &inventory,
+        &plan,
+        "mcu toolhead",
+        config_path.clone(),
+        artifact_path.clone(),
+    )
+    .expect("planned toolhead should prepare");
+
+    assert_eq!(prepared.target_name, "mcu toolhead");
+    assert_eq!(prepared.mcu, "stm32g0b1xx");
+    assert_eq!(prepared.request.config_path, config_path);
+    assert_eq!(prepared.request.artifact_path, artifact_path);
+    assert_eq!(
+        prepared.request.kconfig,
+        "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32G0B1=y\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\n"
+    );
+    assert!(!root.exists());
+}
+
+fn unique_temporary_path() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "mcu-update-preparation-{}-{nonce}",
+        std::process::id()
+    ))
+}

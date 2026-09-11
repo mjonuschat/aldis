@@ -14,6 +14,6 @@ fn parses_mcu_inventory_from_a_moonraker_object_query() {
     assert_eq!(inventory.mcus[1].canbus_frequency_hz, Some(1_000_000));
     assert_eq!(
         inventory.mcus[1].kconfig,
-        "CONFIG_LOW_LEVEL_OPTIONS=y\\nCONFIG_MACH_STM32=y\\nCONFIG_MACH_STM32G0B1=y\\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\\n"
+        "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32G0B1=y\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\n"
     );
 }

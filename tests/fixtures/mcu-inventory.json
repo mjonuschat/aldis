@@ -9,7 +9,7 @@
           "MCU": "stm32f429xx",
           "CANBUS_FREQUENCY": 1000000
         },
-        "mcu_kconfig": "CONFIG_LOW_LEVEL_OPTIONS=y\\nCONFIG_MACH_STM32=y\\n"
+        "mcu_kconfig": "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\n"
       },
       "mcu toolhead": {
         "app": "Kalico",
@@ -18,7 +18,7 @@
           "MCU": "stm32g0b1xx",
           "CANBUS_FREQUENCY": 1000000
         },
-        "mcu_kconfig": "CONFIG_LOW_LEVEL_OPTIONS=y\\nCONFIG_MACH_STM32=y\\nCONFIG_MACH_STM32G0B1=y\\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\\n"
+        "mcu_kconfig": "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32G0B1=y\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\n"
       }
     }
   }
