@@ -1,10 +1,14 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-nusb`.
 
+use std::path::Path;
+use std::time::Duration;
+
 use dfu_nusb::DfuNusb;
 use nusb::MaybeFuture;
 use nusb::transfer::TransferError;
 
 use crate::flash::FlashResult;
+use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
 
 /// An explicitly selected STM32 DFU USB identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,11 +84,77 @@ pub enum Stm32DfuError {
     VerificationMismatch,
 }
 
+/// Failure while transitioning a running STM32 USB serial MCU to ROM DFU.
+#[derive(Debug)]
+pub enum Stm32DfuBootstrapError {
+    /// The running USB serial MCU did not re-enumerate as STM32 ROM DFU.
+    Bootloader(UsbBootloaderError),
+    /// Native DfuSe flashing failed after ROM DFU appeared.
+    Flash(Stm32DfuError),
+}
+
+/// Requests ROM DFU through a running USB serial STM32 MCU and flashes it.
+pub fn bootstrap_system_serial(
+    running_device: &Path,
+    target: Stm32DfuTarget,
+    firmware: &[u8],
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<FlashResult, Stm32DfuBootstrapError> {
+    let bootloader_path = SystemSerialIo::request_and_find_usb_device(
+        running_device,
+        timeout,
+        poll_interval,
+        |usb_id, _| usb_id.eq_ignore_ascii_case("0483:df11"),
+    )
+    .map_err(Stm32DfuBootstrapError::Bootloader)?;
+    flash_system_at_path(
+        Stm32DfuDevice::ROM_BOOTLOADER,
+        &bootloader_path,
+        target,
+        firmware,
+    )
+    .map_err(Stm32DfuBootstrapError::Flash)
+}
+
 /// Finds exactly one internal-flash DFU device matching `identity`.
 pub fn find_device(identity: Stm32DfuDevice) -> Result<(nusb::DeviceInfo, u8), Stm32DfuError> {
     let matches = nusb::list_devices()
         .wait()
         .map_err(Stm32DfuError::Discovery)?
+        .filter(|device| {
+            device.vendor_id() == identity.vendor_id && device.product_id() == identity.product_id
+        })
+        .filter_map(|device| {
+            let interface_number = device
+                .interfaces()
+                .find(|interface| interface.class() == 0xfe && interface.subclass() == 0x01)
+                .map(|interface| interface.interface_number());
+            interface_number.map(|interface_number| (device, interface_number))
+        })
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => Err(Stm32DfuError::DeviceNotFound(identity)),
+        1 => Ok(matches.into_iter().next().expect("length was checked")),
+        count => Err(Stm32DfuError::AmbiguousDevice {
+            device: identity,
+            matches: count,
+        }),
+    }
+}
+
+/// Finds the internal-flash DFU device matching `identity` at `sysfs_path`.
+///
+/// The path is retained from a serial MCU's USB topology across bootloader
+/// re-enumeration, so an unrelated ROM DFU device cannot be selected.
+pub fn find_device_at_path(
+    identity: Stm32DfuDevice,
+    sysfs_path: &Path,
+) -> Result<(nusb::DeviceInfo, u8), Stm32DfuError> {
+    let matches = nusb::list_devices()
+        .wait()
+        .map_err(Stm32DfuError::Discovery)?
+        .filter(|device| device.sysfs_path() == sysfs_path)
         .filter(|device| {
             device.vendor_id() == identity.vendor_id && device.product_id() == identity.product_id
         })
@@ -157,6 +227,23 @@ pub fn flash_system(
         .expect("Tokio runtime should initialize")
         .block_on(async {
             let (device, interface) = find_device(identity)?;
+            flash_device(device, interface, target, firmware).await
+        })
+}
+
+/// Discovers the selected STM32 DFU device at one USB topology and flashes it.
+pub fn flash_system_at_path(
+    identity: Stm32DfuDevice,
+    sysfs_path: &Path,
+    target: Stm32DfuTarget,
+    firmware: &[u8],
+) -> Result<FlashResult, Stm32DfuError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("Tokio runtime should initialize")
+        .block_on(async {
+            let (device, interface) = find_device_at_path(identity, sysfs_path)?;
             flash_device(device, interface, target, firmware).await
         })
 }

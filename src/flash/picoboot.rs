@@ -55,7 +55,7 @@ pub fn bootstrap_system_serial(
     timeout: Duration,
     poll_interval: Duration,
 ) -> Result<FlashResult, PicoBootBootstrapError> {
-    SystemSerialIo::request_and_wait_for_usb_identity(
+    let bootloader_path = SystemSerialIo::request_and_find_usb_device(
         running_device,
         timeout,
         poll_interval,
@@ -66,7 +66,7 @@ pub fn bootstrap_system_serial(
         },
     )
     .map_err(PicoBootBootstrapError::Bootloader)?;
-    flash_system(firmware).map_err(PicoBootBootstrapError::Flash)
+    flash_system_at_path(&bootloader_path, firmware).map_err(PicoBootBootstrapError::Flash)
 }
 
 /// Failure while transitioning a running serial RP MCU to PicoBoot.
@@ -133,6 +133,21 @@ pub fn decode_uf2(firmware: &[u8]) -> Result<Uf2Image, Uf2Error> {
 
 /// Writes, reads back, and starts one Klipper UF2 image through PicoBoot.
 pub fn flash_system(firmware: &[u8]) -> Result<FlashResult, PicoBootError> {
+    flash_system_with_device(firmware, |_| true)
+}
+
+/// Writes, verifies, and starts one Klipper UF2 image at a selected USB topology.
+pub fn flash_system_at_path(
+    sysfs_path: &Path,
+    firmware: &[u8],
+) -> Result<FlashResult, PicoBootError> {
+    flash_system_with_device(firmware, |device| device.sysfs_path() == sysfs_path)
+}
+
+fn flash_system_with_device(
+    firmware: &[u8],
+    matches: impl Fn(&nusb::DeviceInfo) -> bool,
+) -> Result<FlashResult, PicoBootError> {
     let image = decode_uf2(firmware).map_err(PicoBootError::Uf2)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -141,7 +156,10 @@ pub fn flash_system(firmware: &[u8]) -> Result<FlashResult, PicoBootError> {
         .block_on(async {
             let mut devices = Picoboot::list_devices(None)
                 .await
-                .map_err(PicoBootError::Transport)?;
+                .map_err(PicoBootError::Transport)?
+                .into_iter()
+                .filter(matches)
+                .collect::<Vec<_>>();
             let device = match devices.len() {
                 0 => return Err(PicoBootError::DeviceNotFound),
                 1 => devices.remove(0),

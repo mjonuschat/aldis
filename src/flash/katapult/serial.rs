@@ -156,6 +156,22 @@ impl SystemSerialIo {
         Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, usb_tty)
     }
 
+    /// Requests USB bootloader entry and returns its re-enumerated sysfs device path.
+    ///
+    /// The path identifies the same physical USB topology as the running serial
+    /// device. Native USB bootloader backends use it to avoid selecting an
+    /// unrelated device with the same vendor and product identifiers.
+    pub fn request_and_find_usb_device(
+        path: &Path,
+        timeout: Duration,
+        poll_interval: Duration,
+        matches: impl Fn(&str, &str) -> bool,
+    ) -> Result<PathBuf, UsbBootloaderError> {
+        Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, |usb_path| {
+            Some(usb_path.to_path_buf())
+        })
+    }
+
     /// Requests USB bootloader entry and waits for a matching USB identity.
     pub fn request_and_wait_for_usb_identity(
         path: &Path,
