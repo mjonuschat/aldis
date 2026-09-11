@@ -53,7 +53,7 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
             assert_eq!(prepared.target_name, "mcu toolhead");
             assert_eq!(firmware, b"firmware");
             Ok::<_, ()>(mcu_update::flash::FlashResult {
-                pages_written: 1,
+                reported_pages: Some(1),
                 padded_bytes: 64,
             })
         })
@@ -63,7 +63,7 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
         fs::read(&update.artifact.path).expect("copied artifact"),
         b"firmware"
     );
-    assert_eq!(update.flash.pages_written, 1);
+    assert_eq!(update.flash.reported_pages, Some(1));
     let service_commands = service_runner.commands.lock().expect("runner lock");
     assert_eq!(
         service_commands

@@ -65,7 +65,7 @@ impl<T: Transport> FlashBackend for KatapultBackend<T> {
             .complete()
             .map_err(KatapultFlashError::Session)?;
         Ok(FlashResult {
-            pages_written: upload.pages_written,
+            reported_pages: Some(upload.pages_written),
             padded_bytes: upload.padded_bytes,
         })
     }

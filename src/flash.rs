@@ -6,8 +6,8 @@ pub mod stm32_dfu;
 /// Result details shared by native flashing backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlashResult {
-    /// The number of firmware pages accepted by the bootloader.
-    pub pages_written: u32,
+    /// The number of firmware pages reported by the bootloader, when available.
+    pub reported_pages: Option<u32>,
     /// Number of bytes transferred after bootloader-required padding.
     pub padded_bytes: usize,
 }

@@ -136,7 +136,7 @@ pub async fn flash_device(
         return Err(Stm32DfuError::VerificationMismatch);
     }
     Ok(FlashResult {
-        pages_written: 0,
+        reported_pages: None,
         padded_bytes: firmware.len(),
     })
 }

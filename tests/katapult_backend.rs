@@ -60,7 +60,7 @@ fn flashes_verifies_and_starts_a_serial_katapult_target() {
     assert_eq!(
         backend.flash(&[0xab]).unwrap(),
         mcu_update::flash::FlashResult {
-            pages_written: 1,
+            reported_pages: Some(1),
             padded_bytes: 64,
         }
     );
