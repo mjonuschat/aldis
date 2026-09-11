@@ -2,6 +2,7 @@
 
 pub mod backend;
 pub mod can;
+pub mod endpoint;
 pub mod serial;
 pub mod session;
 
