@@ -1,6 +1,7 @@
 //! Native firmware flashing interfaces and transport implementations.
 
 pub mod katapult;
+pub mod stm32_dfu;
 
 /// Result details shared by native flashing backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
