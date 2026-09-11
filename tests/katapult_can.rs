@@ -94,3 +94,16 @@ fn assigns_a_node_then_reassembles_only_its_response_frames() {
         CanFrame::new(address.request_id(), &[0x01, 0x88, 0x15, 0]).unwrap()
     );
 }
+
+#[test]
+fn requests_bootloader_entry_without_assigning_a_katapult_node() {
+    let address = KatapultCanAddress::new(0xe781_9ed8_e7d3).unwrap();
+    let mut transport = KatapultCanTransport::new(ScriptedCanIo::default(), address);
+
+    transport.request_bootloader_entry().unwrap();
+
+    assert_eq!(
+        transport.into_io().written,
+        vec![address.bootloader_entry_frame()]
+    );
+}

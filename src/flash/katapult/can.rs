@@ -182,6 +182,16 @@ impl<T> KatapultCanTransport<T> {
 }
 
 impl<T: CanIo> KatapultCanTransport<T> {
+    /// Requests that the configured Klipper CAN MCU enter Katapult.
+    ///
+    /// This does not wait for bootloader startup or assign Katapult's temporary
+    /// node ID. Call [`Self::assign_node`] only after bootloader entry.
+    pub fn request_bootloader_entry(&mut self) -> Result<(), CanTransportError<T::Error>> {
+        self.io
+            .write(self.address.bootloader_entry_frame())
+            .map_err(CanTransportError::Io)
+    }
+
     /// Assigns Katapult's temporary node ID for this explicitly supplied UUID.
     pub fn assign_node(&mut self) -> Result<(), CanTransportError<T::Error>> {
         self.io
