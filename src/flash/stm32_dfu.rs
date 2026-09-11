@@ -1,6 +1,6 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-rs`.
 
-use dfu_rs::Device;
+use dfu_rs::{DEFAULT_USB_TIMEOUT, Device, DfuType, search_for_dfu};
 
 use crate::flash::FlashResult;
 
@@ -33,12 +33,42 @@ pub struct Stm32DfuTarget {
 /// A native STM32 DFU transfer failure.
 #[derive(Debug)]
 pub enum Stm32DfuError {
+    /// DFU enumeration failed.
+    Discovery(dfu_rs::Error),
+    /// No DFU device matched the explicitly configured USB identity.
+    DeviceNotFound(Stm32DfuDevice),
+    /// More than one DFU device matched the configured USB identity.
+    AmbiguousDevice {
+        device: Stm32DfuDevice,
+        matches: usize,
+    },
     /// The configured erase geometry is invalid.
     InvalidErasePageSize,
     /// The DFU transport rejected an operation.
     Transport(dfu_rs::Error),
     /// Uploaded bytes did not match the firmware artifact.
     VerificationMismatch,
+}
+
+/// Finds exactly one internal-flash DFU device matching `identity`.
+pub async fn find_device(identity: Stm32DfuDevice) -> Result<Device, Stm32DfuError> {
+    let matches = search_for_dfu(DEFAULT_USB_TIMEOUT, Some(DfuType::InternalFlash))
+        .await
+        .map_err(Stm32DfuError::Discovery)?
+        .into_iter()
+        .filter(|device| {
+            let info = device.info();
+            info.vid() == identity.vendor_id && info.pid() == identity.product_id
+        })
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => Err(Stm32DfuError::DeviceNotFound(identity)),
+        1 => Ok(matches.into_iter().next().expect("length was checked")),
+        count => Err(Stm32DfuError::AmbiguousDevice {
+            device: identity,
+            matches: count,
+        }),
+    }
 }
 
 /// Erases, writes, and reads back one STM32 application image.
