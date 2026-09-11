@@ -35,15 +35,10 @@ impl Stm32DfuDevice {
 pub struct Stm32DfuTarget {
     /// Explicit application start address from the embedded build configuration.
     pub application_start: u32,
-    /// The explicit erase-page size for this MCU family.
-    pub erase_page_size: usize,
 }
 
 /// Derives the STM32 application address from Klipper's embedded Kconfig.
-pub fn target_from_kconfig(
-    kconfig: &str,
-    erase_page_size: usize,
-) -> Result<Stm32DfuTarget, Stm32DfuError> {
+pub fn target_from_kconfig(kconfig: &str) -> Result<Stm32DfuTarget, Stm32DfuError> {
     let offsets = [
         "800", "1000", "2000", "4000", "5000", "7000", "8000", "8800", "9000", "C000", "10000",
         "20000", "20200", "0000",
@@ -63,7 +58,6 @@ pub fn target_from_kconfig(
         .map_err(|_| Stm32DfuError::InvalidFlashStartConfiguration)?;
     Ok(Stm32DfuTarget {
         application_start: 0x0800_0000 + offset,
-        erase_page_size,
     })
 }
 
