@@ -6,7 +6,9 @@ license = "GPL-3.0-only"
 
 [dependencies]
 dfu-rs = "0.2.1"
+dfu-nusb = "0.2.0"
 futures = "0.3.31"
+nusb = "0.2.7"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha1 = "0.11.0"
@@ -15,3 +17,6 @@ ureq = "3.4.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 socketcan = { version = "4.0.0", default-features = false }
+
+[patch.crates-io]
+dfu-core = { git = "https://github.com/mjonuschat/dfu-core", rev = "f4b6a5f" }

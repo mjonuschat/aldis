@@ -158,6 +158,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dfu-core"
+version = "0.11.1"
+source = "git+https://github.com/mjonuschat/dfu-core?rev=f4b6a5f#f4b6a5f880af42f5a3e3a013406dbcef87e22d68"
+dependencies = [
+ "bytes",
+ "displaydoc",
+ "futures",
+ "log",
+ "pretty-hex",
+ "thiserror",
+]
+
+[[package]]
+name = "dfu-nusb"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "363226a7c50e078736873ccc2c5045e52cc07372fb5fbdfcad5b54333ca5344c"
+dependencies = [
+ "dfu-core",
+ "nusb",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dfu-rs"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -177,6 +202,17 @@ dependencies = [
  "block-buffer",
  "const-oid",
  "crypto-common",
+]
+
+[[package]]
+name = "displaydoc"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -438,8 +474,10 @@ dependencies = [
 name = "mcu-update"
 version = "0.1.0"
 dependencies = [
+ "dfu-nusb",
  "dfu-rs",
  "futures",
+ "nusb",
  "serde",
  "serde_json",
  "serialport",
@@ -563,6 +601,12 @@ dependencies = [
  "rustix",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "pretty-hex"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a65843dfefbafd3c879c683306959a6de478443ffe9c9adf02f5976432402d7"
 
 [[package]]
 name = "proc-macro2"
