@@ -1,5 +1,7 @@
 //! Katapult bootloader frame encoding and transport-neutral session logic.
 
+pub mod can;
+pub mod serial;
 pub mod session;
 
 const HEADER: [u8; 2] = [0x01, 0x88];
