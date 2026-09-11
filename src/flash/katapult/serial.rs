@@ -7,11 +7,27 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::thread;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
 
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
 pub const BOOTLOADER_ENTRY_REQUEST: &[u8] = b"~ \x1c Request Serial Bootloader!! ~";
+
+const KATAPULT_USB_ID: &str = "1d50:6177";
+
+/// Returns whether USB identity fields identify a Katapult bootloader.
+pub fn is_katapult_usb(usb_id: &str, manufacturer: &str) -> bool {
+    usb_id.eq_ignore_ascii_case(KATAPULT_USB_ID) || manufacturer.eq_ignore_ascii_case("katapult")
+}
 
 /// Sends and receives bounded byte chunks from a serial device.
 pub trait SerialIo {
@@ -118,6 +134,130 @@ impl SystemSerialIo {
         let _ = port.write_data_terminal_ready(false);
         Ok(())
     }
+
+    /// Requests USB bootloader entry and waits for Katapult on the same USB path.
+    ///
+    /// On Linux this follows Katapult's topology-based strategy: the current
+    /// tty is resolved into sysfs, its USB device is watched through
+    /// re-enumeration, and the new tty is selected only from that device. A
+    /// reset I/O error does not stop the wait because disconnecting the old
+    /// USB CDC device is an expected successful outcome.
+    #[cfg(target_os = "linux")]
+    pub fn request_and_find_usb_bootloader(
+        path: &Path,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<PathBuf, UsbBootloaderError> {
+        let usb_path = usb_device_path(path).ok_or_else(|| UsbBootloaderError::NotUsbDevice {
+            device: path.to_path_buf(),
+        })?;
+        let initial_identity = usb_identity(&usb_path);
+        let reset_error = Self::request_usb_bootloader(path)
+            .err()
+            .map(|error| error.to_string());
+        let deadline = Instant::now() + timeout;
+        let interval = poll_interval.max(Duration::from_millis(10));
+
+        loop {
+            let identity = usb_identity(&usb_path);
+            if identity != initial_identity
+                && is_katapult_usb(&identity.usb_id, &identity.manufacturer)
+            {
+                if let Some(device) = usb_tty(&usb_path) {
+                    return Ok(device);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(UsbBootloaderError::NotDetected {
+                    device: path.to_path_buf(),
+                    reset_error,
+                });
+            }
+            thread::sleep(interval);
+        }
+    }
+}
+
+/// A failed USB Katapult bootloader transition.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UsbBootloaderError {
+    /// The configured serial device could not be related to a USB device.
+    NotUsbDevice {
+        /// The configured serial device.
+        device: PathBuf,
+    },
+    /// Katapult did not appear at the same USB topology before the timeout.
+    NotDetected {
+        /// The configured serial device.
+        device: PathBuf,
+        /// A best-effort reset error, if opening the device failed before it disconnected.
+        reset_error: Option<String>,
+    },
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UsbIdentity {
+    usb_id: String,
+    manufacturer: String,
+}
+
+#[cfg(target_os = "linux")]
+fn usb_device_path(device: &Path) -> Option<PathBuf> {
+    let tty = fs::canonicalize(device).ok()?.file_name()?.to_owned();
+    let tty_path = fs::canonicalize(Path::new("/sys/class/tty").join(tty)).ok()?;
+    tty_path.ancestors().find_map(|candidate| {
+        let has_usb_identity =
+            candidate.join("idVendor").is_file() && candidate.join("idProduct").is_file();
+        (has_usb_identity
+            && candidate.join("busnum").is_file()
+            && candidate.join("devnum").is_file())
+        .then(|| candidate.to_path_buf())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn usb_identity(usb_path: &Path) -> UsbIdentity {
+    UsbIdentity {
+        usb_id: format!(
+            "{}:{}",
+            read_sysfs_value(&usb_path.join("idVendor")),
+            read_sysfs_value(&usb_path.join("idProduct"))
+        ),
+        manufacturer: read_sysfs_value(&usb_path.join("manufacturer")),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_sysfs_value(path: &Path) -> String {
+    fs::read_to_string(path)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn usb_tty(usb_path: &Path) -> Option<PathBuf> {
+    let prefix = format!("{}:", usb_path.file_name()?.to_string_lossy());
+    let mut tty_names = fs::read_dir(usb_path)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .flat_map(|interface| {
+            fs::read_dir(interface.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
+        .filter(|entry| entry.file_name() == "tty")
+        .flat_map(|tty_dir| fs::read_dir(tty_dir.path()).into_iter().flatten().flatten())
+        .map(|tty| tty.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("tty"));
+    let tty = tty_names.next()?;
+    tty_names
+        .next()
+        .is_none()
+        .then(|| Path::new("/dev").join(tty))
 }
 
 impl SerialIo for SystemSerialIo {
