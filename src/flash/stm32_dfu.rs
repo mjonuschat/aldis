@@ -31,6 +31,34 @@ pub struct Stm32DfuTarget {
     pub erase_page_size: usize,
 }
 
+/// Derives the STM32 application address from Klipper's embedded Kconfig.
+pub fn target_from_kconfig(
+    kconfig: &str,
+    erase_page_size: usize,
+) -> Result<Stm32DfuTarget, Stm32DfuError> {
+    let offsets = [
+        "800", "1000", "2000", "4000", "5000", "7000", "8000", "8800", "9000", "C000", "10000",
+        "20000", "20200", "0000",
+    ];
+    let selected: Vec<_> = offsets
+        .iter()
+        .filter(|offset| {
+            kconfig
+                .lines()
+                .any(|line| line.trim() == format!("CONFIG_STM32_FLASH_START_{offset}=y"))
+        })
+        .collect();
+    if selected.len() != 1 {
+        return Err(Stm32DfuError::InvalidErasePageSize);
+    }
+    let offset =
+        u32::from_str_radix(selected[0], 16).map_err(|_| Stm32DfuError::InvalidErasePageSize)?;
+    Ok(Stm32DfuTarget {
+        application_start: 0x0800_0000 + offset,
+        erase_page_size,
+    })
+}
+
 /// A native STM32 DFU transfer failure.
 #[derive(Debug)]
 pub enum Stm32DfuError {
