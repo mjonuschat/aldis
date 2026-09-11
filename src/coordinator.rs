@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use crate::build::{BuildArtifact, BuildError, CommandRunner, KlipperBuilder};
 use crate::flash::FlashResult;
+use crate::flash::katapult::system::SystemKatapultOptions;
+use crate::flash::system::{SystemFlashError, flash_prepared_system};
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
@@ -179,5 +181,19 @@ where
         let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
         let flash = flash(&prepared, &firmware).map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
+    }
+
+    /// Builds an approved target and dispatches it through the native system backends.
+    ///
+    /// This preserves [`Self::execute_and_flash`]'s service boundary: Klipper is
+    /// stopped before the build and is never restarted by this operation.
+    pub fn execute_and_flash_system(
+        &self,
+        approved: ApprovedBuild,
+        options: SystemKatapultOptions,
+    ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
+        self.execute_and_flash(approved, |prepared, firmware| {
+            flash_prepared_system(prepared, firmware, options)
+        })
     }
 }
