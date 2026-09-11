@@ -7,13 +7,9 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
-#[cfg(target_os = "linux")]
 use std::thread;
-#[cfg(target_os = "linux")]
 use std::time::Instant;
 
 use super::MAX_RESPONSE_FRAME_BYTES;
@@ -142,12 +138,41 @@ impl SystemSerialIo {
     /// re-enumeration, and the new tty is selected only from that device. A
     /// reset I/O error does not stop the wait because disconnecting the old
     /// USB CDC device is an expected successful outcome.
-    #[cfg(target_os = "linux")]
     pub fn request_and_find_usb_bootloader(
         path: &Path,
         timeout: Duration,
         poll_interval: Duration,
     ) -> Result<PathBuf, UsbBootloaderError> {
+        Self::request_and_find_usb_identity(path, timeout, poll_interval, is_katapult_usb)
+    }
+
+    /// Requests USB bootloader entry and waits for a matching identity at the same topology.
+    pub fn request_and_find_usb_identity(
+        path: &Path,
+        timeout: Duration,
+        poll_interval: Duration,
+        matches: impl Fn(&str, &str) -> bool,
+    ) -> Result<PathBuf, UsbBootloaderError> {
+        Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, usb_tty)
+    }
+
+    /// Requests USB bootloader entry and waits for a matching USB identity.
+    pub fn request_and_wait_for_usb_identity(
+        path: &Path,
+        timeout: Duration,
+        poll_interval: Duration,
+        matches: impl Fn(&str, &str) -> bool,
+    ) -> Result<(), UsbBootloaderError> {
+        Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, |_| Some(()))
+    }
+
+    fn request_usb_bootloader_and_wait<T>(
+        path: &Path,
+        timeout: Duration,
+        poll_interval: Duration,
+        matches: impl Fn(&str, &str) -> bool,
+        ready: impl Fn(&Path) -> Option<T>,
+    ) -> Result<T, UsbBootloaderError> {
         let usb_path = usb_device_path(path).ok_or_else(|| UsbBootloaderError::NotUsbDevice {
             device: path.to_path_buf(),
         })?;
@@ -161,11 +186,10 @@ impl SystemSerialIo {
         loop {
             let identity = usb_identity(&usb_path);
             if identity != initial_identity
-                && is_katapult_usb(&identity.usb_id, &identity.manufacturer)
+                && matches(&identity.usb_id, &identity.manufacturer)
+                && let Some(result) = ready(&usb_path)
             {
-                if let Some(device) = usb_tty(&usb_path) {
-                    return Ok(device);
-                }
+                return Ok(result);
             }
             if Instant::now() >= deadline {
                 return Err(UsbBootloaderError::NotDetected {
@@ -179,7 +203,6 @@ impl SystemSerialIo {
 }
 
 /// A failed USB Katapult bootloader transition.
-#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UsbBootloaderError {
     /// The configured serial device could not be related to a USB device.
@@ -196,14 +219,12 @@ pub enum UsbBootloaderError {
     },
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct UsbIdentity {
     usb_id: String,
     manufacturer: String,
 }
 
-#[cfg(target_os = "linux")]
 fn usb_device_path(device: &Path) -> Option<PathBuf> {
     let tty = fs::canonicalize(device).ok()?.file_name()?.to_owned();
     let tty_path = fs::canonicalize(Path::new("/sys/class/tty").join(tty)).ok()?;
@@ -217,7 +238,6 @@ fn usb_device_path(device: &Path) -> Option<PathBuf> {
     })
 }
 
-#[cfg(target_os = "linux")]
 fn usb_identity(usb_path: &Path) -> UsbIdentity {
     UsbIdentity {
         usb_id: format!(
@@ -229,14 +249,12 @@ fn usb_identity(usb_path: &Path) -> UsbIdentity {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn read_sysfs_value(path: &Path) -> String {
     fs::read_to_string(path)
         .map(|value| value.trim().to_ascii_lowercase())
         .unwrap_or_default()
 }
 
-#[cfg(target_os = "linux")]
 fn usb_tty(usb_path: &Path) -> Option<PathBuf> {
     let prefix = format!("{}:", usb_path.file_name()?.to_string_lossy());
     let mut tty_names = fs::read_dir(usb_path)

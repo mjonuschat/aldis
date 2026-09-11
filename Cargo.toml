@@ -16,7 +16,6 @@ serialport = { version = "4.10.1", default-features = false }
 tokio = { version = "1.53.1", features = ["net", "rt"] }
 ureq = "3.4.1"
 
-[target.'cfg(target_os = "linux")'.dependencies]
 socketcan = { version = "4.0.0", default-features = false }
 
 [patch.crates-io]

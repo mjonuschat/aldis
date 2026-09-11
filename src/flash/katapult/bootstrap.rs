@@ -1,13 +1,10 @@
 //! Explicit transitions from a running MCU transport to a ready Katapult backend.
 
-#[cfg(target_os = "linux")]
 use std::path::Path;
-#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use super::backend::KatapultBackend;
 use super::can::{CanError, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport};
-#[cfg(target_os = "linux")]
 use super::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
 
 /// A failure while transitioning a CAN MCU into a ready Katapult session.
@@ -20,7 +17,6 @@ pub enum CanBootstrapError<E> {
 }
 
 /// A failure while creating a ready serial Katapult backend.
-#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub enum SerialBootstrapError {
     /// The running USB device did not re-enumerate as Katapult.
@@ -34,7 +30,6 @@ pub enum SerialBootstrapError {
 /// This must only be called after the update coordinator has stopped Klipper.
 /// It performs a 1200-baud reset, waits for Katapult at the same USB topology,
 /// and opens the detected bootloader tty at `baud_rate`.
-#[cfg(target_os = "linux")]
 pub fn bootstrap_system_serial(
     running_device: &Path,
     baud_rate: u32,

@@ -1,10 +1,14 @@
 //! Raspberry Pi PicoBoot firmware flashing.
 
+use std::path::Path;
 use std::time::Duration;
 
 use picoboot::{Access, Picoboot};
 
 use crate::flash::FlashResult;
+use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
+
+const PICOBOOT_USB_IDS: &[&str] = &["2e8a:0003", "2e8a:000f"];
 
 /// A decoded contiguous UF2 image suitable for PicoBoot flash commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +45,39 @@ pub enum PicoBootError {
     VerificationMismatch,
 }
 
+/// Requests BOOTSEL through a USB serial connection and flashes it.
+///
+/// The caller must stop Klipper before calling this function so the serial device's
+/// exclusive lock is released.
+pub fn bootstrap_system_serial(
+    running_device: &Path,
+    firmware: &[u8],
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<FlashResult, PicoBootBootstrapError> {
+    SystemSerialIo::request_and_wait_for_usb_identity(
+        running_device,
+        timeout,
+        poll_interval,
+        |usb_id, _| {
+            PICOBOOT_USB_IDS
+                .iter()
+                .any(|id| usb_id.eq_ignore_ascii_case(id))
+        },
+    )
+    .map_err(PicoBootBootstrapError::Bootloader)?;
+    flash_system(firmware).map_err(PicoBootBootstrapError::Flash)
+}
+
+/// Failure while transitioning a running serial RP MCU to PicoBoot.
+#[derive(Debug)]
+pub enum PicoBootBootstrapError {
+    /// The running device did not re-enumerate as PicoBoot.
+    Bootloader(UsbBootloaderError),
+    /// The native transfer failed after PicoBoot appeared.
+    Flash(PicoBootError),
+}
+
 /// Decodes one contiguous RP2040 UF2 image.
 pub fn decode_uf2(firmware: &[u8]) -> Result<Uf2Image, Uf2Error> {
     const BLOCK_SIZE: usize = 512;
@@ -58,8 +95,11 @@ pub fn decode_uf2(firmware: &[u8]) -> Result<Uf2Image, Uf2Error> {
 
     let mut image = Vec::with_capacity(firmware.len() / 2);
     let mut start = None;
-    let block_count = firmware.len() / BLOCK_SIZE;
-    for (index, block) in firmware.chunks_exact(BLOCK_SIZE).enumerate() {
+    let (blocks, []) = firmware.as_chunks::<BLOCK_SIZE>() else {
+        return Err(Uf2Error::InvalidLength);
+    };
+    let block_count = blocks.len();
+    for (index, block) in blocks.iter().enumerate() {
         let word = |offset| u32::from_le_bytes(block[offset..offset + 4].try_into().expect("word"));
         let address = word(12);
         let payload_size = word(16) as usize;

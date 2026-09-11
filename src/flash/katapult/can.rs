@@ -3,14 +3,11 @@
 //! Wire mapping follows Katapult's CAN flasher implementation:
 //! <https://github.com/Arksine/katapult/blob/master/scripts/flashtool.py>.
 
-#[cfg(target_os = "linux")]
 use std::io;
-#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
-#[cfg(target_os = "linux")]
 use socketcan::{CanDataFrame, CanSocket, EmbeddedFrame, Id, Socket};
 
 const CAN_ADMIN_ID: u16 = 0x3f0;
@@ -246,12 +243,10 @@ impl<T: CanIo> Transport for KatapultCanTransport<T> {
 ///
 /// Opening the socket does not assign a Katapult node, enter a bootloader, or
 /// transmit a frame. Call [`KatapultCanTransport::assign_node`] explicitly.
-#[cfg(target_os = "linux")]
 pub struct SocketCanIo {
     socket: CanSocket,
 }
 
-#[cfg(target_os = "linux")]
 impl SocketCanIo {
     /// Opens a SocketCAN interface and configures a bounded receive timeout.
     pub fn open(interface: &str, read_timeout: Duration) -> io::Result<Self> {
@@ -261,7 +256,6 @@ impl SocketCanIo {
     }
 }
 
-#[cfg(target_os = "linux")]
 impl CanIo for SocketCanIo {
     type Error = io::Error;
 
