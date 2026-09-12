@@ -62,9 +62,11 @@ pub fn assess_mcu(mcu: &Mcu, checkout: &CheckoutRevision) -> McuStatus {
 pub fn classify_mcu(mcu: &Mcu) -> Eligibility {
     match mcu.app.as_deref() {
         Some(app) if app.eq_ignore_ascii_case("klipper") || app.eq_ignore_ascii_case("kalico") => {
-            (!mcu.kconfig.trim().is_empty())
-                .then_some(Eligibility::Eligible)
-                .unwrap_or(Eligibility::Unsupported)
+            if mcu.kconfig.trim().is_empty() {
+                Eligibility::Unsupported
+            } else {
+                Eligibility::Eligible
+            }
         }
         Some(_) => Eligibility::ExternallyManaged,
         None => Eligibility::Unsupported,

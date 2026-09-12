@@ -37,7 +37,7 @@ pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
         .describe(&describe)
         .map_err(CheckoutError::Describe)?;
     let mut format = DescribeFormatOptions::new();
-    format.always_use_long_format(true);
+    format.always_use_long_format(true).abbreviated_size(8);
     let revision = description
         .format(Some(&format))
         .map_err(CheckoutError::Describe)?;

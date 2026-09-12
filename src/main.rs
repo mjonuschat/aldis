@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use mcu_update::build::SystemCommandRunner;
+use mcu_update::checkout::revision as checkout_revision;
 use mcu_update::coordinator::BuildCoordinator;
+use mcu_update::eligibility::{CheckoutRevision, assess_mcu};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::moonraker::{McuInventory, MoonrakerClient};
 use mcu_update::plan::{UpdatePlan, build_update_plan};
@@ -17,6 +19,7 @@ fn main() -> ExitCode {
         return usage("missing command");
     };
     match command.as_str() {
+        "status" => status(args.collect()),
         "inspect" | "plan" => {
             let url = match moonraker(args.collect()) {
                 Ok(url) => url,
@@ -37,6 +40,54 @@ fn main() -> ExitCode {
         "update" => update(args.collect()),
         _ => usage("unknown command"),
     }
+}
+
+fn status(arguments: Vec<String>) -> ExitCode {
+    let (url, source) = match status_arguments(arguments) {
+        Ok(values) => values,
+        Err(error) => return usage(&error),
+    };
+    let inventory = match MoonrakerClient::new(&url).discover_mcus() {
+        Ok(inventory) => inventory,
+        Err(error) => return fail(error.to_string()),
+    };
+    let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
+    println!(
+        "Klipper source: {}\nCheckout revision: {checkout:?}",
+        source.display()
+    );
+    for mcu in &inventory.mcus {
+        let result = assess_mcu(mcu, &checkout);
+        println!(
+            "\n{}\n  app: {:?}\n  running: {:?}\n  transport: {:?}\n  eligibility: {:?}\n  revision: {:?}",
+            mcu.name, mcu.app, mcu.version, mcu.transport, result.eligibility, result.revision
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn status_arguments(arguments: Vec<String>) -> Result<(String, PathBuf), String> {
+    let mut url = DEFAULT_MOONRAKER_URL.to_owned();
+    let mut source = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("klipper"))
+        .ok_or("could not determine the invoking user's home directory")?;
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--moonraker" => {
+                url = arguments
+                    .next()
+                    .ok_or("--moonraker requires a URL")?
+                    .clone()
+            }
+            "--klipper-source" => {
+                source = PathBuf::from(arguments.next().ok_or("--klipper-source requires a path")?)
+            }
+            _ => return Err(format!("unknown status option {argument:?}")),
+        }
+    }
+    Ok((url, source))
 }
 
 fn update(args: Vec<String>) -> ExitCode {
@@ -129,7 +180,7 @@ fn fail(message: String) -> ExitCode {
 }
 fn usage(message: &str) -> ExitCode {
     eprintln!(
-        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update update <target> --klipper-source PATH --workspace NEW_PATH --yes [--moonraker URL]"
+        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target> --klipper-source PATH --workspace NEW_PATH --yes [--moonraker URL]"
     );
     ExitCode::from(2)
 }
