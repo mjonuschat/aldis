@@ -210,7 +210,7 @@ fn fail(message: String) -> ExitCode {
 }
 fn usage(message: &str) -> ExitCode {
     eprintln!(
-        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target> --klipper-source PATH --workspace NEW_PATH --yes [--moonraker URL]"
+        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target> [--force] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
     );
     ExitCode::from(2)
 }
