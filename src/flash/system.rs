@@ -94,21 +94,40 @@ pub fn serial_route(
     observed: ObservedUsbBootloader,
     kconfig: &str,
 ) -> Result<SerialFlashRoute, SystemFlashError> {
-    match select_usb_bootloader(observed).map_err(SystemFlashError::Selection)? {
-        SelectedUsbBootloader::Katapult { serial_device, .. } => {
+    let bossa_target = bossa_target_from_kconfig(kconfig);
+    match select_usb_bootloader(observed.clone()) {
+        Ok(SelectedUsbBootloader::Katapult { serial_device, .. }) => {
             Ok(SerialFlashRoute::Katapult { serial_device })
         }
-        SelectedUsbBootloader::Bossa { serial_device, .. } => Ok(SerialFlashRoute::Bossa {
+        Ok(SelectedUsbBootloader::Bossa { serial_device, .. }) => Ok(SerialFlashRoute::Bossa {
             serial_device,
-            target: bossa_target_from_kconfig(kconfig).map_err(SystemFlashError::BossaTarget)?,
+            target: bossa_target.map_err(SystemFlashError::BossaTarget)?,
         }),
-        SelectedUsbBootloader::Stm32Dfu { sysfs_path } => Ok(SerialFlashRoute::Stm32Dfu {
+        Ok(SelectedUsbBootloader::Stm32Dfu { sysfs_path }) => Ok(SerialFlashRoute::Stm32Dfu {
             sysfs_path,
             target: target_from_kconfig(kconfig).map_err(SystemFlashError::Stm32Target)?,
         }),
-        SelectedUsbBootloader::PicoBoot { sysfs_path } => {
+        Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
         }
+        Err(UsbBootloaderSelectionError::Unsupported { .. }) => {
+            let target = bossa_target.map_err(|_| {
+                SystemFlashError::Selection(UsbBootloaderSelectionError::Unsupported {
+                    usb_id: observed.usb_id.clone(),
+                    manufacturer: observed.manufacturer.clone(),
+                })
+            })?;
+            let serial_device = observed.serial_device.ok_or_else(|| {
+                SystemFlashError::Selection(UsbBootloaderSelectionError::BossaSerialDeviceMissing(
+                    observed.sysfs_path.clone(),
+                ))
+            })?;
+            Ok(SerialFlashRoute::Bossa {
+                serial_device,
+                target,
+            })
+        }
+        Err(error) => Err(SystemFlashError::Selection(error)),
     }
 }
 

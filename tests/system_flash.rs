@@ -37,6 +37,15 @@ fn routes_each_supported_serial_bootloader_from_its_observed_identity() {
 }
 
 #[test]
+fn routes_unknown_serial_bootloaders_as_bossa_when_kconfig_requires_bossa() {
+    assert!(matches!(
+        serial_route(observed("239a:000b"), "CONFIG_SAMD_FLASH_START_4000=y\n"),
+        Ok(SerialFlashRoute::Bossa { serial_device, target })
+            if serial_device == Path::new("/dev/ttyACM0") && target.offset == 0x4000
+    ));
+}
+
+#[test]
 fn rejects_unknown_observed_bootloaders_before_selecting_a_route() {
     assert!(matches!(
         serial_route(observed("1234:5678"), "CONFIG_STM32_FLASH_START_2000=y\n"),
@@ -57,5 +66,9 @@ fn requires_a_valid_stm32_application_address_only_for_dfuse() {
     assert!(matches!(
         serial_route(observed("2886:002f"), ""),
         Err(SystemFlashError::BossaTarget(_))
+    ));
+    assert!(matches!(
+        serial_route(observed("239a:000b"), ""),
+        Err(SystemFlashError::Selection(_))
     ));
 }
