@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -5,7 +6,7 @@ use std::time::Duration;
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::revision as checkout_revision;
 use mcu_update::coordinator::BuildCoordinator;
-use mcu_update::eligibility::{CheckoutRevision, assess_mcu};
+use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::moonraker::{McuInventory, MoonrakerClient};
 use mcu_update::plan::{UpdatePlan, build_update_plan};
@@ -95,13 +96,15 @@ fn update(args: Vec<String>) -> ExitCode {
         return usage("update requires an MCU target");
     };
     let mut url = DEFAULT_MOONRAKER_URL.to_owned();
-    let mut source = None;
+    let mut source = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("klipper"));
     let mut workspace = None;
-    let mut yes = false;
+    let mut force = false;
     let mut it = options.iter();
     while let Some(option) = it.next() {
         match option.as_str() {
-            "--yes" => yes = true,
+            "--force" => force = true,
             "--moonraker" => match it.next() {
                 Some(v) => url = v.clone(),
                 None => return usage("--moonraker requires a URL"),
@@ -117,9 +120,11 @@ fn update(args: Vec<String>) -> ExitCode {
             _ => return usage("unknown update option"),
         }
     }
-    let (Some(source), Some(workspace)) = (source, workspace) else {
-        return usage("update requires --klipper-source PATH and --workspace PATH");
+    let Some(source) = source else {
+        return usage("could not determine the invoking user's home directory");
     };
+    let workspace = workspace
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("mcu-update-{}", std::process::id())));
     let inventory = match MoonrakerClient::new(&url).discover_mcus() {
         Ok(v) => v,
         Err(e) => return fail(e.to_string()),
@@ -128,6 +133,21 @@ fn update(args: Vec<String>) -> ExitCode {
     let Some(selected) = plan.targets.iter().find(|v| v.name == *target) else {
         return fail(format!("MCU target {target:?} is not in the update plan"));
     };
+    let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
+    let mcu = inventory
+        .mcus
+        .iter()
+        .find(|mcu| mcu.name == *target)
+        .expect("plan target was discovered");
+    let selection = if force {
+        UpdateSelection::Force(target.clone())
+    } else {
+        UpdateSelection::Required
+    };
+    if !is_selected(mcu, &checkout, &selection) {
+        println!("skipped: target is not eligible for the requested update selection");
+        return ExitCode::SUCCESS;
+    }
     println!(
         "target: {} ({})\ntransport: {:?}\nworkspace: {}",
         selected.name,
@@ -135,8 +155,12 @@ fn update(args: Vec<String>) -> ExitCode {
         selected.transport,
         workspace.display()
     );
-    if !yes {
-        return usage("confirmation required: rerun with --yes to stop Klipper, build, and flash");
+    eprint!("Update {}? [y/N] ", selected.name);
+    if io::stderr().flush().is_err()
+        || !matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
+    {
+        println!("skipped: confirmation declined");
+        return ExitCode::SUCCESS;
     }
     let workspace = match RunWorkspace::create(workspace) {
         Ok(v) => v,
@@ -165,6 +189,12 @@ fn update(args: Vec<String>) -> ExitCode {
         }
         Err(e) => fail(format!("update failed: {e:?}")),
     }
+}
+
+fn read_confirmation() -> Result<String, io::Error> {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_ascii_lowercase())
 }
 
 fn moonraker(args: Vec<String>) -> Result<String, String> {
