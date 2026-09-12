@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 const KATAPULT_USB_ID: &str = "1d50:6177";
+const XIAO_SAMD21_BOSSA_USB_ID: &str = "2886:002f";
 const STM32_DFU_USB_ID: &str = "0483:df11";
 const PICOBOOT_USB_IDS: &[&str] = &["2e8a:0003", "2e8a:000f"];
 
@@ -11,6 +12,8 @@ const PICOBOOT_USB_IDS: &[&str] = &["2e8a:0003", "2e8a:000f"];
 pub enum UsbBootloaderKind {
     /// Katapult's USB serial bootloader.
     Katapult,
+    /// BOSSA-compatible SAM-BA USB CDC bootloader.
+    Bossa,
     /// STM32's built-in USB DFU bootloader.
     Stm32Dfu,
     /// Raspberry Pi's RP2040 or RP2350 PicoBoot ROM bootloader.
@@ -47,6 +50,13 @@ pub enum SelectedUsbBootloader {
         /// Katapult's serial device at that topology.
         serial_device: PathBuf,
     },
+    /// BOSSA-compatible SAM-BA serial bootloader device and USB topology.
+    Bossa {
+        /// Linux sysfs path identifying the physical USB topology.
+        sysfs_path: PathBuf,
+        /// BOSSA's serial device at that topology.
+        serial_device: PathBuf,
+    },
     /// STM32 ROM DFU at one USB topology.
     Stm32Dfu {
         /// Linux sysfs path identifying the physical USB topology.
@@ -71,6 +81,8 @@ pub enum UsbBootloaderSelectionError {
     },
     /// Katapult appeared without a unique serial device at its topology.
     KatapultSerialDeviceMissing(PathBuf),
+    /// BOSSA appeared without a unique serial device at its topology.
+    BossaSerialDeviceMissing(PathBuf),
 }
 
 /// Selects a native backend only from one observed USB bootloader identity.
@@ -84,6 +96,16 @@ pub fn select_usb_bootloader(
                 UsbBootloaderSelectionError::KatapultSerialDeviceMissing(sysfs_path.clone())
             })?;
             Ok(SelectedUsbBootloader::Katapult {
+                sysfs_path,
+                serial_device,
+            })
+        }
+        Some(UsbBootloaderKind::Bossa) => {
+            let sysfs_path = observed.sysfs_path;
+            let serial_device = observed.serial_device.ok_or_else(|| {
+                UsbBootloaderSelectionError::BossaSerialDeviceMissing(sysfs_path.clone())
+            })?;
+            Ok(SelectedUsbBootloader::Bossa {
                 sysfs_path,
                 serial_device,
             })
@@ -106,6 +128,8 @@ pub fn classify_usb_identity(usb_id: &str, manufacturer: &str) -> Option<UsbBoot
     if usb_id.eq_ignore_ascii_case(KATAPULT_USB_ID) || manufacturer.eq_ignore_ascii_case("katapult")
     {
         Some(UsbBootloaderKind::Katapult)
+    } else if usb_id.eq_ignore_ascii_case(XIAO_SAMD21_BOSSA_USB_ID) {
+        Some(UsbBootloaderKind::Bossa)
     } else if usb_id.eq_ignore_ascii_case(STM32_DFU_USB_ID) {
         Some(UsbBootloaderKind::Stm32Dfu)
     } else if PICOBOOT_USB_IDS

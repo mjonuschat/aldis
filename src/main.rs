@@ -8,6 +8,7 @@ use mcu_update::checkout::revision as checkout_revision;
 use mcu_update::coordinator::BuildCoordinator;
 use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
+use mcu_update::flash::system::SystemFlashOptions;
 use mcu_update::moonraker::{McuInventory, MoonrakerClient};
 use mcu_update::plan::build_update_plan;
 use mcu_update::workspace::RunWorkspace;
@@ -162,20 +163,23 @@ fn update(args: Vec<String>) -> ExitCode {
         Ok(v) => v,
         Err(e) => return fail(e.to_string()),
     };
-    let coordinator = BuildCoordinator::new(source, SystemCommandRunner, SystemCommandRunner);
-    let options = SystemKatapultOptions {
-        baud_rate: 250_000,
-        bootloader_timeout: Duration::from_secs(10),
-        poll_interval: Duration::from_millis(50),
-        read_timeout: Duration::from_millis(100),
-        can_bootloader_settle: Duration::from_millis(100),
+    let coordinator = BuildCoordinator::new(&source, SystemCommandRunner, SystemCommandRunner);
+    let options = SystemFlashOptions {
+        katapult: SystemKatapultOptions {
+            baud_rate: 250_000,
+            bootloader_timeout: Duration::from_secs(10),
+            poll_interval: Duration::from_millis(50),
+            read_timeout: Duration::from_millis(100),
+            can_bootloader_settle: Duration::from_millis(100),
+        },
+        bossac_program: source.join("lib/bossac/bin/bossac"),
     };
     for name in accepted {
         let pending = match coordinator.prepare(&inventory, &plan, &workspace, &name) {
             Ok(v) => v,
             Err(e) => return fail(e.to_string()),
         };
-        match coordinator.execute_and_flash_system(pending.approve(), options) {
+        match coordinator.execute_and_flash_system(pending.approve(), options.clone()) {
             Ok(v) => println!(
                 "flashed {} bytes from {}",
                 v.flash.padded_bytes,

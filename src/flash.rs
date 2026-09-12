@@ -1,5 +1,6 @@
 //! Native firmware flashing interfaces and transport implementations.
 
+pub mod bossa;
 pub mod katapult;
 pub mod picoboot;
 pub mod stm32_dfu;

@@ -6,6 +6,10 @@ use std::thread;
 
 use crate::flash::FlashBackend;
 use crate::flash::FlashResult;
+use crate::flash::bossa::{
+    BossaError, BossaTarget, flash_system as flash_bossa,
+    target_from_kconfig as bossa_target_from_kconfig,
+};
 use crate::flash::katapult::backend::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloader};
 use crate::flash::katapult::can::SocketCanIo;
@@ -27,6 +31,13 @@ use crate::prepare::PreparedBuild;
 pub enum SerialFlashRoute {
     /// Katapult's serial bootloader device.
     Katapult { serial_device: PathBuf },
+    /// BOSSA-compatible SAM-BA serial bootloader and its Kconfig-derived offset.
+    Bossa {
+        /// BOSSA serial device at the observed topology.
+        serial_device: PathBuf,
+        /// Application placement derived from the prepared Kconfig.
+        target: BossaTarget,
+    },
     /// STM32 ROM DFU and its Kconfig-derived application target.
     Stm32Dfu {
         /// USB topology retained across re-enumeration.
@@ -36,6 +47,15 @@ pub enum SerialFlashRoute {
     },
     /// RP2040/RP2350 PicoBoot at one USB topology.
     PicoBoot { sysfs_path: PathBuf },
+}
+
+/// Settings for topology-scoped native flashing backends.
+#[derive(Clone, Debug)]
+pub struct SystemFlashOptions {
+    /// Timing and baud settings for Katapult.
+    pub katapult: SystemKatapultOptions,
+    /// `bossac` executable used for BOSSA-compatible SAMD bootloaders.
+    pub bossac_program: PathBuf,
 }
 
 /// A selected update cannot be dispatched to a native backend.
@@ -49,6 +69,8 @@ pub enum SystemFlashError {
     Selection(UsbBootloaderSelectionError),
     /// The observed STM32 route has no valid Kconfig application address.
     Stm32Target(Stm32DfuError),
+    /// The observed BOSSA route has no valid Kconfig application offset.
+    BossaTarget(BossaError),
     /// The Katapult USB serial device could not be opened.
     KatapultOpen(serialport::Error),
     /// Katapult rejected or could not verify its USB serial transfer.
@@ -57,6 +79,8 @@ pub enum SystemFlashError {
     Stm32Dfu(Stm32DfuError),
     /// PicoBoot flashing failed.
     PicoBoot(PicoBootError),
+    /// BOSSA flashing failed.
+    Bossa(BossaError),
     /// The CAN socket could not be opened.
     CanSocket(io::Error),
     /// Katapult CAN bootloader entry or node assignment failed.
@@ -74,6 +98,10 @@ pub fn serial_route(
         SelectedUsbBootloader::Katapult { serial_device, .. } => {
             Ok(SerialFlashRoute::Katapult { serial_device })
         }
+        SelectedUsbBootloader::Bossa { serial_device, .. } => Ok(SerialFlashRoute::Bossa {
+            serial_device,
+            target: bossa_target_from_kconfig(kconfig).map_err(SystemFlashError::BossaTarget)?,
+        }),
         SelectedUsbBootloader::Stm32Dfu { sysfs_path } => Ok(SerialFlashRoute::Stm32Dfu {
             sysfs_path,
             target: target_from_kconfig(kconfig).map_err(SystemFlashError::Stm32Target)?,
@@ -88,7 +116,7 @@ pub fn serial_route(
 pub fn flash_prepared_system(
     prepared: &PreparedBuild,
     firmware: &[u8],
-    options: SystemKatapultOptions,
+    options: SystemFlashOptions,
 ) -> Result<FlashResult, SystemFlashError> {
     match prepared
         .transport
@@ -108,23 +136,32 @@ fn flash_serial_system(
     running_device: &str,
     kconfig: &str,
     firmware: &[u8],
-    options: SystemKatapultOptions,
+    options: SystemFlashOptions,
 ) -> Result<FlashResult, SystemFlashError> {
     let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
         std::path::Path::new(running_device),
-        options.bootloader_timeout,
-        options.poll_interval,
+        options.katapult.bootloader_timeout,
+        options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::Bootloader)?;
     match serial_route(observed, kconfig)? {
         SerialFlashRoute::Katapult { serial_device } => {
-            let io = SystemSerialIo::open(&serial_device, options.baud_rate, options.read_timeout)
-                .map_err(SystemFlashError::KatapultOpen)?;
+            let io = SystemSerialIo::open(
+                &serial_device,
+                options.katapult.baud_rate,
+                options.katapult.read_timeout,
+            )
+            .map_err(SystemFlashError::KatapultOpen)?;
             let mut backend = KatapultBackend::new(KatapultSerialTransport::new(io));
             backend
                 .flash(firmware)
                 .map_err(SystemFlashError::KatapultFlash)
         }
+        SerialFlashRoute::Bossa {
+            serial_device,
+            target,
+        } => flash_bossa(&options.bossac_program, &serial_device, target, firmware)
+            .map_err(SystemFlashError::Bossa),
         SerialFlashRoute::Stm32Dfu { sysfs_path, target } => flash_stm32_at_path(
             crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
             &sysfs_path,
@@ -142,12 +179,12 @@ fn flash_can_system(
     interface: &str,
     uuid: u64,
     firmware: &[u8],
-    options: SystemKatapultOptions,
+    options: SystemFlashOptions,
 ) -> Result<FlashResult, SystemFlashError> {
-    let io =
-        SocketCanIo::open(interface, options.read_timeout).map_err(SystemFlashError::CanSocket)?;
+    let io = SocketCanIo::open(interface, options.katapult.read_timeout)
+        .map_err(SystemFlashError::CanSocket)?;
     let bootstrap = request_can_bootloader(io, uuid).map_err(SystemFlashError::Can)?;
-    thread::sleep(options.can_bootloader_settle);
+    thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;
     backend.flash(firmware).map_err(SystemFlashError::CanFlash)
 }

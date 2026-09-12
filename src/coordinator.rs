@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use crate::build::{BuildArtifact, BuildError, CommandRunner, KlipperBuilder};
 use crate::flash::FlashResult;
-use crate::flash::katapult::system::SystemKatapultOptions;
-use crate::flash::system::{SystemFlashError, flash_prepared_system};
+use crate::flash::system::{SystemFlashError, SystemFlashOptions, flash_prepared_system};
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
@@ -190,7 +189,7 @@ where
     pub fn execute_and_flash_system(
         &self,
         approved: ApprovedBuild,
-        options: SystemKatapultOptions,
+        options: SystemFlashOptions,
     ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
         self.execute_and_flash(approved, |prepared, firmware| {
             flash_prepared_system(prepared, firmware, options)

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mcu_update::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderKind, UsbBootloaderSelectionError,
@@ -26,6 +26,10 @@ fn classifies_supported_usb_bootloaders_case_insensitively() {
     assert_eq!(
         classify_usb_identity("2e8a:000f", "Raspberry Pi"),
         Some(UsbBootloaderKind::PicoBoot)
+    );
+    assert_eq!(
+        classify_usb_identity("2886:002f", "Seeed Studio"),
+        Some(UsbBootloaderKind::Bossa)
     );
 }
 
@@ -59,6 +63,11 @@ fn selects_supported_bootloaders_only_at_the_observed_topology() {
         select_usb_bootloader(observed("2e8a:0003")),
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path: path }) if path == sysfs_path
     ));
+    assert!(matches!(
+        select_usb_bootloader(observed("2886:002f")),
+        Ok(SelectedUsbBootloader::Bossa { sysfs_path: path, serial_device })
+            if path == sysfs_path && serial_device == Path::new("/dev/ttyACM0")
+    ));
 }
 
 #[test]
@@ -89,5 +98,21 @@ fn rejects_katapult_without_a_serial_device_at_its_topology() {
     assert!(matches!(
         select_usb_bootloader(observed),
         Err(UsbBootloaderSelectionError::KatapultSerialDeviceMissing(path)) if path == sysfs_path
+    ));
+}
+
+#[test]
+fn rejects_bossa_without_a_serial_device_at_its_topology() {
+    let sysfs_path = PathBuf::from("/sys/devices/platform/usb/1-1.5");
+    let observed = ObservedUsbBootloader {
+        sysfs_path: sysfs_path.clone(),
+        usb_id: "2886:002f".to_owned(),
+        manufacturer: "Seeed Studio".to_owned(),
+        serial_device: None,
+    };
+
+    assert!(matches!(
+        select_usb_bootloader(observed),
+        Err(UsbBootloaderSelectionError::BossaSerialDeviceMissing(path)) if path == sysfs_path
     ));
 }
