@@ -9,7 +9,7 @@ use mcu_update::coordinator::BuildCoordinator;
 use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::moonraker::{McuInventory, MoonrakerClient};
-use mcu_update::plan::{UpdatePlan, build_update_plan};
+use mcu_update::plan::build_update_plan;
 use mcu_update::workspace::RunWorkspace;
 
 const DEFAULT_MOONRAKER_URL: &str = "http://127.0.0.1:7125";
@@ -21,18 +21,14 @@ fn main() -> ExitCode {
     };
     match command.as_str() {
         "status" => status(args.collect()),
-        "inspect" | "plan" => {
+        "inspect" => {
             let url = match moonraker(args.collect()) {
                 Ok(url) => url,
                 Err(e) => return usage(&e),
             };
             match MoonrakerClient::new(&url).discover_mcus() {
-                Ok(inventory) if command == "inspect" => {
-                    print_inventory(&url, &inventory);
-                    ExitCode::SUCCESS
-                }
                 Ok(inventory) => {
-                    print_plan(&url, &build_update_plan(&inventory));
+                    print_inventory(&url, &inventory);
                     ExitCode::SUCCESS
                 }
                 Err(error) => fail(error.to_string()),
@@ -210,21 +206,9 @@ fn fail(message: String) -> ExitCode {
 }
 fn usage(message: &str) -> ExitCode {
     eprintln!(
-        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target>|--all [--force] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
+        "error: {message}\nusage: mcu-update <inspect> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target>|--all [--force] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
     );
     ExitCode::from(2)
-}
-fn print_plan(url: &str, plan: &UpdatePlan) {
-    println!(
-        "phase: plan\nMoonraker: {url}\nMCUs: {}",
-        plan.targets.len()
-    );
-    for target in &plan.targets {
-        println!("\n{} ({})", target.name, target.mcu);
-        for step in &target.steps {
-            println!("  - {}", step.label());
-        }
-    }
 }
 fn print_inventory(url: &str, inventory: &McuInventory) {
     println!(
