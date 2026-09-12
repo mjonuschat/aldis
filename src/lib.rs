@@ -4,7 +4,9 @@
 compile_error!("mcu-update supports Linux hosts only");
 
 pub mod build;
+pub mod checkout;
 pub mod coordinator;
+pub mod eligibility;
 pub mod flash;
 pub mod moonraker;
 pub mod plan;
