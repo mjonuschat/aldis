@@ -92,8 +92,10 @@ fn status_arguments(arguments: Vec<String>) -> Result<(String, PathBuf), String>
 }
 
 fn update(args: Vec<String>) -> ExitCode {
-    let Some((target, options)) = args.split_first() else {
-        return usage("update requires an MCU target");
+    let (target, options) = match args.split_first() {
+        Some((target, options)) if target == "--all" => (None, options),
+        Some((target, options)) => (Some(target), options),
+        None => return usage("update requires an MCU target or --all"),
     };
     let mut url = DEFAULT_MOONRAKER_URL.to_owned();
     let mut source = std::env::var_os("HOME")
@@ -117,6 +119,7 @@ fn update(args: Vec<String>) -> ExitCode {
                 Some(v) => workspace = Some(PathBuf::from(v)),
                 None => return usage("--workspace requires a path"),
             },
+            "--all" if target.is_none() => {}
             _ => return usage("unknown update option"),
         }
     }
@@ -130,36 +133,33 @@ fn update(args: Vec<String>) -> ExitCode {
         Err(e) => return fail(e.to_string()),
     };
     let plan = build_update_plan(&inventory);
-    let Some(selected) = plan.targets.iter().find(|v| v.name == *target) else {
-        return fail(format!("MCU target {target:?} is not in the update plan"));
-    };
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    let mcu = inventory
+    let selection = match target {
+        Some(target) if force => UpdateSelection::Force(target.clone()),
+        Some(_) => UpdateSelection::Required,
+        None => UpdateSelection::All,
+    };
+    let offered = inventory
         .mcus
         .iter()
-        .find(|mcu| mcu.name == *target)
-        .expect("plan target was discovered");
-    let selection = if force {
-        UpdateSelection::Force(target.clone())
-    } else {
-        UpdateSelection::Required
-    };
-    if !is_selected(mcu, &checkout, &selection) {
-        println!("skipped: target is not eligible for the requested update selection");
+        .filter(|mcu| target.is_none() || Some(&mcu.name) == target)
+        .filter(|mcu| is_selected(mcu, &checkout, &selection))
+        .map(|mcu| mcu.name.clone())
+        .collect::<Vec<_>>();
+    if offered.is_empty() {
+        println!("no eligible MCUs require an update");
         return ExitCode::SUCCESS;
     }
-    println!(
-        "target: {} ({})\ntransport: {:?}\nworkspace: {}",
-        selected.name,
-        selected.mcu,
-        selected.transport,
-        workspace.display()
-    );
-    eprint!("Update {}? [y/N] ", selected.name);
-    if io::stderr().flush().is_err()
-        || !matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
-    {
-        println!("skipped: confirmation declined");
+    let accepted = offered
+        .into_iter()
+        .filter(|name| {
+            eprint!("Update {name}? [y/N] ");
+            let _ = io::stderr().flush();
+            matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
+        })
+        .collect::<Vec<_>>();
+    if accepted.is_empty() {
+        println!("no updates confirmed");
         return ExitCode::SUCCESS;
     }
     let workspace = match RunWorkspace::create(workspace) {
@@ -167,10 +167,6 @@ fn update(args: Vec<String>) -> ExitCode {
         Err(e) => return fail(e.to_string()),
     };
     let coordinator = BuildCoordinator::new(source, SystemCommandRunner, SystemCommandRunner);
-    let pending = match coordinator.prepare(&inventory, &plan, &workspace, target) {
-        Ok(v) => v,
-        Err(e) => return fail(e.to_string()),
-    };
     let options = SystemKatapultOptions {
         baud_rate: 250_000,
         bootloader_timeout: Duration::from_secs(10),
@@ -178,17 +174,21 @@ fn update(args: Vec<String>) -> ExitCode {
         read_timeout: Duration::from_millis(100),
         can_bootloader_settle: Duration::from_millis(100),
     };
-    match coordinator.execute_and_flash_system(pending.approve(), options) {
-        Ok(v) => {
-            println!(
+    for name in accepted {
+        let pending = match coordinator.prepare(&inventory, &plan, &workspace, &name) {
+            Ok(v) => v,
+            Err(e) => return fail(e.to_string()),
+        };
+        match coordinator.execute_and_flash_system(pending.approve(), options) {
+            Ok(v) => println!(
                 "flashed {} bytes from {}",
                 v.flash.padded_bytes,
                 v.artifact.path.display()
-            );
-            ExitCode::SUCCESS
+            ),
+            Err(e) => return fail(format!("update failed: {e:?}")),
         }
-        Err(e) => fail(format!("update failed: {e:?}")),
     }
+    ExitCode::SUCCESS
 }
 
 fn read_confirmation() -> Result<String, io::Error> {
@@ -210,7 +210,7 @@ fn fail(message: String) -> ExitCode {
 }
 fn usage(message: &str) -> ExitCode {
     eprintln!(
-        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target> [--force] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
+        "error: {message}\nusage: mcu-update <inspect|plan> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target>|--all [--force] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
     );
     ExitCode::from(2)
 }
