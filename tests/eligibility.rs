@@ -1,4 +1,6 @@
-use mcu_update::eligibility::{CheckoutRevision, Eligibility, RevisionStatus, assess_mcu};
+use mcu_update::eligibility::{
+    CheckoutRevision, Eligibility, RevisionStatus, UpdateSelection, assess_mcu, is_selected,
+};
 use mcu_update::moonraker::Mcu;
 
 fn mcu(app: Option<&str>, version: Option<&str>, kconfig: &str) -> Mcu {
@@ -58,4 +60,29 @@ fn compares_only_known_eligible_revisions() {
         &CheckoutRevision::Indeterminate,
     );
     assert_eq!(unknown.revision, Some(RevisionStatus::Indeterminate));
+}
+
+#[test]
+fn selects_only_outdated_eligible_mcus_unless_explicitly_overridden() {
+    let current = mcu(Some("Klipper"), Some("v1"), "CONFIG=x\n");
+    let outdated = mcu(Some("Klipper"), Some("v0"), "CONFIG=x\n");
+    let external = mcu(Some("Beacon"), Some("v0"), "CONFIG=x\n");
+    let checkout = CheckoutRevision::Known("v1".to_owned());
+    assert!(!is_selected(
+        &current,
+        &checkout,
+        &UpdateSelection::Required
+    ));
+    assert!(is_selected(
+        &outdated,
+        &checkout,
+        &UpdateSelection::Required
+    ));
+    assert!(is_selected(&current, &checkout, &UpdateSelection::All));
+    assert!(is_selected(
+        &current,
+        &checkout,
+        &UpdateSelection::Force("mcu".to_owned())
+    ));
+    assert!(!is_selected(&external, &checkout, &UpdateSelection::All));
 }
