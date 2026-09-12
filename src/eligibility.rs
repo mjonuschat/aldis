@@ -42,6 +42,30 @@ pub struct McuStatus {
     pub revision: Option<RevisionStatus>,
 }
 
+/// Policy controlling which eligible MCUs may be offered for update.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpdateSelection {
+    /// Offer only known out-of-date MCUs.
+    Required,
+    /// Offer one named eligible MCU regardless of revision state.
+    Force(String),
+    /// Offer every eligible MCU regardless of revision state.
+    All,
+}
+
+/// Returns whether one MCU is eligible for the requested update selection.
+pub fn is_selected(mcu: &Mcu, checkout: &CheckoutRevision, selection: &UpdateSelection) -> bool {
+    let status = assess_mcu(mcu, checkout);
+    if status.eligibility != Eligibility::Eligible {
+        return false;
+    }
+    match selection {
+        UpdateSelection::Required => status.revision == Some(RevisionStatus::UpdateRequired),
+        UpdateSelection::Force(name) => mcu.name == *name,
+        UpdateSelection::All => true,
+    }
+}
+
 /// Classifies one MCU and compares its revision when eligible.
 pub fn assess_mcu(mcu: &Mcu, checkout: &CheckoutRevision) -> McuStatus {
     let eligibility = classify_mcu(mcu);
