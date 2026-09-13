@@ -23,6 +23,8 @@ pub struct BuildArtifact {
     pub path: PathBuf,
     /// Artifact size in bytes.
     pub byte_count: u64,
+    /// Kconfig after Klipper has expanded defaults with `olddefconfig`.
+    pub kconfig: String,
 }
 
 /// A fully specified command invocation without shell interpolation.
@@ -207,13 +209,20 @@ where
             "olddefconfig".to_owned(),
             kconfig_argument(config_path),
         ])?;
+        let expanded_kconfig =
+            fs::read_to_string(&request.config_path).map_err(|source| BuildError::Io {
+                action: "read the expanded Kconfig",
+                source,
+            })?;
         self.run_make(vec![kconfig_argument(config_path)])?;
 
         fs::create_dir_all(artifact_parent).map_err(|source| BuildError::Io {
             action: "create the artifact directory",
             source,
         })?;
-        let source_artifact = self.source_dir.join(output_artifact_name(&request.kconfig));
+        let source_artifact = self
+            .source_dir
+            .join(output_artifact_name(&expanded_kconfig));
         fs::copy(&source_artifact, &request.artifact_path).map_err(|source| BuildError::Io {
             action: "copy Klipper's firmware artifact",
             source,
@@ -228,6 +237,7 @@ where
         Ok(BuildArtifact {
             path: request.artifact_path.clone(),
             byte_count,
+            kconfig: expanded_kconfig,
         })
     }
 

@@ -93,6 +93,12 @@ pub fn classify_mcu(mcu: &Mcu) -> Eligibility {
             }
         }
         Some(_) => Eligibility::ExternallyManaged,
-        None => Eligibility::Unsupported,
+        None => {
+            if mcu.kconfig.trim().is_empty() {
+                Eligibility::Unsupported
+            } else {
+                Eligibility::Eligible
+            }
+        }
     }
 }

@@ -16,7 +16,7 @@ fn mcu(app: Option<&str>, version: Option<&str>, kconfig: &str) -> Mcu {
 }
 
 #[test]
-fn classifies_supported_external_and_legacy_firmware_without_inference() {
+fn classifies_supported_external_and_legacy_firmware_from_reported_metadata() {
     assert_eq!(
         assess_mcu(
             &mcu(Some("Klipper"), Some("v1"), "CONFIG=x\n"),
@@ -41,6 +41,17 @@ fn classifies_supported_external_and_legacy_firmware_without_inference() {
         .eligibility,
         Eligibility::Unsupported
     );
+}
+
+#[test]
+fn accepts_mainline_klipper_metadata_without_an_app_field() {
+    let status = assess_mcu(
+        &mcu(None, Some("v0.13.0"), "CONFIG_MACH_ATSAMD=y\n"),
+        &CheckoutRevision::Known("v0.13.0".to_owned()),
+    );
+
+    assert_eq!(status.eligibility, Eligibility::Eligible);
+    assert_eq!(status.revision, Some(RevisionStatus::Current));
 }
 
 #[test]

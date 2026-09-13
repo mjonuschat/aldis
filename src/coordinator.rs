@@ -173,10 +173,11 @@ where
         approved: ApprovedBuild,
         flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, E>,
     ) -> Result<CompletedUpdate, FlashCoordinatorError<E>> {
-        let prepared = approved.pending.prepared.clone();
+        let mut prepared = approved.pending.prepared.clone();
         let artifact = self
             .execute(approved)
             .map_err(FlashCoordinatorError::Coordinator)?;
+        prepared.request.kconfig = artifact.kconfig.clone();
         let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
         let flash = flash(&prepared, &firmware).map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
