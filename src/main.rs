@@ -1,10 +1,10 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use mcu_update::build::SystemCommandRunner;
-use mcu_update::checkout::revision as checkout_revision;
+use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use mcu_update::coordinator::BuildCoordinator;
 use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
@@ -100,10 +100,12 @@ fn update(args: Vec<String>) -> ExitCode {
         .map(|home| home.join("klipper"));
     let mut workspace = None;
     let mut force = false;
+    let mut pull = false;
     let mut it = options.iter();
     while let Some(option) = it.next() {
         match option.as_str() {
             "--force" => force = true,
+            "--pull" => pull = true,
             "--moonraker" => match it.next() {
                 Some(v) => url = v.clone(),
                 None => return usage("--moonraker requires a URL"),
@@ -123,6 +125,22 @@ fn update(args: Vec<String>) -> ExitCode {
     let Some(source) = source else {
         return usage("could not determine the invoking user's home directory");
     };
+    if pull || (io::stdin().is_terminal() && confirm_pull()) {
+        let refreshed = match refresh_checkout(&source) {
+            Ok(refreshed) => refreshed,
+            Err(error) => return fail(error.to_string()),
+        };
+        println!(
+            "Klipper source refresh: {:?} -> {:?}{}",
+            refreshed.before,
+            refreshed.after,
+            if refreshed.advanced {
+                " (fast-forwarded)"
+            } else {
+                " (current)"
+            }
+        );
+    }
     let workspace = workspace
         .unwrap_or_else(|| std::env::temp_dir().join(format!("mcu-update-{}", std::process::id())));
     let inventory = match MoonrakerClient::new(&url).discover_mcus() {
@@ -191,6 +209,12 @@ fn update(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn confirm_pull() -> bool {
+    eprint!("Pull the configured Klipper upstream before updating? [Y/n] ");
+    let _ = io::stderr().flush();
+    matches!(read_confirmation().as_deref(), Ok("") | Ok("y") | Ok("yes"))
+}
+
 fn read_confirmation() -> Result<String, io::Error> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -210,7 +234,7 @@ fn fail(message: String) -> ExitCode {
 }
 fn usage(message: &str) -> ExitCode {
     eprintln!(
-        "error: {message}\nusage: mcu-update <inspect> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target>|--all [--force] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
+        "error: {message}\nusage: mcu-update <inspect> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target>|--all [--force] [--pull] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
     );
     ExitCode::from(2)
 }

@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use git2::{DescribeFormatOptions, DescribeOptions, Repository, StatusOptions};
+use git2::{
+    BranchType, DescribeFormatOptions, DescribeOptions, FetchOptions, Repository, StatusOptions,
+    build::CheckoutBuilder,
+};
 
 use crate::eligibility::CheckoutRevision;
 
@@ -15,22 +18,87 @@ pub enum CheckoutError {
     Describe(git2::Error),
     /// Worktree state could not be checked.
     Status(git2::Error),
+    /// The checked-out branch does not name an upstream to refresh from.
+    UpstreamNotConfigured,
+    /// The fetched upstream cannot be applied without a merge or rebase.
+    NotFastForward {
+        /// The current local branch name.
+        branch: String,
+        /// The configured upstream branch name.
+        upstream: String,
+    },
+    /// Fetching, checking out, or updating the configured upstream failed.
+    Refresh {
+        /// The refresh operation that failed.
+        action: &'static str,
+        /// The underlying libgit2 error.
+        source: git2::Error,
+    },
 }
 
-/// Returns a clean checkout revision, or an indeterminate state for dirty worktrees.
+impl std::fmt::Display for CheckoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Repository(error) => {
+                write!(formatter, "could not open the Klipper checkout: {error}")
+            }
+            Self::Describe(error) => write!(
+                formatter,
+                "could not describe the Klipper checkout: {error}"
+            ),
+            Self::Status(error) => {
+                write!(formatter, "could not inspect the Klipper checkout: {error}")
+            }
+            Self::UpstreamNotConfigured => write!(
+                formatter,
+                "the checked-out Klipper branch has no configured upstream"
+            ),
+            Self::NotFastForward { branch, upstream } => write!(
+                formatter,
+                "cannot fast-forward {branch} from {upstream}; resolve the divergence before updating firmware"
+            ),
+            Self::Refresh { action, source } => {
+                write!(
+                    formatter,
+                    "could not {action} the Klipper checkout: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CheckoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Repository(error) | Self::Describe(error) | Self::Status(error) => Some(error),
+            Self::Refresh { source, .. } => Some(source),
+            Self::UpstreamNotConfigured | Self::NotFastForward { .. } => None,
+        }
+    }
+}
+
+/// A successful fast-forward-only source refresh.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefreshResult {
+    /// The checkout revision before fetching the configured upstream.
+    pub before: CheckoutRevision,
+    /// The checkout revision after completing the refresh.
+    pub after: CheckoutRevision,
+    /// Whether the local branch advanced to a newer commit.
+    pub advanced: bool,
+}
+
+/// Returns the checkout revision, including a dirty suffix for tracked changes.
 pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
     let repository = Repository::open(path).map_err(CheckoutError::Repository)?;
     let mut statuses = StatusOptions::new();
     statuses
-        .include_untracked(true)
-        .recurse_untracked_dirs(true);
-    if !repository
+        .include_untracked(false)
+        .recurse_untracked_dirs(false);
+    let dirty = !repository
         .statuses(Some(&mut statuses))
         .map_err(CheckoutError::Status)?
-        .is_empty()
-    {
-        return Ok(CheckoutRevision::Indeterminate);
-    }
+        .is_empty();
     let mut describe = DescribeOptions::new();
     describe.describe_tags().show_commit_oid_as_fallback(true);
     let description = repository
@@ -41,5 +109,130 @@ pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
     let revision = description
         .format(Some(&format))
         .map_err(CheckoutError::Describe)?;
+    let revision = if dirty {
+        format!("{revision}-dirty")
+    } else {
+        revision
+    };
     Ok(CheckoutRevision::Known(revision))
+}
+
+/// Fetches the checked-out branch's configured upstream and applies only a fast-forward.
+///
+/// Local modifications are retained when they do not conflict with the upstream tree. A
+/// divergent branch is left unchanged so the operator can resolve it with their normal Git
+/// workflow before any firmware operation begins.
+pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
+    let repository = Repository::open(path).map_err(CheckoutError::Repository)?;
+    let before = revision(path)?;
+    let head = repository.head().map_err(|source| CheckoutError::Refresh {
+        action: "read the checked-out branch",
+        source,
+    })?;
+    let branch_name = head
+        .shorthand()
+        .ok_or(CheckoutError::UpstreamNotConfigured)?
+        .to_owned();
+    let branch = repository
+        .find_branch(&branch_name, BranchType::Local)
+        .map_err(|source| CheckoutError::Refresh {
+            action: "read the checked-out branch",
+            source,
+        })?;
+    let upstream = branch
+        .upstream()
+        .map_err(|_| CheckoutError::UpstreamNotConfigured)?;
+    let upstream_name = upstream
+        .name()
+        .map_err(|_| CheckoutError::UpstreamNotConfigured)?
+        .ok_or(CheckoutError::UpstreamNotConfigured)?
+        .to_owned();
+    let upstream_reference_name = upstream
+        .get()
+        .name()
+        .ok_or(CheckoutError::UpstreamNotConfigured)?
+        .to_owned();
+    let remote_name = repository
+        .config()
+        .and_then(|config| config.get_string(&format!("branch.{branch_name}.remote")))
+        .map_err(|_| CheckoutError::UpstreamNotConfigured)?;
+    let mut remote =
+        repository
+            .find_remote(&remote_name)
+            .map_err(|source| CheckoutError::Refresh {
+                action: "open the configured upstream remote",
+                source,
+            })?;
+    let mut fetch_options = FetchOptions::new();
+    remote
+        .fetch(&[] as &[&str], Some(&mut fetch_options), None)
+        .map_err(|source| CheckoutError::Refresh {
+            action: "fetch the configured upstream",
+            source,
+        })?;
+
+    let upstream_reference = repository
+        .find_reference(&upstream_reference_name)
+        .map_err(|source| CheckoutError::Refresh {
+            action: "read the fetched upstream revision",
+            source,
+        })?;
+    let upstream_commit = repository
+        .reference_to_annotated_commit(&upstream_reference)
+        .map_err(|source| CheckoutError::Refresh {
+            action: "resolve the fetched upstream revision",
+            source,
+        })?;
+    let (analysis, _) = repository
+        .merge_analysis(&[&upstream_commit])
+        .map_err(|source| CheckoutError::Refresh {
+            action: "check whether the upstream can fast-forward",
+            source,
+        })?;
+    if analysis.is_up_to_date() {
+        return Ok(RefreshResult {
+            before: before.clone(),
+            after: before,
+            advanced: false,
+        });
+    }
+    if !analysis.is_fast_forward() {
+        return Err(CheckoutError::NotFastForward {
+            branch: branch_name,
+            upstream: upstream_name,
+        });
+    }
+
+    let commit = repository
+        .find_commit(upstream_commit.id())
+        .map_err(|source| CheckoutError::Refresh {
+            action: "read the fetched upstream commit",
+            source,
+        })?;
+    repository
+        .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
+        .map_err(|source| CheckoutError::Refresh {
+            action: "apply the fast-forward without overwriting local changes",
+            source,
+        })?;
+    let branch_reference = format!("refs/heads/{branch_name}");
+    repository
+        .find_reference(&branch_reference)
+        .and_then(|mut reference| reference.set_target(commit.id(), "mcu-update fast-forward"))
+        .map_err(|source| CheckoutError::Refresh {
+            action: "advance the local Klipper branch",
+            source,
+        })?;
+    repository
+        .set_head(&branch_reference)
+        .map_err(|source| CheckoutError::Refresh {
+            action: "update the checked-out Klipper branch",
+            source,
+        })?;
+    let after = revision(path)?;
+    Ok(RefreshResult {
+        before,
+        after,
+        advanced: true,
+    })
 }
