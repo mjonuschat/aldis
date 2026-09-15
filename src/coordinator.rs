@@ -2,9 +2,11 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::build::{BuildArtifact, BuildError, CommandRunner, KlipperBuilder};
+use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandRunner, KlipperBuilder};
 use crate::flash::FlashResult;
-use crate::flash::system::{SystemFlashError, SystemFlashOptions, flash_prepared_system};
+use crate::flash::system::{
+    SystemFlashError, SystemFlashOptions, SystemFlashProgress, flash_prepared_system_with_progress,
+};
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
@@ -73,6 +75,23 @@ pub struct CompletedUpdate {
     pub artifact: BuildArtifact,
     /// Protocol-reported transfer details.
     pub flash: FlashResult,
+}
+
+/// A visible phase of one accepted MCU update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdateProgress {
+    /// Klipper is stopping before the first build in the batch.
+    StoppingKlipper,
+    /// Klipper is expanding the selected MCU configuration.
+    ConfiguringFirmware,
+    /// Klipper is compiling the selected firmware artifact.
+    CompilingFirmware,
+    /// The updater is entering the selected MCU's bootloader.
+    EnteringBootloader,
+    /// The expected bootloader has re-enumerated and is ready for its transfer.
+    BootloaderReady,
+    /// The firmware transfer is beginning.
+    StartingFlash,
 }
 
 impl fmt::Display for CoordinatorError {
@@ -150,8 +169,18 @@ where
     ///
     /// This never starts Klipper after the build; restart remains an explicit later action.
     pub fn execute(&self, approved: ApprovedBuild) -> Result<BuildArtifact, CoordinatorError> {
+        self.execute_with_progress(approved, |_| {})
+    }
+
+    /// Stops Klipper if necessary and builds an approved target while reporting progress.
+    pub fn execute_with_progress(
+        &self,
+        approved: ApprovedBuild,
+        mut progress: impl FnMut(UpdateProgress),
+    ) -> Result<BuildArtifact, CoordinatorError> {
         match self.service.state().map_err(CoordinatorError::Service)? {
             ServiceState::Active => {
+                progress(UpdateProgress::StoppingKlipper);
                 self.service.stop().map_err(CoordinatorError::Service)?;
                 match self.service.state().map_err(CoordinatorError::Service)? {
                     ServiceState::Inactive => {}
@@ -163,7 +192,10 @@ where
         }
 
         self.builder
-            .build(&approved.pending.prepared.request)
+            .build_with_progress(&approved.pending.prepared.request, |stage| match stage {
+                BuildProgress::Configuring => progress(UpdateProgress::ConfiguringFirmware),
+                BuildProgress::Compiling => progress(UpdateProgress::CompilingFirmware),
+            })
             .map_err(CoordinatorError::Build)
     }
 
@@ -173,9 +205,19 @@ where
         approved: ApprovedBuild,
         flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, E>,
     ) -> Result<CompletedUpdate, FlashCoordinatorError<E>> {
+        self.execute_and_flash_with_progress(approved, flash, |_| {})
+    }
+
+    /// Builds and flashes an approved target while reporting each visible phase.
+    pub fn execute_and_flash_with_progress<E>(
+        &self,
+        approved: ApprovedBuild,
+        flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, E>,
+        mut progress: impl FnMut(UpdateProgress),
+    ) -> Result<CompletedUpdate, FlashCoordinatorError<E>> {
         let mut prepared = approved.pending.prepared.clone();
         let artifact = self
-            .execute(approved)
+            .execute_with_progress(approved, &mut progress)
             .map_err(FlashCoordinatorError::Coordinator)?;
         prepared.request.kconfig = artifact.kconfig.clone();
         let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
@@ -192,9 +234,31 @@ where
         approved: ApprovedBuild,
         options: SystemFlashOptions,
     ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
-        self.execute_and_flash(approved, |prepared, firmware| {
-            flash_prepared_system(prepared, firmware, options)
+        self.execute_and_flash_system_with_progress(approved, options, |_| {})
+    }
+
+    /// Builds and flashes through native backends while reporting each visible phase.
+    pub fn execute_and_flash_system_with_progress(
+        &self,
+        approved: ApprovedBuild,
+        options: SystemFlashOptions,
+        mut progress: impl FnMut(UpdateProgress),
+    ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
+        let mut prepared = approved.pending.prepared.clone();
+        let artifact = self
+            .execute_with_progress(approved, &mut progress)
+            .map_err(FlashCoordinatorError::Coordinator)?;
+        prepared.request.kconfig = artifact.kconfig.clone();
+        let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
+        let flash = flash_prepared_system_with_progress(&prepared, &firmware, options, |stage| {
+            progress(match stage {
+                SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
+                SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
+                SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+            });
         })
+        .map_err(FlashCoordinatorError::Flash)?;
+        Ok(CompletedUpdate { artifact, flash })
     }
 
     /// Starts Klipper once every selected MCU has completed its flash and application checks.

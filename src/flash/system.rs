@@ -59,6 +59,17 @@ pub struct SystemFlashOptions {
     pub bossac_program: PathBuf,
 }
 
+/// A visible phase of a native bootloader transfer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemFlashProgress {
+    /// The running firmware is being asked to enter its bootloader.
+    EnteringBootloader,
+    /// The expected bootloader has re-enumerated at the selected topology.
+    BootloaderReady,
+    /// The firmware transfer is beginning.
+    Flashing,
+}
+
 /// A selected update cannot be dispatched to a native backend.
 #[derive(Debug)]
 pub enum SystemFlashError {
@@ -140,16 +151,30 @@ pub fn flash_prepared_system(
     firmware: &[u8],
     options: SystemFlashOptions,
 ) -> Result<FlashResult, SystemFlashError> {
+    flash_prepared_system_with_progress(prepared, firmware, options, |_| {})
+}
+
+/// Flashes one prepared artifact while reporting native bootloader phases.
+pub fn flash_prepared_system_with_progress(
+    prepared: &PreparedBuild,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    mut progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
     match prepared
         .transport
         .as_ref()
         .ok_or(SystemFlashError::MissingTransport)?
     {
-        McuTransport::Serial { device } => {
-            flash_serial_system(device, &prepared.request.kconfig, firmware, options)
-        }
+        McuTransport::Serial { device } => flash_serial_system(
+            device,
+            &prepared.request.kconfig,
+            firmware,
+            options,
+            &mut progress,
+        ),
         McuTransport::Can { interface, uuid } => {
-            flash_can_system(interface, *uuid, firmware, options)
+            flash_can_system(interface, *uuid, firmware, options, &mut progress)
         }
     }
 }
@@ -159,19 +184,23 @@ fn flash_serial_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
+    progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    progress(SystemFlashProgress::EnteringBootloader);
     let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
         std::path::Path::new(running_device),
         options.katapult.bootloader_timeout,
         options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::Bootloader)?;
+    progress(SystemFlashProgress::BootloaderReady);
     wait_for_usb_access(
         &observed.sysfs_path,
         Duration::from_secs(5),
         Duration::from_millis(50),
     )
     .map_err(SystemFlashError::UsbAccess)?;
+    progress(SystemFlashProgress::Flashing);
     match serial_route(observed, kconfig)? {
         SerialFlashRoute::Katapult { serial_device } => {
             let io = SystemSerialIo::open(
@@ -248,12 +277,16 @@ fn flash_can_system(
     uuid: u64,
     firmware: &[u8],
     options: SystemFlashOptions,
+    progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    progress(SystemFlashProgress::EnteringBootloader);
     let io = SocketCanIo::open(interface, options.katapult.read_timeout)
         .map_err(SystemFlashError::CanSocket)?;
     let bootstrap = request_can_bootloader(io, uuid).map_err(SystemFlashError::Can)?;
     thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;
+    progress(SystemFlashProgress::BootloaderReady);
+    progress(SystemFlashProgress::Flashing);
     backend.flash(firmware).map_err(SystemFlashError::CanFlash)
 }
 

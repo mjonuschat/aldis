@@ -86,6 +86,8 @@ pub struct RefreshResult {
     pub after: CheckoutRevision,
     /// Whether the local branch advanced to a newer commit.
     pub advanced: bool,
+    /// Number of commits incorporated from the configured upstream.
+    pub commits_advanced: usize,
 }
 
 /// Returns the checkout revision, including a dirty suffix for tracked changes.
@@ -128,6 +130,10 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
     let head = repository.head().map_err(|source| CheckoutError::Refresh {
         action: "read the checked-out branch",
         source,
+    })?;
+    let head_id = head.target().ok_or_else(|| CheckoutError::Refresh {
+        action: "resolve the checked-out commit",
+        source: git2::Error::from_str("HEAD does not point to a commit"),
     })?;
     let branch_name = head
         .shorthand()
@@ -194,6 +200,7 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
             before: before.clone(),
             after: before,
             advanced: false,
+            commits_advanced: 0,
         });
     }
     if !analysis.is_fast_forward() {
@@ -207,6 +214,12 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
         .find_commit(upstream_commit.id())
         .map_err(|source| CheckoutError::Refresh {
             action: "read the fetched upstream commit",
+            source,
+        })?;
+    let (_, commits_advanced) = repository
+        .graph_ahead_behind(head_id, commit.id())
+        .map_err(|source| CheckoutError::Refresh {
+            action: "count fetched commits",
             source,
         })?;
     repository
@@ -234,5 +247,6 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
         before,
         after,
         advanced: true,
+        commits_advanced,
     })
 }

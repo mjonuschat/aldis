@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandRunner};
-use mcu_update::coordinator::BuildCoordinator;
+use mcu_update::coordinator::{BuildCoordinator, UpdateProgress};
 use mcu_update::moonraker::parse_inventory;
 use mcu_update::plan::build_update_plan;
 use mcu_update::workspace::RunWorkspace;
@@ -98,6 +98,52 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
     assert_eq!(make_commands.len(), 2);
     assert_eq!(make_commands[0].arguments[0], "olddefconfig");
 
+    fs::remove_dir_all(root).expect("test directory cleanup");
+}
+
+#[test]
+fn reports_build_phases_before_the_flash_callback() {
+    let root = temporary_directory();
+    let source_dir = root.join("klipper");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory");
+    fs::write(source_dir.join("out/klipper.bin"), b"firmware").expect("source artifact");
+    let workspace = RunWorkspace::create(root.join("run")).expect("workspace should create");
+    let inventory =
+        parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("fixture should parse");
+    let plan = build_update_plan(&inventory);
+    let build_runner = FakeRunner::new([success_output(), success_output()]);
+    let service_runner = FakeRunner::new([
+        state_output(true, b"active\n"),
+        success_output(),
+        state_output(false, b"inactive\n"),
+    ]);
+    let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner);
+    let pending = coordinator
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead")
+        .expect("build should prepare");
+    let mut phases = Vec::new();
+
+    coordinator
+        .execute_and_flash_with_progress(
+            pending.approve(),
+            |_, _| {
+                Ok::<_, ()>(mcu_update::flash::FlashResult {
+                    reported_pages: Some(1),
+                    padded_bytes: 64,
+                })
+            },
+            |phase| phases.push(phase),
+        )
+        .expect("approved build should succeed");
+
+    assert_eq!(
+        phases,
+        [
+            UpdateProgress::StoppingKlipper,
+            UpdateProgress::ConfiguringFirmware,
+            UpdateProgress::CompilingFirmware,
+        ]
+    );
     fs::remove_dir_all(root).expect("test directory cleanup");
 }
 

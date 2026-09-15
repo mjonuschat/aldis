@@ -8,8 +8,7 @@ use std::{fs, process::Command};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
-use mcu_update::coordinator::BuildCoordinator;
-use mcu_update::coordinator::FlashCoordinatorError;
+use mcu_update::coordinator::{BuildCoordinator, FlashCoordinatorError, UpdateProgress};
 use mcu_update::eligibility::{
     CheckoutRevision, Eligibility, RevisionStatus, UpdateSelection, assess_mcu, is_selected,
 };
@@ -328,16 +327,7 @@ fn update(arguments: UpdateArgs) -> ExitCode {
             Ok(refreshed) => refreshed,
             Err(error) => return fail(error.to_string()),
         };
-        println!(
-            "Klipper source refresh: {:?} -> {:?}{}",
-            refreshed.before,
-            refreshed.after,
-            if refreshed.advanced {
-                " (fast-forwarded)"
-            } else {
-                " (current)"
-            }
-        );
+        print_refresh(&refreshed);
     }
     let workspace = arguments
         .workspace
@@ -349,7 +339,8 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         };
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    let selection = if arguments.all || arguments.auto {
+    println!("{}", format_status(&source, &checkout, &inventory));
+    let selection = if arguments.all {
         UpdateSelection::All
     } else {
         UpdateSelection::Required
@@ -371,22 +362,6 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         println!("no eligible MCUs require an update");
         return ExitCode::SUCCESS;
     }
-    let accepted = if arguments.auto {
-        offered
-    } else {
-        offered
-            .into_iter()
-            .filter(|name| {
-                eprint!("Update {name}? [y/N] ");
-                let _ = io::stderr().flush();
-                matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
-            })
-            .collect::<Vec<_>>()
-    };
-    if accepted.is_empty() {
-        println!("no updates confirmed");
-        return ExitCode::SUCCESS;
-    }
     let workspace = match RunWorkspace::create(workspace) {
         Ok(v) => v,
         Err(e) => return fail(e.to_string()),
@@ -402,33 +377,54 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         },
         bossac_program: source.join("lib/bossac/bin/bossac"),
     };
-    for name in &accepted {
-        let pending = match coordinator.prepare(&inventory, &plan, &workspace, name) {
+    let mut accepted = Vec::new();
+    for name in offered {
+        let mcu = inventory
+            .mcus
+            .iter()
+            .find(|mcu| mcu.name == name)
+            .expect("offered MCU is discovered");
+        let current = mcu.version.as_deref().unwrap_or("unknown");
+        let next = checkout_label(&checkout);
+        if arguments.auto {
+            println!("\nUpdate {name} from {current} to {next}");
+        } else {
+            eprint!("\nUpdate {name} from {current} to {next}? [y/N] ");
+            let _ = io::stderr().flush();
+            if !matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes")) {
+                continue;
+            }
+        }
+        let pending = match coordinator.prepare(&inventory, &plan, &workspace, &name) {
             Ok(v) => v,
             Err(e) => return fail(e.to_string()),
         };
-        match coordinator.execute_and_flash_system(pending.approve(), options.clone()) {
+        match coordinator.execute_and_flash_system_with_progress(
+            pending.approve(),
+            options.clone(),
+            print_update_progress,
+        ) {
             Ok(v) => {
-                println!(
-                    "flashed {} bytes from {}",
-                    v.flash.padded_bytes,
-                    v.artifact.path.display()
-                );
-                let mcu = inventory
-                    .mcus
-                    .iter()
-                    .find(|mcu| mcu.name == *name)
-                    .expect("accepted MCU is discovered");
+                println!("  ..flashing complete ({} bytes)", v.flash.padded_bytes);
                 if let Err(error) = wait_for_application(mcu) {
                     return fail(error);
                 }
+                println!("  ..MCU restart: successful");
+                accepted.push(name);
             }
             Err(error) => return fail(update_failure(error)),
         }
     }
+    if accepted.is_empty() {
+        println!("\nno updates confirmed");
+        return ExitCode::SUCCESS;
+    }
+    println!("\nFinishing update");
+    println!("  ..starting Klipper");
     if let Err(error) = coordinator.start_after_batch() {
         return fail(error.to_string());
     }
+    println!("  ..Klipper ready");
     if let Err(error) = wait_for_mcus(
         &MoonrakerClient::new(&arguments.connection.moonraker.moonraker),
         &accepted,
@@ -450,6 +446,31 @@ fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
     format!(
         "update failed: {detail}. Klipper may still be stopped; fix the issue, then rerun update"
     )
+}
+
+fn print_refresh(refreshed: &mcu_update::checkout::RefreshResult) {
+    let suffix = if refreshed.commits_advanced == 1 {
+        "commit"
+    } else {
+        "commits"
+    };
+    println!(
+        "Klipper source: {} -> {} ({} {suffix})",
+        checkout_label(&refreshed.before),
+        checkout_label(&refreshed.after),
+        refreshed.commits_advanced,
+    );
+}
+
+fn print_update_progress(progress: UpdateProgress) {
+    match progress {
+        UpdateProgress::StoppingKlipper => println!("  ..stopping Klipper"),
+        UpdateProgress::ConfiguringFirmware => println!("  ..configuring firmware"),
+        UpdateProgress::CompilingFirmware => println!("  ..compiling firmware"),
+        UpdateProgress::EnteringBootloader => println!("  ..entering bootloader"),
+        UpdateProgress::BootloaderReady => println!("  ..bootloader ready"),
+        UpdateProgress::StartingFlash => println!("  ..starting flashing process"),
+    }
 }
 
 fn wait_for_application(mcu: &mcu_update::moonraker::Mcu) -> Result<(), String> {

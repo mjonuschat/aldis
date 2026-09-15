@@ -27,6 +27,15 @@ pub struct BuildArtifact {
     pub kconfig: String,
 }
 
+/// A visible phase of Klipper firmware preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildProgress {
+    /// Klipper is expanding the embedded Kconfig.
+    Configuring,
+    /// Klipper is compiling the firmware artifact.
+    Compiling,
+}
+
 /// A fully specified command invocation without shell interpolation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildCommand {
@@ -186,6 +195,15 @@ where
 
     /// Builds firmware from `request.kconfig` and copies the generated artifact.
     pub fn build(&self, request: &BuildRequest) -> Result<BuildArtifact, BuildError> {
+        self.build_with_progress(request, |_| {})
+    }
+
+    /// Builds firmware and reports its externally visible phases.
+    pub fn build_with_progress(
+        &self,
+        request: &BuildRequest,
+        mut progress: impl FnMut(BuildProgress),
+    ) -> Result<BuildArtifact, BuildError> {
         let config_parent = request.config_path.parent().ok_or_else(|| {
             BuildError::InvalidRequest("config_path must have a parent directory".to_owned())
         })?;
@@ -205,6 +223,7 @@ where
             source,
         })?;
 
+        progress(BuildProgress::Configuring);
         self.run_make(vec![
             "olddefconfig".to_owned(),
             kconfig_argument(config_path),
@@ -214,6 +233,7 @@ where
                 action: "read the expanded Kconfig",
                 source,
             })?;
+        progress(BuildProgress::Compiling);
         self.run_make(vec![kconfig_argument(config_path)])?;
 
         fs::create_dir_all(artifact_parent).map_err(|source| BuildError::Io {

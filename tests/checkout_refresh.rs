@@ -36,6 +36,7 @@ fn fast_forwards_the_configured_upstream_branch() {
     let result = refresh(&checkout_path).expect("fast-forward refresh");
 
     assert!(result.advanced);
+    assert_eq!(result.commits_advanced, 1);
     assert_ne!(result.before, result.after);
     assert_ne!(
         Repository::open(&checkout_path)
