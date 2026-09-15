@@ -189,6 +189,42 @@ impl SystemSerialIo {
         Self::request_and_observe_usb_bootloader(path, timeout, poll_interval, |_, _| true)
     }
 
+    /// Observes the USB bootloader that replaces an already identified USB device.
+    ///
+    /// This is used when a running MCU is itself a USB CAN bridge. Entering its
+    /// bootloader removes the SocketCAN interface, but the USB topology remains
+    /// stable and can be used to select the bootloader's serial endpoint.
+    pub fn observe_any_usb_bootloader_at_path(
+        usb_path: &Path,
+        initial_usb_id: &str,
+        initial_manufacturer: &str,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
+        let deadline = Instant::now() + timeout;
+        let interval = poll_interval.max(Duration::from_millis(10));
+        loop {
+            let identity = usb_identity(usb_path);
+            if (identity.usb_id != initial_usb_id || identity.manufacturer != initial_manufacturer)
+                && identity.is_complete()
+            {
+                return Ok(ObservedUsbBootloader {
+                    sysfs_path: usb_path.to_path_buf(),
+                    usb_id: identity.usb_id,
+                    manufacturer: identity.manufacturer,
+                    serial_device: usb_tty(usb_path),
+                });
+            }
+            if Instant::now() >= deadline {
+                return Err(UsbBootloaderError::NotDetected {
+                    device: usb_path.to_path_buf(),
+                    reset_error: None,
+                });
+            }
+            thread::sleep(interval);
+        }
+    }
+
     /// Requests USB bootloader entry and waits for a matching USB identity.
     pub fn request_and_wait_for_usb_identity(
         path: &Path,

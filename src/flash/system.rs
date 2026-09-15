@@ -100,6 +100,8 @@ pub enum SystemFlashError {
     Bossa(BossaError),
     /// The CAN socket could not be opened.
     CanSocket(io::Error),
+    /// A USB-CAN bridge could not be related to its USB topology.
+    CanUsbTopology(io::Error),
     /// Katapult CAN bootloader entry or node assignment failed.
     Can(CanBootstrapError<io::Error>),
     /// Katapult rejected or could not verify its CAN transfer.
@@ -188,9 +190,15 @@ pub fn flash_prepared_system_with_progress_and_log(
             command_log,
             &mut progress,
         ),
-        McuTransport::Can { interface, uuid } => {
-            flash_can_system(interface, *uuid, firmware, options, &mut progress)
-        }
+        McuTransport::Can { interface, uuid } => flash_can_system(
+            interface,
+            *uuid,
+            &prepared.request.kconfig,
+            firmware,
+            options,
+            command_log,
+            &mut progress,
+        ),
     }
 }
 
@@ -209,20 +217,27 @@ fn flash_serial_system(
         options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::Bootloader)?;
+    flash_observed_usb(observed, kconfig, firmware, options, command_log, progress)
+}
+
+fn flash_observed_usb(
+    observed: ObservedUsbBootloader,
+    kconfig: &str,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    command_log: Option<&RunLog>,
+    progress: &mut impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::BootloaderReady);
-    wait_for_usb_access(
-        &observed.sysfs_path,
-        Duration::from_secs(5),
-        Duration::from_millis(50),
-    )
-    .map_err(SystemFlashError::UsbAccess)?;
-    progress(SystemFlashProgress::Flashing);
     match serial_route(observed, kconfig)? {
         SerialFlashRoute::Katapult { serial_device } => {
-            let io = SystemSerialIo::open(
+            progress(SystemFlashProgress::Flashing);
+            let io = open_katapult_serial_when_ready(
                 &serial_device,
                 options.katapult.baud_rate,
                 options.katapult.read_timeout,
+                options.katapult.bootloader_timeout,
+                options.katapult.poll_interval,
             )
             .map_err(SystemFlashError::KatapultOpen)?;
             let mut backend = KatapultBackend::new(KatapultSerialTransport::new(io));
@@ -233,29 +248,60 @@ fn flash_serial_system(
         SerialFlashRoute::Bossa {
             serial_device,
             target,
-        } => match command_log {
-            Some(log) => flash_bossa_with_runner(
-                LoggingCommandRunner::new(SystemCommandRunner, log.clone()),
-                &options.bossac_program,
-                &serial_device,
+        } => {
+            progress(SystemFlashProgress::Flashing);
+            match command_log {
+                Some(log) => flash_bossa_with_runner(
+                    LoggingCommandRunner::new(SystemCommandRunner, log.clone()),
+                    &options.bossac_program,
+                    &serial_device,
+                    target,
+                    firmware,
+                )
+                .map_err(SystemFlashError::Bossa),
+                None => flash_bossa(&options.bossac_program, &serial_device, target, firmware)
+                    .map_err(SystemFlashError::Bossa),
+            }
+        }
+        SerialFlashRoute::Stm32Dfu { sysfs_path, target } => {
+            wait_for_usb_access(
+                &sysfs_path,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .map_err(SystemFlashError::UsbAccess)?;
+            progress(SystemFlashProgress::Flashing);
+            flash_stm32_at_path(
+                crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
+                &sysfs_path,
                 target,
                 firmware,
             )
-            .map_err(SystemFlashError::Bossa),
-            None => flash_bossa(&options.bossac_program, &serial_device, target, firmware)
-                .map_err(SystemFlashError::Bossa),
-        },
-        SerialFlashRoute::Stm32Dfu { sysfs_path, target } => flash_stm32_at_path(
-            crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
-            &sysfs_path,
-            target,
-            firmware,
-        )
-        .map_err(SystemFlashError::Stm32Dfu),
+            .map_err(SystemFlashError::Stm32Dfu)
+        }
         SerialFlashRoute::PicoBoot { sysfs_path } => {
+            wait_for_usb_access(
+                &sysfs_path,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .map_err(SystemFlashError::UsbAccess)?;
+            progress(SystemFlashProgress::Flashing);
             flash_picoboot_at_path(&sysfs_path, firmware).map_err(SystemFlashError::PicoBoot)
         }
     }
+}
+
+fn open_katapult_serial_when_ready(
+    serial_device: &Path,
+    baud_rate: u32,
+    read_timeout: Duration,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> serialport::Result<SystemSerialIo> {
+    retry_until_available(timeout, poll_interval, || {
+        SystemSerialIo::open(serial_device, baud_rate, read_timeout)
+    })
 }
 
 fn wait_for_usb_access(
@@ -264,24 +310,35 @@ fn wait_for_usb_access(
     poll_interval: Duration,
 ) -> io::Result<()> {
     let device_node = usb_device_node(sysfs_path)?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match std::fs::OpenOptions::new()
+    retry_until_available(timeout, poll_interval, || {
+        std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&device_node)
-        {
-            Ok(_) => return Ok(()),
-            Err(_error) if Instant::now() < deadline => thread::sleep(poll_interval),
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "{} was not readable and writable within {timeout:?}: {error}",
-                        device_node.display()
-                    ),
-                ));
-            }
+    })
+    .map(|_| ())
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "{} was not readable and writable within {timeout:?}: {error}",
+                device_node.display()
+            ),
+        )
+    })
+}
+
+fn retry_until_available<T, E>(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut operation: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => thread::sleep(poll_interval.max(Duration::from_millis(10))),
         }
     }
 }
@@ -301,14 +358,37 @@ fn usb_device_node(sysfs_path: &Path) -> io::Result<PathBuf> {
 fn flash_can_system(
     interface: &str,
     uuid: u64,
+    kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
+    command_log: Option<&RunLog>,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
+    let usb_bridge = usb_can_bridge(kconfig);
+    let usb_path = usb_bridge
+        .then(|| usb_device_path_for_can_interface(interface))
+        .transpose()
+        .map_err(SystemFlashError::CanUsbTopology)?;
+    let initial_usb_identity = usb_path
+        .as_deref()
+        .map(usb_identity)
+        .transpose()
+        .map_err(SystemFlashError::CanUsbTopology)?;
     let io = SocketCanIo::open(interface, options.katapult.read_timeout)
         .map_err(SystemFlashError::CanSocket)?;
     let bootstrap = request_can_bootloader(io, uuid).map_err(SystemFlashError::Can)?;
+    if let (Some(usb_path), Some((usb_id, manufacturer))) = (usb_path, initial_usb_identity) {
+        let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            &usb_id,
+            &manufacturer,
+            options.katapult.bootloader_timeout,
+            options.katapult.poll_interval,
+        )
+        .map_err(SystemFlashError::Bootloader)?;
+        return flash_observed_usb(observed, kconfig, firmware, options, command_log, progress);
+    }
     thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;
     progress(SystemFlashProgress::BootloaderReady);
@@ -316,13 +396,66 @@ fn flash_can_system(
     backend.flash(firmware).map_err(SystemFlashError::CanFlash)
 }
 
+fn usb_can_bridge(kconfig: &str) -> bool {
+    kconfig
+        .lines()
+        .any(|line| line.trim() == "CONFIG_USBCANBUS=y")
+}
+
+fn usb_device_path_for_can_interface(interface: &str) -> io::Result<PathBuf> {
+    let interface_path = std::fs::canonicalize(Path::new("/sys/class/net").join(interface))?;
+    interface_path
+        .ancestors()
+        .find(|candidate| {
+            candidate.join("idVendor").is_file()
+                && candidate.join("idProduct").is_file()
+                && candidate.join("busnum").is_file()
+                && candidate.join("devnum").is_file()
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("could not find a USB device for CAN interface {interface:?}"),
+            )
+        })
+}
+
+fn usb_identity(usb_path: &Path) -> io::Result<(String, String)> {
+    let value = |name: &str| {
+        std::fs::read_to_string(usb_path.join(name)).map(|value| value.trim().to_ascii_lowercase())
+    };
+    Ok((
+        value("idVendor")? + ":" + &value("idProduct")?,
+        value("manufacturer")?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::usb_device_node;
+    use super::{retry_until_available, usb_can_bridge, usb_device_node};
+
+    #[test]
+    fn recognizes_a_usb_can_bridge_from_embedded_kconfig() {
+        assert!(usb_can_bridge("CONFIG_USBCANBUS=y\n"));
+        assert!(!usb_can_bridge("# CONFIG_USBCANBUS is not set\n"));
+    }
+
+    #[test]
+    fn retries_resource_access_until_it_succeeds() {
+        let mut attempts = 0;
+        let result = retry_until_available(Duration::from_millis(50), Duration::ZERO, || {
+            attempts += 1;
+            (attempts == 3).then_some("ready").ok_or("not ready")
+        });
+
+        assert_eq!(result, Ok("ready"));
+        assert_eq!(attempts, 3);
+    }
 
     #[test]
     fn locates_the_usb_device_node_from_its_sysfs_numbers() {
