@@ -1,11 +1,15 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::{fs, process::Command};
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{
     RefreshResult, refresh as refresh_checkout, revision as checkout_revision,
@@ -29,8 +33,26 @@ const UDEV_RULES: &str = include_str!("../templates/80-mcu-update.rules");
 #[derive(Debug, Parser)]
 #[command(name = "mcu-update", version, about)]
 struct Cli {
+    /// When to use ANSI color in interactive update output.
+    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
+    color: ColorMode,
+    /// Disable animated progress indicators.
+    #[arg(long, global = true)]
+    no_progress: bool,
     #[command(subcommand)]
     command: CliCommand,
+}
+
+/// Controls ANSI color in interactive output.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum ColorMode {
+    /// Use color only when stderr is a terminal and NO_COLOR is not set.
+    #[default]
+    Auto,
+    /// Always emit ANSI color sequences.
+    Always,
+    /// Never emit ANSI color sequences.
+    Never,
 }
 
 #[derive(Debug, Subcommand)]
@@ -98,7 +120,8 @@ struct SetupArgs {
 }
 
 fn main() -> ExitCode {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    match cli.command {
         CliCommand::Status(arguments) => status(arguments),
         CliCommand::Inspect(arguments) => {
             match MoonrakerClient::new(&arguments.moonraker).discover_mcus() {
@@ -109,7 +132,9 @@ fn main() -> ExitCode {
                 Err(error) => fail(error.to_string()),
             }
         }
-        CliCommand::Update(arguments) => update(arguments),
+        CliCommand::Update(arguments) => {
+            update(arguments, UpdateUi::new(cli.color, cli.no_progress))
+        }
         CliCommand::Setup(arguments) => setup(arguments),
     }
 }
@@ -321,7 +346,196 @@ fn default_klipper_source() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("klipper"))
 }
 
-fn update(arguments: UpdateArgs) -> ExitCode {
+struct UpdateUi {
+    color: bool,
+    interactive: bool,
+    active: Option<ActiveProgress>,
+}
+
+struct ActiveProgress {
+    label: String,
+    spinner: Option<Spinner>,
+}
+
+struct Spinner {
+    stopped: Arc<AtomicBool>,
+    worker: thread::JoinHandle<()>,
+}
+
+impl UpdateUi {
+    fn new(color_mode: ColorMode, no_progress: bool) -> Self {
+        let interactive = io::stderr().is_terminal();
+        Self {
+            color: colors_enabled(color_mode, interactive),
+            interactive: interactive && !no_progress,
+            active: None,
+        }
+    }
+
+    fn block(&mut self, text: &str) {
+        self.clear_active();
+        eprint!("{text}");
+        let _ = io::stderr().flush();
+    }
+
+    fn heading(&mut self, text: &str) {
+        self.clear_active();
+        eprintln!("\n{}", self.style("1", text));
+    }
+
+    fn prompt(&mut self, text: &str) {
+        self.clear_active();
+        eprint!("\n{} [y/N] ", self.style("1", text));
+        let _ = io::stderr().flush();
+    }
+
+    fn begin(&mut self, label: impl Into<String>) {
+        self.clear_active();
+        let label = label.into();
+        let spinner = self
+            .interactive
+            .then(|| Spinner::start(label.clone(), self.color));
+        if spinner.is_none() {
+            eprintln!("  ..{label}");
+        }
+        self.active = Some(ActiveProgress { label, spinner });
+    }
+
+    fn finish_success(&mut self, message: impl AsRef<str>) {
+        if let Some(active) = self.active.take() {
+            if let Some(spinner) = active.spinner {
+                spinner.stop();
+            }
+            self.clear_spinner();
+            eprintln!("{}", self.success_line(message.as_ref()));
+        }
+    }
+
+    fn finish_failure(&mut self) {
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        if let Some(spinner) = active.spinner {
+            spinner.stop();
+            self.clear_spinner();
+        }
+        eprintln!("{}", self.failure_line(&format!("{} failed", active.label)));
+    }
+
+    fn clear_active(&mut self) {
+        if let Some(active) = self.active.take()
+            && let Some(spinner) = active.spinner
+        {
+            spinner.stop();
+            self.clear_spinner();
+        }
+    }
+
+    fn clear_spinner(&self) {
+        if self.interactive {
+            eprint!("\r\x1b[2K");
+            let _ = io::stderr().flush();
+        }
+    }
+
+    fn success_line(&self, message: &str) -> String {
+        if self.interactive {
+            format!("  {} {message}", self.style("32", "✓"))
+        } else {
+            let marker = if self.color {
+                self.style("32", "[ok]")
+            } else {
+                "[ok]".to_owned()
+            };
+            if self.color {
+                format!("  {marker} {message}")
+            } else {
+                plain_success_line(message)
+            }
+        }
+    }
+
+    fn failure_line(&self, message: &str) -> String {
+        let marker = if self.interactive { "error" } else { "[error]" };
+        format!("  {} {message}", self.style("31", marker))
+    }
+
+    fn style(&self, code: &str, text: &str) -> String {
+        if self.color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    fn progress(&mut self, progress: UpdateProgress) {
+        match progress {
+            UpdateProgress::StoppingKlipper => self.begin("stopping Klipper"),
+            UpdateProgress::ConfiguringFirmware => {
+                self.finish_success("stopped Klipper");
+                self.begin("configuring firmware");
+            }
+            UpdateProgress::CompilingFirmware => {
+                self.finish_success("configured firmware");
+                self.begin("compiling firmware");
+            }
+            UpdateProgress::EnteringBootloader => {
+                self.finish_success("compiled firmware");
+                self.begin("entering bootloader");
+            }
+            UpdateProgress::BootloaderReady => self.finish_success("bootloader ready"),
+            UpdateProgress::StartingFlash => self.begin("flashing firmware"),
+        }
+    }
+}
+
+impl Drop for UpdateUi {
+    fn drop(&mut self) {
+        self.clear_active();
+    }
+}
+
+impl Spinner {
+    fn start(label: String, color: bool) -> Self {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut frame = 0;
+            while !worker_stopped.load(Ordering::Relaxed) {
+                let glyph = if color {
+                    format!("\x1b[36m{}\x1b[0m", FRAMES[frame])
+                } else {
+                    FRAMES[frame].to_owned()
+                };
+                eprint!("\r\x1b[2K  {glyph} {label}");
+                let _ = io::stderr().flush();
+                frame = (frame + 1) % FRAMES.len();
+                thread::sleep(Duration::from_millis(80));
+            }
+        });
+        Self { stopped, worker }
+    }
+
+    fn stop(self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        let _ = self.worker.join();
+    }
+}
+
+fn colors_enabled(mode: ColorMode, is_terminal: bool) -> bool {
+    match mode {
+        ColorMode::Auto => is_terminal && std::env::var_os("NO_COLOR").is_none(),
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+    }
+}
+
+fn plain_success_line(message: &str) -> String {
+    format!("  [ok] {message}")
+}
+
+fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     let source = arguments
         .connection
         .klipper_source
@@ -346,10 +560,12 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         };
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    println!(
-        "{}",
-        format_status(&source, &checkout, &inventory, refreshed.as_ref())
-    );
+    ui.block(&format_status(
+        &source,
+        &checkout,
+        &inventory,
+        refreshed.as_ref(),
+    ));
     let selection = if arguments.all {
         UpdateSelection::All
     } else {
@@ -369,7 +585,7 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         .map(|mcu| mcu.name.clone())
         .collect::<Vec<_>>();
     if offered.is_empty() {
-        println!("no eligible MCUs require an update");
+        ui.block("\nno eligible MCUs require an update\n");
         return ExitCode::SUCCESS;
     }
     let workspace = match RunWorkspace::create(workspace) {
@@ -397,10 +613,9 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         let current = mcu.version.as_deref().unwrap_or("unknown");
         let next = checkout_label(&checkout);
         if arguments.auto {
-            println!("\nUpdate {name} from {current} to {next}");
+            ui.heading(&format!("Update {name} from {current} to {next}"));
         } else {
-            eprint!("\nUpdate {name} from {current} to {next}? [y/N] ");
-            let _ = io::stderr().flush();
+            ui.prompt(&format!("Update {name} from {current} to {next}?"));
             if !matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes")) {
                 continue;
             }
@@ -412,36 +627,49 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         match coordinator.execute_and_flash_system_with_progress(
             pending.approve(),
             options.clone(),
-            print_update_progress,
+            |progress| ui.progress(progress),
         ) {
             Ok(v) => {
-                println!("  ..flashing complete ({} bytes)", v.flash.padded_bytes);
+                ui.finish_success(format!("flashed {} bytes", v.flash.padded_bytes));
+                ui.begin("waiting for MCU restart");
                 if let Err(error) = wait_for_application(mcu) {
+                    ui.finish_failure();
                     return fail(error);
                 }
-                println!("  ..MCU restart: successful");
+                ui.finish_success("MCU restart confirmed");
                 accepted.push(name);
             }
-            Err(error) => return fail(update_failure(error)),
+            Err(error) => {
+                ui.finish_failure();
+                return fail(update_failure(error));
+            }
         }
     }
     if accepted.is_empty() {
-        println!("\nno updates confirmed");
+        ui.block("\nno updates confirmed\n");
         return ExitCode::SUCCESS;
     }
-    println!("\nFinishing update");
-    println!("  ..starting Klipper");
+    ui.heading("Finishing update");
+    ui.begin("starting Klipper");
     if let Err(error) = coordinator.start_after_batch() {
+        ui.finish_failure();
         return fail(error.to_string());
     }
-    println!("  ..Klipper ready");
+    ui.finish_success("Klipper ready");
+    ui.begin("waiting for updated MCUs to reconnect");
     if let Err(error) = wait_for_mcus(
         &MoonrakerClient::new(&arguments.connection.moonraker.moonraker),
         &accepted,
         &checkout,
     ) {
+        ui.finish_failure();
         return fail(error);
     }
+    ui.finish_success("all updated MCUs connected");
+    ui.heading(&format!(
+        "Update complete: {} MCU(s) updated",
+        accepted.len()
+    ));
     ExitCode::SUCCESS
 }
 
@@ -470,17 +698,6 @@ fn refresh_label(refreshed: &RefreshResult) -> String {
         checkout_label(&refreshed.after),
         refreshed.commits_advanced,
     )
-}
-
-fn print_update_progress(progress: UpdateProgress) {
-    match progress {
-        UpdateProgress::StoppingKlipper => println!("  ..stopping Klipper"),
-        UpdateProgress::ConfiguringFirmware => println!("  ..configuring firmware"),
-        UpdateProgress::CompilingFirmware => println!("  ..compiling firmware"),
-        UpdateProgress::EnteringBootloader => println!("  ..entering bootloader"),
-        UpdateProgress::BootloaderReady => println!("  ..bootloader ready"),
-        UpdateProgress::StartingFlash => println!("  ..starting flashing process"),
-    }
 }
 
 fn wait_for_application(mcu: &mcu_update::moonraker::Mcu) -> Result<(), String> {
@@ -574,9 +791,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Cli, CliCommand, format_status, selected_mcus_are_ready, setup_check_report,
-        setup_install_report, sudo_policy_allows_service_status, update_failure,
-        wait_for_application_with_timeout,
+        Cli, CliCommand, ColorMode, colors_enabled, format_status, plain_success_line,
+        selected_mcus_are_ready, setup_check_report, setup_install_report,
+        sudo_policy_allows_service_status, update_failure, wait_for_application_with_timeout,
     };
     use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
@@ -593,6 +810,18 @@ mod tests {
         assert!(help.contains("Usage:"));
         assert!(help.contains("setup"));
         assert!(help.contains("update"));
+    }
+
+    #[test]
+    fn honors_color_mode_without_using_terminal_escape_codes_in_plain_output() {
+        assert!(colors_enabled(ColorMode::Always, false));
+        assert!(!colors_enabled(ColorMode::Never, true));
+        assert!(colors_enabled(ColorMode::Auto, true));
+        assert!(!colors_enabled(ColorMode::Auto, false));
+        assert_eq!(
+            plain_success_line("compiled firmware"),
+            "  [ok] compiled firmware"
+        );
     }
 
     #[test]
