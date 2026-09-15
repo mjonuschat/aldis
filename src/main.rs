@@ -8,9 +8,10 @@ use std::{fs, process::Command};
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use mcu_update::coordinator::BuildCoordinator;
+use mcu_update::coordinator::FlashCoordinatorError;
 use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
-use mcu_update::flash::system::SystemFlashOptions;
+use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
 use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient};
 use mcu_update::plan::build_update_plan;
 use mcu_update::workspace::RunWorkspace;
@@ -67,14 +68,26 @@ fn install_setup() -> ExitCode {
     if let Err(error) = fs::write(SUDOERS_PATH, sudoers_policy(&user)) {
         return fail(format!("could not install service policy: {error}"));
     }
-    if let Err(error) = Command::new("chmod").args(["440", SUDOERS_PATH]).status() {
-        return fail(format!("could not protect service policy: {error}"));
+    match Command::new("chmod").args(["440", SUDOERS_PATH]).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            return fail(format!(
+                "could not protect service policy: chmod exited with {status}"
+            ));
+        }
+        Err(error) => return fail(format!("could not protect service policy: {error}")),
     }
-    if let Err(error) = Command::new("udevadm")
+    match Command::new("udevadm")
         .args(["control", "--reload-rules"])
         .status()
     {
-        return fail(format!("could not reload udev rules: {error}"));
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            return fail(format!(
+                "could not reload udev rules: udevadm exited with {status}"
+            ));
+        }
+        Err(error) => return fail(format!("could not reload udev rules: {error}")),
     }
     println!("mcu-update setup is ready for {user}");
     ExitCode::SUCCESS
@@ -83,15 +96,22 @@ fn install_setup() -> ExitCode {
 fn check_setup() -> ExitCode {
     let rules = fs::read_to_string(UDEV_RULES_PATH).is_ok_and(|contents| contents == udev_rules());
     let service = Command::new("sudo")
-        .args(["-n", "true"])
-        .status()
-        .is_ok_and(|status| status.success());
+        .args(["-n", "/bin/systemctl", "is-active", "klipper"])
+        .output()
+        .is_ok_and(|output| sudo_policy_allows_service_status(&output.stdout));
     if rules && service {
         println!("mcu-update setup is ready");
         ExitCode::SUCCESS
     } else {
         fail("mcu-update setup is incomplete; run sudo mcu-update setup".to_owned())
     }
+}
+
+fn sudo_policy_allows_service_status(stdout: &[u8]) -> bool {
+    matches!(
+        std::str::from_utf8(stdout).map(str::trim),
+        Ok("active" | "inactive" | "failed" | "activating" | "deactivating" | "reloading")
+    )
 }
 
 fn valid_user_name(user: &str) -> bool {
@@ -284,7 +304,7 @@ fn update(args: Vec<String>) -> ExitCode {
                     return fail(error);
                 }
             }
-            Err(e) => return fail(format!("update failed: {e:?}")),
+            Err(error) => return fail(update_failure(error)),
         }
     }
     if let Err(error) = coordinator.start_after_batch() {
@@ -294,6 +314,19 @@ fn update(args: Vec<String>) -> ExitCode {
         return fail(error);
     }
     ExitCode::SUCCESS
+}
+
+fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
+    let detail = match error {
+        FlashCoordinatorError::Coordinator(error) => error.to_string(),
+        FlashCoordinatorError::Artifact(error) => {
+            format!("could not read the built firmware: {error}")
+        }
+        FlashCoordinatorError::Flash(error) => format!("native flash failed: {error:?}"),
+    };
+    format!(
+        "update failed: {detail}. Klipper may still be stopped; fix the issue, then rerun update"
+    )
 }
 
 fn wait_for_application(mcu: &mcu_update::moonraker::Mcu) -> Result<(), String> {
@@ -399,8 +432,14 @@ fn print_inventory(url: &str, inventory: &McuInventory) {
 mod tests {
     use std::time::Duration;
 
-    use super::{moonraker, selected_mcus_are_ready, wait_for_application_with_timeout};
+    use super::{
+        moonraker, selected_mcus_are_ready, sudo_policy_allows_service_status, update_failure,
+        wait_for_application_with_timeout,
+    };
+    use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
+    use mcu_update::coordinator::{CoordinatorError, FlashCoordinatorError};
     use mcu_update::eligibility::CheckoutRevision;
+    use mcu_update::flash::system::SystemFlashError;
     use mcu_update::moonraker::{Mcu, McuInventory, McuTransport};
 
     #[test]
@@ -419,6 +458,38 @@ mod tests {
     #[test]
     fn rejects_invalid_read_only_arguments() {
         assert!(moonraker(vec!["--moonraker".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn recognizes_a_permitted_inactive_klipper_status() {
+        assert!(sudo_policy_allows_service_status(b"inactive\n"));
+        assert!(!sudo_policy_allows_service_status(
+            b"sudo: a password is required\n"
+        ));
+    }
+
+    #[test]
+    fn reports_build_stderr_without_debugging_command_buffers() {
+        let error = FlashCoordinatorError::<SystemFlashError>::Coordinator(
+            CoordinatorError::Build(BuildError::CommandFailed {
+                command: Box::new(BuildCommand {
+                    program: "make".to_owned(),
+                    arguments: Vec::new(),
+                    current_dir: None,
+                }),
+                output: Box::new(CommandOutput {
+                    success: false,
+                    stdout: b"unrelated output".to_vec(),
+                    stderr: b"permission denied".to_vec(),
+                }),
+            }),
+        );
+
+        let message = update_failure(error);
+
+        assert!(message.contains("make failed: permission denied"));
+        assert!(!message.contains("unrelated output"));
+        assert!(message.contains("may still be stopped"));
     }
 
     #[test]
