@@ -227,10 +227,17 @@ fn update(args: Vec<String>) -> ExitCode {
 }
 
 fn wait_for_application(mcu: &mcu_update::moonraker::Mcu) -> Result<(), String> {
+    wait_for_application_with_timeout(mcu, Duration::from_secs(15))
+}
+
+fn wait_for_application_with_timeout(
+    mcu: &mcu_update::moonraker::Mcu,
+    timeout: Duration,
+) -> Result<(), String> {
     let Some(McuTransport::Serial { device }) = &mcu.transport else {
         return Ok(());
     };
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if std::path::Path::new(device).exists() {
             return Ok(());
@@ -247,26 +254,31 @@ fn wait_for_mcus(
 ) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if let Ok(inventory) = client.discover_mcus() {
-            let ready = selected.iter().all(|name| {
-                inventory
-                    .mcus
-                    .iter()
-                    .find(|mcu| &mcu.name == name)
-                    .is_some_and(|mcu| match checkout {
-                        CheckoutRevision::Known(revision) => {
-                            mcu.version.as_deref() == Some(revision)
-                        }
-                        CheckoutRevision::Indeterminate => true,
-                    })
-            });
-            if ready {
-                return Ok(());
-            }
+        if let Ok(inventory) = client.discover_mcus()
+            && selected_mcus_are_ready(&inventory, selected, checkout)
+        {
+            return Ok(());
         }
         thread::sleep(Duration::from_millis(250));
     }
     Err("Klipper did not reconnect every updated MCU at the built revision".to_owned())
+}
+
+fn selected_mcus_are_ready(
+    inventory: &McuInventory,
+    selected: &[String],
+    checkout: &CheckoutRevision,
+) -> bool {
+    selected.iter().all(|name| {
+        inventory
+            .mcus
+            .iter()
+            .find(|mcu| &mcu.name == name)
+            .is_some_and(|mcu| match checkout {
+                CheckoutRevision::Known(revision) => mcu.version.as_deref() == Some(revision),
+                CheckoutRevision::Indeterminate => true,
+            })
+    })
 }
 
 fn confirm_pull() -> bool {
@@ -315,7 +327,11 @@ fn print_inventory(url: &str, inventory: &McuInventory) {
 
 #[cfg(test)]
 mod tests {
-    use super::moonraker;
+    use std::time::Duration;
+
+    use super::{moonraker, selected_mcus_are_ready, wait_for_application_with_timeout};
+    use mcu_update::eligibility::CheckoutRevision;
+    use mcu_update::moonraker::{Mcu, McuInventory, McuTransport};
 
     #[test]
     fn accepts_the_default_or_explicit_moonraker_url() {
@@ -333,5 +349,47 @@ mod tests {
     #[test]
     fn rejects_invalid_read_only_arguments() {
         assert!(moonraker(vec!["--moonraker".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn rejects_a_serial_mcu_that_does_not_reenumerate() {
+        let mcu = mcu("mcu h723", "v1", Some("/definitely/missing"));
+        assert!(wait_for_application_with_timeout(&mcu, Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn requires_every_selected_mcu_at_the_built_revision() {
+        let selected = vec!["mcu h723".to_owned(), "mcu rp2040".to_owned()];
+        let checkout = CheckoutRevision::Known("v2".to_owned());
+        let only_one = McuInventory {
+            mcus: vec![mcu("mcu h723", "v2", None)],
+        };
+        assert!(!selected_mcus_are_ready(&only_one, &selected, &checkout));
+        let wrong_version = McuInventory {
+            mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v1", None)],
+        };
+        assert!(!selected_mcus_are_ready(
+            &wrong_version,
+            &selected,
+            &checkout
+        ));
+        let complete = McuInventory {
+            mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v2", None)],
+        };
+        assert!(selected_mcus_are_ready(&complete, &selected, &checkout));
+    }
+
+    fn mcu(name: &str, version: &str, serial: Option<&str>) -> Mcu {
+        Mcu {
+            name: name.to_owned(),
+            app: None,
+            version: Some(version.to_owned()),
+            mcu: "test".to_owned(),
+            canbus_frequency_hz: None,
+            transport: serial.map(|device| McuTransport::Serial {
+                device: device.to_owned(),
+            }),
+            kconfig: "CONFIG_TEST=y\n".to_owned(),
+        }
     }
 }
