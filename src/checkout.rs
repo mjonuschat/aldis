@@ -77,6 +77,32 @@ impl std::error::Error for CheckoutError {
     }
 }
 
+/// A source of Klipper checkout state and fast-forward refreshes.
+///
+/// Isolates callers that only need checkout revisions and refreshes from the
+/// concrete `git2`-backed implementation, so they can be tested against a fake.
+pub trait CheckoutPort {
+    /// Returns the checkout revision, including a dirty suffix for tracked changes.
+    fn revision(&self, path: &Path) -> Result<CheckoutRevision, CheckoutError>;
+
+    /// Fetches the checked-out branch's configured upstream and applies only a fast-forward.
+    fn refresh(&self, path: &Path) -> Result<RefreshResult, CheckoutError>;
+}
+
+/// A [`CheckoutPort`] backed by the local Git checkout through `libgit2`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GitCheckout;
+
+impl CheckoutPort for GitCheckout {
+    fn revision(&self, path: &Path) -> Result<CheckoutRevision, CheckoutError> {
+        revision(path)
+    }
+
+    fn refresh(&self, path: &Path) -> Result<RefreshResult, CheckoutError> {
+        refresh(path)
+    }
+}
+
 /// A successful fast-forward-only source refresh.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefreshResult {

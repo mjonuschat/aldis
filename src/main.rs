@@ -12,7 +12,8 @@ use std::{fs, process::Command};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{
-    RefreshResult, refresh as refresh_checkout, revision as checkout_revision,
+    CheckoutPort, GitCheckout, RefreshResult, refresh as refresh_checkout,
+    revision as checkout_revision,
 };
 use mcu_update::coordinator::{BuildCoordinator, FlashCoordinatorError, UpdateProgress};
 use mcu_update::eligibility::{
@@ -20,7 +21,7 @@ use mcu_update::eligibility::{
 };
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
-use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient};
+use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient, MoonrakerPort};
 use mcu_update::plan::build_update_plan;
 use mcu_update::retry::retry_until_available;
 use mcu_update::run_log::{LoggingCommandRunner, RunLog};
@@ -259,13 +260,28 @@ fn status(arguments: ConnectionArgs) -> ExitCode {
     let source = arguments
         .klipper_source
         .unwrap_or_else(default_klipper_source);
-    let inventory = match MoonrakerClient::new(&arguments.moonraker.moonraker).discover_mcus() {
-        Ok(inventory) => inventory,
-        Err(error) => return fail(error.to_string()),
-    };
-    let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    print!("{}", format_status(&source, &checkout, &inventory, None));
-    ExitCode::SUCCESS
+    let moonraker = MoonrakerClient::new(&arguments.moonraker.moonraker);
+    match status_report(&moonraker, &GitCheckout, &source) {
+        Ok(report) => {
+            print!("{report}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+fn status_report(
+    moonraker: &impl MoonrakerPort,
+    checkout: &impl CheckoutPort,
+    source: &std::path::Path,
+) -> Result<String, String> {
+    let inventory = moonraker
+        .discover_mcus()
+        .map_err(|error| error.to_string())?;
+    let revision = checkout
+        .revision(source)
+        .unwrap_or(CheckoutRevision::Indeterminate);
+    Ok(format_status(source, &revision, &inventory, None))
 }
 
 fn format_status(
@@ -801,7 +817,7 @@ fn wait_for_application_with_timeout(
 }
 
 fn wait_for_mcus(
-    client: &MoonrakerClient,
+    client: &impl MoonrakerPort,
     selected: &[String],
     checkout: &CheckoutRevision,
 ) -> Result<(), String> {
@@ -871,15 +887,16 @@ mod tests {
     use super::{
         Cli, CliCommand, ColorMode, colors_enabled, format_status, mcu_count_label,
         plain_success_line, selected_mcus_are_ready, setup_check_report, setup_install_report,
-        sudo_policy_allows_service_status, update_failure, wait_for_application_with_timeout,
+        status_report, sudo_policy_allows_service_status, update_failure,
+        wait_for_application_with_timeout, wait_for_mcus,
     };
     use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
-    use mcu_update::checkout::RefreshResult;
+    use mcu_update::checkout::{CheckoutError, CheckoutPort, RefreshResult};
     use mcu_update::coordinator::{CoordinatorError, FlashCoordinatorError};
     use mcu_update::eligibility::CheckoutRevision;
     use mcu_update::flash::system::SystemFlashError;
-    use mcu_update::moonraker::{Mcu, McuInventory, McuTransport};
+    use mcu_update::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
 
     #[test]
     fn top_level_help_describes_the_cli() {
@@ -1062,6 +1079,64 @@ mod tests {
             mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v2", None)],
         };
         assert!(selected_mcus_are_ready(&complete, &selected, &checkout));
+    }
+
+    #[test]
+    fn reports_status_from_injected_moonraker_and_checkout_sources() {
+        let moonraker = FakeMoonraker(Ok(McuInventory {
+            mcus: vec![mcu("mcu h723", "v2", None)],
+        }));
+        let checkout = FakeCheckout(Ok(CheckoutRevision::Known("v2".to_owned())));
+
+        let report = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
+            .expect("status report should succeed");
+
+        assert!(report.contains("mcu h723"));
+        assert!(report.contains("v2"));
+    }
+
+    #[test]
+    fn reports_the_moonraker_error_when_discovery_fails() {
+        let moonraker = FakeMoonraker(Err("no MCU objects were reported".to_owned()));
+        let checkout = FakeCheckout(Ok(CheckoutRevision::Indeterminate));
+
+        let error = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
+            .expect_err("status report should fail");
+
+        assert!(error.contains("no MCU objects were reported"));
+    }
+
+    #[test]
+    fn wait_for_mcus_succeeds_once_the_injected_source_reports_readiness() {
+        let selected = vec!["mcu h723".to_owned()];
+        let checkout = CheckoutRevision::Known("v2".to_owned());
+        let moonraker = FakeMoonraker(Ok(McuInventory {
+            mcus: vec![mcu("mcu h723", "v2", None)],
+        }));
+
+        assert!(wait_for_mcus(&moonraker, &selected, &checkout).is_ok());
+    }
+
+    struct FakeMoonraker(Result<McuInventory, String>);
+
+    impl MoonrakerPort for FakeMoonraker {
+        fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
+            self.0.clone().map_err(MoonrakerError::InvalidResponse)
+        }
+    }
+
+    struct FakeCheckout(Result<CheckoutRevision, String>);
+
+    impl CheckoutPort for FakeCheckout {
+        fn revision(&self, _path: &std::path::Path) -> Result<CheckoutRevision, CheckoutError> {
+            self.0
+                .clone()
+                .map_err(|_| CheckoutError::UpstreamNotConfigured)
+        }
+
+        fn refresh(&self, _path: &std::path::Path) -> Result<RefreshResult, CheckoutError> {
+            unimplemented!("not exercised by these tests")
+        }
     }
 
     fn mcu(name: &str, version: &str, serial: Option<&str>) -> Mcu {
