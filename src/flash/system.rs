@@ -3,7 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::build::SystemCommandRunner;
 use crate::flash::FlashBackend;
@@ -27,6 +27,7 @@ use crate::flash::usb_bootloader::{
 use crate::flash::usb_sysfs::usb_device_ancestor;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
+use crate::retry::retry_until_available;
 use crate::run_log::{LoggingCommandRunner, RunLog};
 
 /// A selected USB transfer route bound to the observed USB topology.
@@ -348,21 +349,6 @@ fn wait_for_device_access(
     })
 }
 
-fn retry_until_available<T, E>(
-    timeout: Duration,
-    poll_interval: Duration,
-    mut operation: impl FnMut() -> Result<T, E>,
-) -> Result<T, E> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match operation() {
-            Ok(result) => return Ok(result),
-            Err(error) if Instant::now() >= deadline => return Err(error),
-            Err(_) => thread::sleep(poll_interval.max(Duration::from_millis(10))),
-        }
-    }
-}
-
 fn usb_device_node(sysfs_path: &Path) -> io::Result<PathBuf> {
     let component = |name| {
         std::fs::read_to_string(sysfs_path.join(name))?
@@ -448,26 +434,14 @@ fn usb_identity(usb_path: &Path) -> io::Result<(String, String)> {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{retry_until_available, usb_can_bridge, usb_device_node};
+    use super::{usb_can_bridge, usb_device_node};
 
     #[test]
     fn recognizes_a_usb_can_bridge_from_embedded_kconfig() {
         assert!(usb_can_bridge("CONFIG_USBCANBUS=y\n"));
         assert!(!usb_can_bridge("# CONFIG_USBCANBUS is not set\n"));
-    }
-
-    #[test]
-    fn retries_resource_access_until_it_succeeds() {
-        let mut attempts = 0;
-        let result = retry_until_available(Duration::from_millis(50), Duration::ZERO, || {
-            attempts += 1;
-            (attempts == 3).then_some("ready").ok_or("not ready")
-        });
-
-        assert_eq!(result, Ok("ready"));
-        assert_eq!(attempts, 3);
     }
 
     #[test]

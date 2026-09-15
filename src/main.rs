@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, process::Command};
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
@@ -22,6 +22,7 @@ use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
 use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient};
 use mcu_update::plan::build_update_plan;
+use mcu_update::retry::retry_until_available;
 use mcu_update::run_log::{LoggingCommandRunner, RunLog};
 use mcu_update::workspace::RunWorkspace;
 
@@ -841,14 +842,13 @@ fn wait_for_application_with_timeout(
     let Some(McuTransport::Serial { device }) = &mcu.transport else {
         return Ok(());
     };
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::path::Path::new(device).exists() {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err(format!("{} did not re-enumerate at {device}", mcu.name))
+    retry_until_available(timeout, Duration::from_millis(100), || {
+        std::path::Path::new(device)
+            .exists()
+            .then_some(())
+            .ok_or(())
+    })
+    .map_err(|()| format!("{} did not re-enumerate at {device}", mcu.name))
 }
 
 fn wait_for_mcus(
@@ -856,16 +856,15 @@ fn wait_for_mcus(
     selected: &[String],
     checkout: &CheckoutRevision,
 ) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        if let Ok(inventory) = client.discover_mcus()
-            && selected_mcus_are_ready(&inventory, selected, checkout)
-        {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    Err("Klipper did not reconnect every updated MCU at the built revision".to_owned())
+    retry_until_available(Duration::from_secs(30), Duration::from_millis(250), || {
+        client
+            .discover_mcus()
+            .ok()
+            .filter(|inventory| selected_mcus_are_ready(inventory, selected, checkout))
+            .map(|_| ())
+            .ok_or(())
+    })
+    .map_err(|()| "Klipper did not reconnect every updated MCU at the built revision".to_owned())
 }
 
 fn selected_mcus_are_ready(

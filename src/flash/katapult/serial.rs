@@ -9,13 +9,12 @@ use std::time::Duration;
 
 use std::fs;
 use std::path::PathBuf;
-use std::thread;
-use std::time::Instant;
 
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
 use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
 use crate::flash::usb_sysfs::usb_device_ancestor;
+use crate::retry::retry_until_available;
 
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
 pub const BOOTLOADER_ENTRY_REQUEST: &[u8] = b"~ \x1c Request Serial Bootloader!! ~";
@@ -202,28 +201,25 @@ impl SystemSerialIo {
         timeout: Duration,
         poll_interval: Duration,
     ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
-        let deadline = Instant::now() + timeout;
-        let interval = poll_interval.max(Duration::from_millis(10));
-        loop {
+        retry_until_available(timeout, poll_interval, || {
             let identity = usb_identity(usb_path);
             if (identity.usb_id != initial_usb_id || identity.manufacturer != initial_manufacturer)
                 && identity.is_complete()
             {
-                return Ok(ObservedUsbBootloader {
+                Ok(ObservedUsbBootloader {
                     sysfs_path: usb_path.to_path_buf(),
                     usb_id: identity.usb_id,
                     manufacturer: identity.manufacturer,
                     serial_device: usb_tty(usb_path),
-                });
+                })
+            } else {
+                Err(())
             }
-            if Instant::now() >= deadline {
-                return Err(UsbBootloaderError::NotDetected {
-                    device: usb_path.to_path_buf(),
-                    reset_error: None,
-                });
-            }
-            thread::sleep(interval);
-        }
+        })
+        .map_err(|()| UsbBootloaderError::NotDetected {
+            device: usb_path.to_path_buf(),
+            reset_error: None,
+        })
     }
 
     /// Requests USB bootloader entry and waits for a matching USB identity.
@@ -250,26 +246,23 @@ impl SystemSerialIo {
         let reset_error = Self::request_usb_bootloader(path)
             .err()
             .map(|error| error.to_string());
-        let deadline = Instant::now() + timeout;
-        let interval = poll_interval.max(Duration::from_millis(10));
 
-        loop {
+        retry_until_available(timeout, poll_interval, || {
             let identity = usb_identity(&usb_path);
             if identity != initial_identity
                 && identity.is_complete()
                 && matches(&identity.usb_id, &identity.manufacturer)
                 && let Some(result) = ready(&usb_path)
             {
-                return Ok(result);
+                Ok(result)
+            } else {
+                Err(())
             }
-            if Instant::now() >= deadline {
-                return Err(UsbBootloaderError::NotDetected {
-                    device: path.to_path_buf(),
-                    reset_error,
-                });
-            }
-            thread::sleep(interval);
-        }
+        })
+        .map_err(|()| UsbBootloaderError::NotDetected {
+            device: path.to_path_buf(),
+            reset_error,
+        })
     }
 }
 
