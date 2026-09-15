@@ -1,4 +1,4 @@
-use mcu_update::moonraker::{McuTransport, parse_inventory};
+use aldis::moonraker::{McuTransport, parse_inventory};
 
 #[test]
 fn parses_mcu_inventory_from_a_moonraker_object_query() {

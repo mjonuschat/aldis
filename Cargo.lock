@@ -9,6 +9,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aldis"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dfu-core",
+ "dfu-nusb",
+ "git2",
+ "nusb",
+ "picoboot",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sha1",
+ "socketcan",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -810,25 +829,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "mcu-update"
-version = "0.1.0"
-dependencies = [
- "clap",
- "dfu-core",
- "dfu-nusb",
- "git2",
- "nusb",
- "picoboot",
- "serde",
- "serde_json",
- "serialport",
- "sha1",
- "socketcan",
- "tokio",
- "ureq",
 ]
 
 [[package]]

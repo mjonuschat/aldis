@@ -1,4 +1,4 @@
-use mcu_update::flash::katapult::serial::is_katapult_usb;
+use aldis::flash::katapult::serial::is_katapult_usb;
 
 #[test]
 fn recognizes_katapult_by_its_usb_id_or_manufacturer() {

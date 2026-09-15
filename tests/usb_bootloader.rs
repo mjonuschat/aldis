@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use mcu_update::flash::usb_bootloader::{
+use aldis::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderKind, UsbBootloaderSelectionError,
     classify_usb_identity, select_usb_bootloader,
 };

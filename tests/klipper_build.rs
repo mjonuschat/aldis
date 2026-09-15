@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcu_update::build::{
+use aldis::build::{
     BuildCommand, BuildError, BuildRequest, CommandOutput, CommandPort, KlipperBuilder,
 };
 
@@ -156,10 +156,7 @@ impl FakeRunner {
 }
 
 impl CommandPort for FakeRunner {
-    fn run(
-        &self,
-        command: &BuildCommand,
-    ) -> Result<CommandOutput, mcu_update::build::CommandError> {
+    fn run(&self, command: &BuildCommand) -> Result<CommandOutput, aldis::build::CommandError> {
         self.commands
             .lock()
             .expect("runner lock")
@@ -171,10 +168,7 @@ impl CommandPort for FakeRunner {
 struct FailingRunner;
 
 impl CommandPort for FailingRunner {
-    fn run(
-        &self,
-        _command: &BuildCommand,
-    ) -> Result<CommandOutput, mcu_update::build::CommandError> {
+    fn run(&self, _command: &BuildCommand) -> Result<CommandOutput, aldis::build::CommandError> {
         Ok(CommandOutput {
             success: false,
             stdout: Vec::new(),
@@ -188,10 +182,7 @@ struct ExpandingRunner {
 }
 
 impl CommandPort for ExpandingRunner {
-    fn run(
-        &self,
-        command: &BuildCommand,
-    ) -> Result<CommandOutput, mcu_update::build::CommandError> {
+    fn run(&self, command: &BuildCommand) -> Result<CommandOutput, aldis::build::CommandError> {
         if command
             .arguments
             .first()
@@ -213,10 +204,8 @@ fn temporary_directory(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "mcu-update-build-{name}-{}-{nonce}",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("aldis-build-{name}-{}-{nonce}", std::process::id()));
     assert!(!Path::new(&path).exists(), "test directory must be unique");
     path
 }

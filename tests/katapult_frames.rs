@@ -1,4 +1,4 @@
-use mcu_update::flash::katapult::{Command, FrameError, crc16_ccitt, encode_command};
+use aldis::flash::katapult::{Command, FrameError, crc16_ccitt, encode_command};
 
 #[test]
 fn computes_the_crc_used_by_katapult_frames() {

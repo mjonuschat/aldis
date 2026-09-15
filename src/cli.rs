@@ -8,7 +8,7 @@ const DEFAULT_MOONRAKER_URL: &str = "http://127.0.0.1:7125";
 
 /// Safely update Klipper MCU firmware from its embedded configuration.
 #[derive(Debug, Parser)]
-#[command(name = "mcu-update", version, about)]
+#[command(name = "aldis", version, about)]
 pub(crate) struct Cli {
     /// When to use ANSI color in interactive update output.
     #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
@@ -112,15 +112,15 @@ mod tests {
 
     #[test]
     fn requires_exactly_one_update_target_selector() {
-        assert!(Cli::try_parse_from(["mcu-update", "update"]).is_err());
-        assert!(Cli::try_parse_from(["mcu-update", "update", "mcu", "--all"]).is_err());
-        assert!(Cli::try_parse_from(["mcu-update", "update", "--all"]).is_ok());
+        assert!(Cli::try_parse_from(["aldis", "update"]).is_err());
+        assert!(Cli::try_parse_from(["aldis", "update", "mcu", "--all"]).is_err());
+        assert!(Cli::try_parse_from(["aldis", "update", "--all"]).is_ok());
     }
 
     #[test]
     fn accepts_multiple_mcu_targets_or_noninteractive_auto_updates() {
         let CliCommand::Update(targeted) =
-            Cli::try_parse_from(["mcu-update", "update", "mcu", "mcu toolhead"])
+            Cli::try_parse_from(["aldis", "update", "mcu", "mcu toolhead"])
                 .expect("parse multiple targets")
                 .command
         else {
@@ -128,13 +128,13 @@ mod tests {
         };
         assert_eq!(targeted.targets, ["mcu", "mcu toolhead"]);
 
-        let CliCommand::Update(automatic) = Cli::try_parse_from(["mcu-update", "update", "--auto"])
+        let CliCommand::Update(automatic) = Cli::try_parse_from(["aldis", "update", "--auto"])
             .expect("parse automatic update")
             .command
         else {
             panic!("expected update command");
         };
         assert!(automatic.auto);
-        assert!(Cli::try_parse_from(["mcu-update", "update", "--auto", "--pull"]).is_err());
+        assert!(Cli::try_parse_from(["aldis", "update", "--auto", "--pull"]).is_err());
     }
 }

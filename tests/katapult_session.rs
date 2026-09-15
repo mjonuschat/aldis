@@ -1,7 +1,5 @@
-use mcu_update::flash::katapult::session::{
-    KatapultSession, KatapultTarget, SessionError, Transport,
-};
-use mcu_update::flash::katapult::{Command, crc16_ccitt};
+use aldis::flash::katapult::session::{KatapultSession, KatapultTarget, SessionError, Transport};
+use aldis::flash::katapult::{Command, crc16_ccitt};
 
 #[derive(Default)]
 struct ScriptedTransport {

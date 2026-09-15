@@ -1,4 +1,4 @@
-//! `mcu-update` CLI entry point: dispatches to the status, inspect, update, and setup commands.
+//! `aldis` CLI entry point: dispatches to the status, inspect, update, and setup commands.
 
 mod cli;
 mod setup;
@@ -9,8 +9,8 @@ mod update;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use aldis::moonraker::{McuInventory, MoonrakerAdapter};
 use clap::Parser;
-use mcu_update::moonraker::{McuInventory, MoonrakerAdapter};
 
 use cli::{Cli, CliCommand};
 

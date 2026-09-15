@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
-use mcu_update::coordinator::{BuildCoordinator, UpdateProgress};
-use mcu_update::moonraker::parse_inventory;
-use mcu_update::plan::build_update_plan;
-use mcu_update::workspace::RunWorkspace;
+use aldis::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
+use aldis::coordinator::{BuildCoordinator, UpdateProgress};
+use aldis::moonraker::parse_inventory;
+use aldis::plan::build_update_plan;
+use aldis::workspace::RunWorkspace;
 
 #[test]
 fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
@@ -52,7 +52,7 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
         .execute_and_flash(pending.approve(), |prepared, firmware| {
             assert_eq!(prepared.target_name, "mcu toolhead");
             assert_eq!(firmware, b"firmware");
-            Ok::<_, ()>(mcu_update::flash::FlashResult {
+            Ok::<_, ()>(aldis::flash::FlashResult {
                 reported_pages: Some(1),
                 padded_bytes: 64,
             })
@@ -127,7 +127,7 @@ fn reports_build_phases_before_the_flash_callback() {
         .execute_and_flash_with_progress(
             pending.approve(),
             |_, _| {
-                Ok::<_, ()>(mcu_update::flash::FlashResult {
+                Ok::<_, ()>(aldis::flash::FlashResult {
                     reported_pages: Some(1),
                     padded_bytes: 64,
                 })
@@ -205,10 +205,10 @@ fn does_not_restart_klipper_when_a_later_batch_flash_fails() {
 
     assert!(
         coordinator
-            .execute_and_flash(pending.approve(), |_, _| Err::<
-                mcu_update::flash::FlashResult,
-                _,
-            >("flash failed"))
+            .execute_and_flash(
+                pending.approve(),
+                |_, _| Err::<aldis::flash::FlashResult, _>("flash failed")
+            )
             .is_err()
     );
     assert!(
@@ -279,8 +279,5 @@ fn temporary_directory() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "mcu-update-coordinator-{}-{nonce}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("aldis-coordinator-{}-{nonce}", std::process::id()))
 }

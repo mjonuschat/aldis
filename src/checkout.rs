@@ -257,7 +257,7 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
     let branch_reference = format!("refs/heads/{branch_name}");
     repository
         .find_reference(&branch_reference)
-        .and_then(|mut reference| reference.set_target(commit.id(), "mcu-update fast-forward"))
+        .and_then(|mut reference| reference.set_target(commit.id(), "aldis fast-forward"))
         .map_err(|source| CheckoutError::Refresh {
             action: "advance the local Klipper branch",
             source,

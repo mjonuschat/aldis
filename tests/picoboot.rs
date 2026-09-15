@@ -1,4 +1,4 @@
-use mcu_update::flash::picoboot::{Uf2Error, decode_uf2};
+use aldis::flash::picoboot::{Uf2Error, decode_uf2};
 
 const UF2_BLOCK_SIZE: usize = 512;
 

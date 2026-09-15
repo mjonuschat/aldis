@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
-use mcu_update::flash::katapult::endpoint::{EndpointError, KatapultEndpoint, endpoint_for};
-use mcu_update::moonraker::McuTransport;
-use mcu_update::prepare::PreparedBuild;
+use aldis::flash::katapult::endpoint::{EndpointError, KatapultEndpoint, endpoint_for};
+use aldis::moonraker::McuTransport;
+use aldis::prepare::PreparedBuild;
 
 fn prepared(transport: Option<McuTransport>) -> PreparedBuild {
     PreparedBuild {
         target_name: "mcu toolhead".to_owned(),
         mcu: "stm32g0b1xx".to_owned(),
         transport,
-        request: mcu_update::build::BuildRequest {
+        request: aldis::build::BuildRequest {
             kconfig: String::new(),
             config_path: PathBuf::from("toolhead/.config"),
             artifact_path: PathBuf::from("artifacts/toolhead.bin"),

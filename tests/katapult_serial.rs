@@ -1,10 +1,8 @@
 use std::collections::VecDeque;
 
-use mcu_update::flash::katapult::crc16_ccitt;
-use mcu_update::flash::katapult::serial::{
-    BOOTLOADER_ENTRY_REQUEST, KatapultSerialTransport, SerialIo,
-};
-use mcu_update::flash::katapult::session::Transport;
+use aldis::flash::katapult::crc16_ccitt;
+use aldis::flash::katapult::serial::{BOOTLOADER_ENTRY_REQUEST, KatapultSerialTransport, SerialIo};
+use aldis::flash::katapult::session::Transport;
 
 #[derive(Default)]
 struct ScriptedSerial {

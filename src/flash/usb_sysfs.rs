@@ -56,9 +56,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "mcu-update-usb-sysfs-{}-{nonce}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("aldis-usb-sysfs-{}-{nonce}", std::process::id()))
     }
 }

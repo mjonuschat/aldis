@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcu_update::moonraker::{McuTransport, parse_inventory};
-use mcu_update::plan::build_update_plan;
-use mcu_update::prepare::{PreparationError, prepare_build};
+use aldis::moonraker::{McuTransport, parse_inventory};
+use aldis::plan::build_update_plan;
+use aldis::prepare::{PreparationError, prepare_build};
 
 #[test]
 fn prepares_a_selected_planned_mcu_without_writing_files() {
@@ -77,8 +77,5 @@ fn unique_temporary_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "mcu-update-preparation-{}-{nonce}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("aldis-preparation-{}-{nonce}", std::process::id()))
 }

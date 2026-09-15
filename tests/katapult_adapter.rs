@@ -1,7 +1,7 @@
-use mcu_update::flash::FlashPort;
-use mcu_update::flash::katapult::adapter::KatapultAdapter;
-use mcu_update::flash::katapult::session::Transport;
-use mcu_update::flash::katapult::{Command, crc16_ccitt};
+use aldis::flash::FlashPort;
+use aldis::flash::katapult::adapter::KatapultAdapter;
+use aldis::flash::katapult::session::Transport;
+use aldis::flash::katapult::{Command, crc16_ccitt};
 
 #[derive(Default)]
 struct ScriptedTransport {
@@ -59,7 +59,7 @@ fn flashes_verifies_and_starts_a_serial_katapult_target() {
 
     assert_eq!(
         backend.flash(&[0xab]).unwrap(),
-        mcu_update::flash::FlashResult {
+        aldis::flash::FlashResult {
             reported_pages: Some(1),
             padded_bytes: 64,
         }

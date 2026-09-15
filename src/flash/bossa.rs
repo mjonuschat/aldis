@@ -200,8 +200,5 @@ fn temporary_firmware_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "mcu-update-bossa-{}-{nonce}.bin",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("aldis-bossa-{}-{nonce}.bin", std::process::id()))
 }

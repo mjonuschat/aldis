@@ -1,7 +1,7 @@
-use mcu_update::eligibility::{
+use aldis::eligibility::{
     CheckoutRevision, Eligibility, RevisionStatus, UpdateSelection, assess_mcu, is_selected,
 };
-use mcu_update::moonraker::Mcu;
+use aldis::moonraker::Mcu;
 
 fn mcu(app: Option<&str>, version: Option<&str>, kconfig: &str) -> Mcu {
     Mcu {

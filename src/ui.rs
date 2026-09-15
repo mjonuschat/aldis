@@ -8,8 +8,8 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-use mcu_update::coordinator::UpdateProgress;
-use mcu_update::run_log::RunLog;
+use aldis::coordinator::UpdateProgress;
+use aldis::run_log::RunLog;
 
 use crate::cli::ColorMode;
 

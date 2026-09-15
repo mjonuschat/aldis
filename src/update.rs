@@ -5,19 +5,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mcu_update::build::SystemCommandAdapter;
-use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
-use mcu_update::coordinator::{BuildCoordinator, FlashCoordinatorError};
-use mcu_update::eligibility::{
-    CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected,
-};
-use mcu_update::flash::katapult::system::SystemKatapultOptions;
-use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
-use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
-use mcu_update::plan::build_update_plan;
-use mcu_update::retry::retry_until_available;
-use mcu_update::run_log::{LoggingCommandAdapter, RunLog};
-use mcu_update::workspace::RunWorkspace;
+use aldis::build::SystemCommandAdapter;
+use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
+use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
+use aldis::eligibility::{CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected};
+use aldis::flash::katapult::system::SystemKatapultOptions;
+use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
+use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
+use aldis::plan::build_update_plan;
+use aldis::retry::retry_until_available;
+use aldis::run_log::{LoggingCommandAdapter, RunLog};
+use aldis::workspace::RunWorkspace;
 
 use crate::cli::UpdateArgs;
 use crate::fail;
@@ -214,7 +212,7 @@ fn default_run_workspace() -> PathBuf {
         .unwrap_or_default()
         .as_millis();
     state_dir
-        .join("mcu-update/runs")
+        .join("aldis/runs")
         .join(format!("run-{nonce}-{}", std::process::id()))
 }
 
@@ -235,12 +233,12 @@ fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
     )
 }
 
-fn wait_for_application(mcu: &mcu_update::moonraker::Mcu) -> Result<(), String> {
+fn wait_for_application(mcu: &aldis::moonraker::Mcu) -> Result<(), String> {
     wait_for_application_with_timeout(mcu, Duration::from_secs(15))
 }
 
 fn wait_for_application_with_timeout(
-    mcu: &mcu_update::moonraker::Mcu,
+    mcu: &aldis::moonraker::Mcu,
     timeout: Duration,
 ) -> Result<(), String> {
     let Some(McuTransport::Serial { device }) = &mcu.transport else {
@@ -308,11 +306,11 @@ mod tests {
         mcu_count_label, selected_mcus_are_ready, update_failure,
         wait_for_application_with_timeout, wait_for_mcus,
     };
-    use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
-    use mcu_update::coordinator::{CoordinatorError, FlashCoordinatorError};
-    use mcu_update::eligibility::CheckoutRevision;
-    use mcu_update::flash::system::SystemFlashError;
-    use mcu_update::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
+    use aldis::build::{BuildCommand, BuildError, CommandOutput};
+    use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
+    use aldis::eligibility::CheckoutRevision;
+    use aldis::flash::system::SystemFlashError;
+    use aldis::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
 
     #[test]
     fn reports_mcu_counts_with_correct_pluralization() {

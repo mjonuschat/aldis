@@ -1,5 +1,5 @@
-use mcu_update::flash::katapult::bootstrap::request_can_bootloader;
-use mcu_update::flash::katapult::can::{CanFrame, CanIo};
+use aldis::flash::katapult::bootstrap::request_can_bootloader;
+use aldis::flash::katapult::can::{CanFrame, CanIo};
 
 #[derive(Default)]
 struct ScriptedCanIo {

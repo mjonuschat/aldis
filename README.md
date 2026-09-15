@@ -1,4 +1,4 @@
-# mcu-update
+# aldis
 
 A tool for updating MCU firmware.
 

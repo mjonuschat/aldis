@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use mcu_update::flash::bossa::{BossaError, BossaTarget, bossac_command, target_from_kconfig};
+use aldis::flash::bossa::{BossaError, BossaTarget, bossac_command, target_from_kconfig};
 
 #[test]
 fn derives_samd21_bossa_offset_from_embedded_kconfig() {

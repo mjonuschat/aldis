@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 
-use mcu_update::flash::katapult::can::{
+use aldis::flash::katapult::can::{
     CanFrame, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport,
 };
-use mcu_update::flash::katapult::session::Transport;
+use aldis::flash::katapult::session::Transport;
 
 #[test]
 fn assigns_the_explicit_uuid_and_fragments_protocol_frames() {

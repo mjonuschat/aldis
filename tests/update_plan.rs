@@ -1,5 +1,5 @@
-use mcu_update::moonraker::{McuTransport, parse_inventory};
-use mcu_update::plan::{UpdateStep, build_update_plan};
+use aldis::moonraker::{McuTransport, parse_inventory};
+use aldis::plan::{UpdateStep, build_update_plan};
 
 #[test]
 fn plans_sequential_updates_without_changing_service_state() {

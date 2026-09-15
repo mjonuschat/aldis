@@ -6,9 +6,9 @@ use std::process::{Command, ExitCode};
 use crate::cli::SetupArgs;
 use crate::fail;
 
-const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/80-mcu-update.rules";
-const SUDOERS_PATH: &str = "/etc/sudoers.d/mcu-update";
-const UDEV_RULES: &str = include_str!("../templates/80-mcu-update.rules");
+const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/80-aldis.rules";
+const SUDOERS_PATH: &str = "/etc/sudoers.d/aldis";
+const UDEV_RULES: &str = include_str!("../templates/80-aldis.rules");
 
 pub(crate) fn setup(arguments: SetupArgs) -> ExitCode {
     if arguments.check {
@@ -20,7 +20,7 @@ pub(crate) fn setup(arguments: SetupArgs) -> ExitCode {
 
 fn install_setup() -> ExitCode {
     let Some(user) = std::env::var_os("SUDO_USER").and_then(|user| user.into_string().ok()) else {
-        return fail("setup must be run with sudo; run: sudo mcu-update setup".to_owned());
+        return fail("setup must be run with sudo; run: sudo aldis setup".to_owned());
     };
     if !valid_user_name(&user) {
         return fail("SUDO_USER is not a valid account name".to_owned());
@@ -70,7 +70,7 @@ fn install_file(path: &str, contents: &str, description: &str) -> Result<&'stati
 
 fn setup_install_report(rules_action: &str, service_action: &str) -> String {
     format!(
-        "mcu-update setup:\n  udev rules: {rules_action}\n  service policy: {service_action}\n  service policy permissions: set to 0440\n  udev rules: reloaded"
+        "aldis setup:\n  udev rules: {rules_action}\n  service policy: {service_action}\n  service policy permissions: set to 0440\n  udev rules: reloaded"
     )
 }
 
@@ -84,13 +84,13 @@ fn check_setup() -> ExitCode {
     if rules && service {
         ExitCode::SUCCESS
     } else {
-        fail("mcu-update setup is incomplete; run sudo mcu-update setup".to_owned())
+        fail("aldis setup is incomplete; run sudo aldis setup".to_owned())
     }
 }
 
 fn setup_check_report(rules: bool, service: bool) -> String {
     format!(
-        "mcu-update setup:\n  udev rules: {}\n  Klipper service access: {}",
+        "aldis setup:\n  udev rules: {}\n  Klipper service access: {}",
         if rules {
             "ready"
         } else {
@@ -140,7 +140,7 @@ mod tests {
     fn reports_each_setup_prerequisite() {
         assert_eq!(
             setup_check_report(true, false),
-            "mcu-update setup:\n  udev rules: ready\n  Klipper service access: unavailable"
+            "aldis setup:\n  udev rules: ready\n  Klipper service access: unavailable"
         );
     }
 
@@ -148,7 +148,7 @@ mod tests {
     fn reports_setup_install_actions() {
         assert_eq!(
             setup_install_report("already current", "installed"),
-            "mcu-update setup:\n  udev rules: already current\n  service policy: installed\n  service policy permissions: set to 0440\n  udev rules: reloaded"
+            "aldis setup:\n  udev rules: already current\n  service policy: installed\n  service policy permissions: set to 0440\n  udev rules: reloaded"
         );
     }
 }

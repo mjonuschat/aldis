@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcu_update::workspace::RunWorkspace;
+use aldis::workspace::RunWorkspace;
 
 #[test]
 fn creates_isolated_paths_for_a_selected_mcu() {
@@ -29,8 +29,5 @@ fn unique_temporary_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "mcu-update-workspace-{}-{nonce}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("aldis-workspace-{}-{nonce}", std::process::id()))
 }

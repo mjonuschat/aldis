@@ -2,9 +2,9 @@
 
 use std::process::ExitCode;
 
-use mcu_update::checkout::{CheckoutPort, GitCheckoutAdapter, RefreshResult};
-use mcu_update::eligibility::{CheckoutRevision, Eligibility, RevisionStatus, assess_mcu};
-use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
+use aldis::checkout::{CheckoutPort, GitCheckoutAdapter, RefreshResult};
+use aldis::eligibility::{CheckoutRevision, Eligibility, RevisionStatus, assess_mcu};
+use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
 
 use crate::cli::ConnectionArgs;
 use crate::fail;
@@ -76,7 +76,7 @@ pub(crate) fn checkout_label(checkout: &CheckoutRevision) -> &str {
     }
 }
 
-fn firmware_label(mcu: &mcu_update::moonraker::Mcu) -> String {
+fn firmware_label(mcu: &aldis::moonraker::Mcu) -> String {
     if let Some(app) = mcu.app.as_deref().filter(|app| !app.trim().is_empty()) {
         app.to_owned()
     } else if !mcu.kconfig.trim().is_empty() {
@@ -127,9 +127,9 @@ pub(crate) fn refresh_label(refreshed: &RefreshResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::{format_status, status_report};
-    use mcu_update::checkout::{CheckoutError, CheckoutPort, RefreshResult};
-    use mcu_update::eligibility::CheckoutRevision;
-    use mcu_update::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
+    use aldis::checkout::{CheckoutError, CheckoutPort, RefreshResult};
+    use aldis::eligibility::CheckoutRevision;
+    use aldis::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
 
     #[test]
     fn renders_human_readable_klipper_status() {

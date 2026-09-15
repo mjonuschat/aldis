@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
-use mcu_update::service::{KlipperService, ServiceState};
+use aldis::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
+use aldis::service::{KlipperService, ServiceState};
 
 #[test]
 fn checks_then_stops_klipper_with_explicit_systemctl_commands() {

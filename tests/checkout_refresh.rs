@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aldis::checkout::{CheckoutError, refresh, revision};
+use aldis::eligibility::CheckoutRevision;
 use git2::{Commit, Repository, Signature};
-use mcu_update::checkout::{CheckoutError, refresh, revision};
-use mcu_update::eligibility::CheckoutRevision;
 
 #[test]
 fn fast_forwards_the_configured_upstream_branch() {
@@ -163,7 +163,7 @@ fn commit_file(repository: &Repository, file_name: &str, contents: &str, message
     index.write().expect("write index");
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("tree");
-    let signature = Signature::now("mcu-update test", "test@example.com").expect("signature");
+    let signature = Signature::now("aldis test", "test@example.com").expect("signature");
     let parents = repository
         .head()
         .ok()
@@ -199,7 +199,7 @@ fn temporary_directory(name: &str) -> PathBuf {
         .expect("clock should be after epoch")
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "mcu-update-checkout-{name}-{}-{nonce}",
+        "aldis-checkout-{name}-{}-{nonce}",
         std::process::id()
     ))
 }

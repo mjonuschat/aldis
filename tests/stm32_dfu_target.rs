@@ -1,5 +1,5 @@
-use mcu_update::flash::stm32_dfu::Stm32DfuError;
-use mcu_update::flash::stm32_dfu::target_from_kconfig;
+use aldis::flash::stm32_dfu::Stm32DfuError;
+use aldis::flash::stm32_dfu::target_from_kconfig;
 
 #[test]
 fn derives_stm32_application_start_from_embedded_kconfig() {

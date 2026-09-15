@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use mcu_update::flash::system::{SerialFlashRoute, SystemFlashError, serial_route};
-use mcu_update::flash::usb_bootloader::ObservedUsbBootloader;
+use aldis::flash::system::{SerialFlashRoute, SystemFlashError, serial_route};
+use aldis::flash::usb_bootloader::ObservedUsbBootloader;
 
 fn observed(usb_id: &str) -> ObservedUsbBootloader {
     ObservedUsbBootloader {
