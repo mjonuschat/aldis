@@ -163,7 +163,7 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
     })?;
     let branch_name = head
         .shorthand()
-        .ok_or(CheckoutError::UpstreamNotConfigured)?
+        .map_err(|_| CheckoutError::UpstreamNotConfigured)?
         .to_owned();
     let branch = repository
         .find_branch(&branch_name, BranchType::Local)
@@ -182,7 +182,7 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
     let upstream_reference_name = upstream
         .get()
         .name()
-        .ok_or(CheckoutError::UpstreamNotConfigured)?
+        .map_err(|_| CheckoutError::UpstreamNotConfigured)?
         .to_owned();
     let remote_name = repository
         .config()

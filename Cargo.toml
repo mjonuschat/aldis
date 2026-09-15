@@ -9,7 +9,7 @@ repository = "https://github.com/mjonuschat/aldis"
 clap = { version = "4.5.58", features = ["derive"] }
 dfu-core = "0.11.1"
 dfu-nusb = "0.2.0"
-git2 = { version = "0.20.4", default-features = false, features = ["https", "vendored-libgit2"] }
+git2 = { version = "0.21.0", default-features = false, features = ["https", "vendored-libgit2"] }
 nusb = "0.2.7"
 picoboot = { version = "0.2.6", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
