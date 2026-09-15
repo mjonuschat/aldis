@@ -1,7 +1,8 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
@@ -9,7 +10,7 @@ use mcu_update::coordinator::BuildCoordinator;
 use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::flash::system::SystemFlashOptions;
-use mcu_update::moonraker::{McuInventory, MoonrakerClient};
+use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient};
 use mcu_update::plan::build_update_plan;
 use mcu_update::workspace::RunWorkspace;
 
@@ -192,21 +193,80 @@ fn update(args: Vec<String>) -> ExitCode {
         },
         bossac_program: source.join("lib/bossac/bin/bossac"),
     };
-    for name in accepted {
-        let pending = match coordinator.prepare(&inventory, &plan, &workspace, &name) {
+    for name in &accepted {
+        let pending = match coordinator.prepare(&inventory, &plan, &workspace, name) {
             Ok(v) => v,
             Err(e) => return fail(e.to_string()),
         };
         match coordinator.execute_and_flash_system(pending.approve(), options.clone()) {
-            Ok(v) => println!(
-                "flashed {} bytes from {}",
-                v.flash.padded_bytes,
-                v.artifact.path.display()
-            ),
+            Ok(v) => {
+                println!(
+                    "flashed {} bytes from {}",
+                    v.flash.padded_bytes,
+                    v.artifact.path.display()
+                );
+                let mcu = inventory
+                    .mcus
+                    .iter()
+                    .find(|mcu| mcu.name == *name)
+                    .expect("accepted MCU is discovered");
+                if let Err(error) = wait_for_application(mcu) {
+                    return fail(error);
+                }
+            }
             Err(e) => return fail(format!("update failed: {e:?}")),
         }
     }
+    if let Err(error) = coordinator.start_after_batch() {
+        return fail(error.to_string());
+    }
+    if let Err(error) = wait_for_mcus(&MoonrakerClient::new(&url), &accepted, &checkout) {
+        return fail(error);
+    }
     ExitCode::SUCCESS
+}
+
+fn wait_for_application(mcu: &mcu_update::moonraker::Mcu) -> Result<(), String> {
+    let Some(McuTransport::Serial { device }) = &mcu.transport else {
+        return Ok(());
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if std::path::Path::new(device).exists() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!("{} did not re-enumerate at {device}", mcu.name))
+}
+
+fn wait_for_mcus(
+    client: &MoonrakerClient,
+    selected: &[String],
+    checkout: &CheckoutRevision,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Ok(inventory) = client.discover_mcus() {
+            let ready = selected.iter().all(|name| {
+                inventory
+                    .mcus
+                    .iter()
+                    .find(|mcu| &mcu.name == name)
+                    .is_some_and(|mcu| match checkout {
+                        CheckoutRevision::Known(revision) => {
+                            mcu.version.as_deref() == Some(revision)
+                        }
+                        CheckoutRevision::Indeterminate => true,
+                    })
+            });
+            if ready {
+                return Ok(());
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Err("Klipper did not reconnect every updated MCU at the built revision".to_owned())
 }
 
 fn confirm_pull() -> bool {

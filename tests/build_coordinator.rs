@@ -83,6 +83,29 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
     fs::remove_dir_all(root).expect("test directory cleanup");
 }
 
+#[test]
+fn starts_klipper_once_after_a_completed_batch() {
+    let root = temporary_directory();
+    let runner = FakeRunner::new([success_output(), state_output(true, b"active\n")]);
+    let coordinator = BuildCoordinator::new(&root, FakeRunner::new([]), runner.clone());
+
+    coordinator
+        .start_after_batch()
+        .expect("Klipper should restart");
+
+    let commands = runner.commands.lock().expect("runner lock");
+    assert_eq!(
+        commands
+            .iter()
+            .map(|command| command.arguments.as_slice())
+            .collect::<Vec<_>>(),
+        vec![
+            ["start".to_owned(), "klipper".to_owned()].as_slice(),
+            ["is-active".to_owned(), "klipper".to_owned()].as_slice(),
+        ]
+    );
+}
+
 #[derive(Clone)]
 struct FakeRunner {
     commands: Arc<Mutex<Vec<BuildCommand>>>,

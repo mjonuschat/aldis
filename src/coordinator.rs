@@ -196,4 +196,13 @@ where
             flash_prepared_system(prepared, firmware, options)
         })
     }
+
+    /// Starts Klipper once every selected MCU has completed its flash and application checks.
+    pub fn start_after_batch(&self) -> Result<(), CoordinatorError> {
+        self.service.start().map_err(CoordinatorError::Service)?;
+        match self.service.state().map_err(CoordinatorError::Service)? {
+            ServiceState::Active => Ok(()),
+            state => Err(CoordinatorError::UnexpectedKlipperState(state)),
+        }
+    }
 }
