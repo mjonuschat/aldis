@@ -249,6 +249,12 @@ fn flash_observed_usb(
             serial_device,
             target,
         } => {
+            wait_for_device_access(
+                &serial_device,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
             match command_log {
                 Some(log) => flash_bossa_with_runner(
@@ -310,11 +316,19 @@ fn wait_for_usb_access(
     poll_interval: Duration,
 ) -> io::Result<()> {
     let device_node = usb_device_node(sysfs_path)?;
+    wait_for_device_access(&device_node, timeout, poll_interval)
+}
+
+fn wait_for_device_access(
+    device_node: &Path,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> io::Result<()> {
     retry_until_available(timeout, poll_interval, || {
         std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&device_node)
+            .open(device_node)
     })
     .map(|_| ())
     .map_err(|error| {
@@ -423,11 +437,13 @@ fn usb_device_path_for_can_interface(interface: &str) -> io::Result<PathBuf> {
 
 fn usb_identity(usb_path: &Path) -> io::Result<(String, String)> {
     let value = |name: &str| {
-        std::fs::read_to_string(usb_path.join(name)).map(|value| value.trim().to_ascii_lowercase())
+        std::fs::read_to_string(usb_path.join(name))
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default()
     };
     Ok((
-        value("idVendor")? + ":" + &value("idProduct")?,
-        value("manufacturer")?,
+        format!("{}:{}", value("idVendor"), value("idProduct")),
+        value("manufacturer"),
     ))
 }
 
