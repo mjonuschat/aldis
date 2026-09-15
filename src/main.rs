@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{fs, process::Command};
 
+use clap::{Args, Parser, Subcommand};
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use mcu_update::coordinator::BuildCoordinator;
@@ -21,37 +22,92 @@ const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/80-mcu-update.rules";
 const SUDOERS_PATH: &str = "/etc/sudoers.d/mcu-update";
 const UDEV_RULES: &str = include_str!("../templates/80-mcu-update.rules");
 
+/// Safely update Klipper MCU firmware from its embedded configuration.
+#[derive(Debug, Parser)]
+#[command(name = "mcu-update", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: CliCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    /// Show discovered MCUs and whether their running firmware is current.
+    Status(ConnectionArgs),
+    /// Show the MCU configuration reported by Moonraker.
+    Inspect(MoonrakerArgs),
+    /// Build and flash one MCU or every eligible MCU.
+    Update(UpdateArgs),
+    /// Install or verify the host permissions required for unprivileged updates.
+    Setup(SetupArgs),
+}
+
+#[derive(Debug, Args)]
+struct MoonrakerArgs {
+    /// Moonraker API URL.
+    #[arg(long, default_value = DEFAULT_MOONRAKER_URL)]
+    moonraker: String,
+}
+
+#[derive(Debug, Args)]
+struct ConnectionArgs {
+    #[command(flatten)]
+    moonraker: MoonrakerArgs,
+    /// Klipper source checkout.
+    #[arg(long)]
+    klipper_source: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// MCU name reported by Moonraker.
+    #[arg(required_unless_present = "all")]
+    target: Option<String>,
+    /// Update every eligible MCU.
+    #[arg(long, conflicts_with = "target")]
+    all: bool,
+    /// Update even when the MCU already reports the checkout revision.
+    #[arg(long)]
+    force: bool,
+    /// Fast-forward the configured Klipper checkout before assessing MCUs.
+    #[arg(long)]
+    pull: bool,
+    #[command(flatten)]
+    connection: ConnectionArgs,
+    /// Directory retained for generated Kconfigs and firmware artifacts.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct SetupArgs {
+    /// Verify installed host permissions without modifying them.
+    #[arg(long)]
+    check: bool,
+}
+
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    let Some(command) = args.next() else {
-        return usage("missing command");
-    };
-    match command.as_str() {
-        "status" => status(args.collect()),
-        "inspect" => {
-            let url = match moonraker(args.collect()) {
-                Ok(url) => url,
-                Err(e) => return usage(&e),
-            };
-            match MoonrakerClient::new(&url).discover_mcus() {
+    match Cli::parse().command {
+        CliCommand::Status(arguments) => status(arguments),
+        CliCommand::Inspect(arguments) => {
+            match MoonrakerClient::new(&arguments.moonraker).discover_mcus() {
                 Ok(inventory) => {
-                    print_inventory(&url, &inventory);
+                    print_inventory(&arguments.moonraker, &inventory);
                     ExitCode::SUCCESS
                 }
                 Err(error) => fail(error.to_string()),
             }
         }
-        "update" => update(args.collect()),
-        "setup" => setup(args.collect()),
-        _ => usage("unknown command"),
+        CliCommand::Update(arguments) => update(arguments),
+        CliCommand::Setup(arguments) => setup(arguments),
     }
 }
 
-fn setup(arguments: Vec<String>) -> ExitCode {
-    match arguments.as_slice() {
-        [] => install_setup(),
-        [flag] if flag == "--check" => check_setup(),
-        _ => usage("expected no setup option or --check"),
+fn setup(arguments: SetupArgs) -> ExitCode {
+    if arguments.check {
+        check_setup()
+    } else {
+        install_setup()
     }
 }
 
@@ -131,12 +187,11 @@ fn sudoers_policy(user: &str) -> String {
     )
 }
 
-fn status(arguments: Vec<String>) -> ExitCode {
-    let (url, source) = match status_arguments(arguments) {
-        Ok(values) => values,
-        Err(error) => return usage(&error),
-    };
-    let inventory = match MoonrakerClient::new(&url).discover_mcus() {
+fn status(arguments: ConnectionArgs) -> ExitCode {
+    let source = arguments
+        .klipper_source
+        .unwrap_or_else(default_klipper_source);
+    let inventory = match MoonrakerClient::new(&arguments.moonraker.moonraker).discover_mcus() {
         Ok(inventory) => inventory,
         Err(error) => return fail(error.to_string()),
     };
@@ -155,68 +210,19 @@ fn status(arguments: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn status_arguments(arguments: Vec<String>) -> Result<(String, PathBuf), String> {
-    let mut url = DEFAULT_MOONRAKER_URL.to_owned();
-    let mut source = std::env::var_os("HOME")
+fn default_klipper_source() -> PathBuf {
+    std::env::var_os("HOME")
         .map(PathBuf::from)
         .map(|home| home.join("klipper"))
-        .ok_or("could not determine the invoking user's home directory")?;
-    let mut arguments = arguments.iter();
-    while let Some(argument) = arguments.next() {
-        match argument.as_str() {
-            "--moonraker" => {
-                url = arguments
-                    .next()
-                    .ok_or("--moonraker requires a URL")?
-                    .clone()
-            }
-            "--klipper-source" => {
-                source = PathBuf::from(arguments.next().ok_or("--klipper-source requires a path")?)
-            }
-            _ => return Err(format!("unknown status option {argument:?}")),
-        }
-    }
-    Ok((url, source))
+        .unwrap_or_else(|| PathBuf::from("klipper"))
 }
 
-fn update(args: Vec<String>) -> ExitCode {
-    let (target, options) = match args.split_first() {
-        Some((target, options)) if target == "--all" => (None, options),
-        Some((target, options)) => (Some(target), options),
-        None => return usage("update requires an MCU target or --all"),
-    };
-    let mut url = DEFAULT_MOONRAKER_URL.to_owned();
-    let mut source = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("klipper"));
-    let mut workspace = None;
-    let mut force = false;
-    let mut pull = false;
-    let mut it = options.iter();
-    while let Some(option) = it.next() {
-        match option.as_str() {
-            "--force" => force = true,
-            "--pull" => pull = true,
-            "--moonraker" => match it.next() {
-                Some(v) => url = v.clone(),
-                None => return usage("--moonraker requires a URL"),
-            },
-            "--klipper-source" => match it.next() {
-                Some(v) => source = Some(PathBuf::from(v)),
-                None => return usage("--klipper-source requires a path"),
-            },
-            "--workspace" => match it.next() {
-                Some(v) => workspace = Some(PathBuf::from(v)),
-                None => return usage("--workspace requires a path"),
-            },
-            "--all" if target.is_none() => {}
-            _ => return usage("unknown update option"),
-        }
-    }
-    let Some(source) = source else {
-        return usage("could not determine the invoking user's home directory");
-    };
-    if pull || (io::stdin().is_terminal() && confirm_pull()) {
+fn update(arguments: UpdateArgs) -> ExitCode {
+    let source = arguments
+        .connection
+        .klipper_source
+        .unwrap_or_else(default_klipper_source);
+    if arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
         let refreshed = match refresh_checkout(&source) {
             Ok(refreshed) => refreshed,
             Err(error) => return fail(error.to_string()),
@@ -232,16 +238,19 @@ fn update(args: Vec<String>) -> ExitCode {
             }
         );
     }
-    let workspace = workspace
+    let workspace = arguments
+        .workspace
         .unwrap_or_else(|| std::env::temp_dir().join(format!("mcu-update-{}", std::process::id())));
-    let inventory = match MoonrakerClient::new(&url).discover_mcus() {
-        Ok(v) => v,
-        Err(e) => return fail(e.to_string()),
-    };
+    let inventory =
+        match MoonrakerClient::new(&arguments.connection.moonraker.moonraker).discover_mcus() {
+            Ok(v) => v,
+            Err(e) => return fail(e.to_string()),
+        };
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
+    let target = arguments.target.as_ref();
     let selection = match target {
-        Some(target) if force => UpdateSelection::Force(target.clone()),
+        Some(target) if arguments.force => UpdateSelection::Force(target.clone()),
         Some(_) => UpdateSelection::Required,
         None => UpdateSelection::All,
     };
@@ -310,7 +319,11 @@ fn update(args: Vec<String>) -> ExitCode {
     if let Err(error) = coordinator.start_after_batch() {
         return fail(error.to_string());
     }
-    if let Err(error) = wait_for_mcus(&MoonrakerClient::new(&url), &accepted, &checkout) {
+    if let Err(error) = wait_for_mcus(
+        &MoonrakerClient::new(&arguments.connection.moonraker.moonraker),
+        &accepted,
+        &checkout,
+    ) {
         return fail(error);
     }
     ExitCode::SUCCESS
@@ -396,22 +409,9 @@ fn read_confirmation() -> Result<String, io::Error> {
     Ok(input.trim().to_ascii_lowercase())
 }
 
-fn moonraker(args: Vec<String>) -> Result<String, String> {
-    match args.as_slice() {
-        [] => Ok(DEFAULT_MOONRAKER_URL.to_owned()),
-        [flag, url] if flag == "--moonraker" => Ok(url.clone()),
-        _ => Err("expected no arguments or --moonraker URL".to_owned()),
-    }
-}
 fn fail(message: String) -> ExitCode {
     eprintln!("error: {message}");
     ExitCode::FAILURE
-}
-fn usage(message: &str) -> ExitCode {
-    eprintln!(
-        "error: {message}\nusage: mcu-update <inspect> [--moonraker URL]\n       mcu-update status [--moonraker URL] [--klipper-source PATH]\n       mcu-update update <target>|--all [--force] [--pull] [--klipper-source PATH] [--workspace PATH] [--moonraker URL]"
-    );
-    ExitCode::from(2)
 }
 fn print_inventory(url: &str, inventory: &McuInventory) {
     println!(
@@ -433,9 +433,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        moonraker, selected_mcus_are_ready, sudo_policy_allows_service_status, update_failure,
+        Cli, selected_mcus_are_ready, sudo_policy_allows_service_status, update_failure,
         wait_for_application_with_timeout,
     };
+    use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
     use mcu_update::coordinator::{CoordinatorError, FlashCoordinatorError};
     use mcu_update::eligibility::CheckoutRevision;
@@ -443,21 +444,19 @@ mod tests {
     use mcu_update::moonraker::{Mcu, McuInventory, McuTransport};
 
     #[test]
-    fn accepts_the_default_or_explicit_moonraker_url() {
-        assert_eq!(moonraker(Vec::new()).unwrap(), "http://127.0.0.1:7125");
-        assert_eq!(
-            moonraker(vec![
-                "--moonraker".to_owned(),
-                "http://example.test".to_owned()
-            ])
-            .unwrap(),
-            "http://example.test"
-        );
+    fn top_level_help_describes_the_cli() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("Usage:"));
+        assert!(help.contains("setup"));
+        assert!(help.contains("update"));
     }
 
     #[test]
-    fn rejects_invalid_read_only_arguments() {
-        assert!(moonraker(vec!["--moonraker".to_owned()]).is_err());
+    fn requires_exactly_one_update_target_selector() {
+        assert!(Cli::try_parse_from(["mcu-update", "update"]).is_err());
+        assert!(Cli::try_parse_from(["mcu-update", "update", "mcu", "--all"]).is_err());
+        assert!(Cli::try_parse_from(["mcu-update", "update", "--all"]).is_ok());
     }
 
     #[test]
