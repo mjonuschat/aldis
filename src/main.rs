@@ -667,10 +667,15 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     }
     ui.finish_success("all updated MCUs connected");
     ui.heading(&format!(
-        "Update complete: {} MCU(s) updated",
-        accepted.len()
+        "Update complete: {} {} updated",
+        accepted.len(),
+        mcu_count_label(accepted.len())
     ));
     ExitCode::SUCCESS
+}
+
+fn mcu_count_label(count: usize) -> &'static str {
+    if count == 1 { "MCU" } else { "MCUs" }
 }
 
 fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
@@ -791,8 +796,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Cli, CliCommand, ColorMode, colors_enabled, format_status, plain_success_line,
-        selected_mcus_are_ready, setup_check_report, setup_install_report,
+        Cli, CliCommand, ColorMode, colors_enabled, format_status, mcu_count_label,
+        plain_success_line, selected_mcus_are_ready, setup_check_report, setup_install_report,
         sudo_policy_allows_service_status, update_failure, wait_for_application_with_timeout,
     };
     use clap::{CommandFactory, Parser};
@@ -822,6 +827,8 @@ mod tests {
             plain_success_line("compiled firmware"),
             "  [ok] compiled firmware"
         );
+        assert_eq!(mcu_count_label(1), "MCU");
+        assert_eq!(mcu_count_label(2), "MCUs");
     }
 
     #[test]
