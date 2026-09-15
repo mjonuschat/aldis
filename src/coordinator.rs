@@ -5,11 +5,13 @@ use std::path::PathBuf;
 use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandRunner, KlipperBuilder};
 use crate::flash::FlashResult;
 use crate::flash::system::{
-    SystemFlashError, SystemFlashOptions, SystemFlashProgress, flash_prepared_system_with_progress,
+    SystemFlashError, SystemFlashOptions, SystemFlashProgress,
+    flash_prepared_system_with_progress_and_log,
 };
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
+use crate::run_log::RunLog;
 use crate::service::{KlipperService, ServiceError, ServiceState};
 use crate::workspace::{RunWorkspace, WorkspaceError};
 
@@ -242,6 +244,17 @@ where
         &self,
         approved: ApprovedBuild,
         options: SystemFlashOptions,
+        progress: impl FnMut(UpdateProgress),
+    ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
+        self.execute_and_flash_system_with_progress_and_log(approved, options, None, progress)
+    }
+
+    /// Builds and flashes through native backends while retaining external command output.
+    pub fn execute_and_flash_system_with_progress_and_log(
+        &self,
+        approved: ApprovedBuild,
+        options: SystemFlashOptions,
+        command_log: Option<&RunLog>,
         mut progress: impl FnMut(UpdateProgress),
     ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
         let mut prepared = approved.pending.prepared.clone();
@@ -250,13 +263,19 @@ where
             .map_err(FlashCoordinatorError::Coordinator)?;
         prepared.request.kconfig = artifact.kconfig.clone();
         let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
-        let flash = flash_prepared_system_with_progress(&prepared, &firmware, options, |stage| {
-            progress(match stage {
-                SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
-                SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
-                SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
-            });
-        })
+        let flash = flash_prepared_system_with_progress_and_log(
+            &prepared,
+            &firmware,
+            options,
+            command_log,
+            |stage| {
+                progress(match stage {
+                    SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
+                    SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
+                    SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+                });
+            },
+        )
         .map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
     }

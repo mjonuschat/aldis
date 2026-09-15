@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, process::Command};
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
@@ -22,6 +22,7 @@ use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
 use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient};
 use mcu_update::plan::build_update_plan;
+use mcu_update::run_log::{LoggingCommandRunner, RunLog};
 use mcu_update::workspace::RunWorkspace;
 
 const DEFAULT_MOONRAKER_URL: &str = "http://127.0.0.1:7125";
@@ -346,10 +347,29 @@ fn default_klipper_source() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("klipper"))
 }
 
+fn default_run_workspace() -> PathBuf {
+    let state_dir = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local/state"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    state_dir
+        .join("mcu-update/runs")
+        .join(format!("run-{nonce}-{}", std::process::id()))
+}
+
 struct UpdateUi {
     color: bool,
     interactive: bool,
     active: Option<ActiveProgress>,
+    log: Option<RunLog>,
 }
 
 struct ActiveProgress {
@@ -369,22 +389,36 @@ impl UpdateUi {
             color: colors_enabled(color_mode, interactive),
             interactive: interactive && !no_progress,
             active: None,
+            log: None,
+        }
+    }
+
+    fn set_log(&mut self, log: RunLog) {
+        self.log = Some(log);
+    }
+
+    fn action(&self, action: &str) {
+        if let Some(log) = &self.log {
+            log.action(action);
         }
     }
 
     fn block(&mut self, text: &str) {
         self.clear_active();
+        self.action(text.trim());
         eprint!("{text}");
         let _ = io::stderr().flush();
     }
 
     fn heading(&mut self, text: &str) {
         self.clear_active();
+        self.action(text);
         eprintln!("\n{}", self.style("1", text));
     }
 
     fn prompt(&mut self, text: &str) {
         self.clear_active();
+        self.action(&format!("prompt: {text}"));
         eprint!("\n{} [y/N] ", self.style("1", text));
         let _ = io::stderr().flush();
     }
@@ -392,6 +426,7 @@ impl UpdateUi {
     fn begin(&mut self, label: impl Into<String>) {
         self.clear_active();
         let label = label.into();
+        self.action(&format!("starting: {label}"));
         let spinner = self
             .interactive
             .then(|| Spinner::start(label.clone(), self.color));
@@ -407,6 +442,7 @@ impl UpdateUi {
                 spinner.stop();
             }
             self.clear_spinner();
+            self.action(&format!("completed: {}", message.as_ref()));
             eprintln!("{}", self.success_line(message.as_ref()));
         }
     }
@@ -419,6 +455,7 @@ impl UpdateUi {
             spinner.stop();
             self.clear_spinner();
         }
+        self.action(&format!("failed: {}", active.label));
         eprintln!("{}", self.failure_line(&format!("{} failed", active.label)));
     }
 
@@ -540,23 +577,43 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         .connection
         .klipper_source
         .unwrap_or_else(default_klipper_source);
+    let workspace_path = arguments.workspace.unwrap_or_else(default_run_workspace);
+    let workspace = match RunWorkspace::create(workspace_path) {
+        Ok(workspace) => workspace,
+        Err(error) => return fail(error.to_string()),
+    };
+    let run_log = match RunLog::create(workspace.root()) {
+        Ok(log) => log,
+        Err(error) => return fail(error.to_string()),
+    };
+    ui.set_log(run_log.clone());
+    ui.action(&format!(
+        "updating from Klipper source {}",
+        source.display()
+    ));
     let refreshed =
         if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
+            ui.action("refreshing configured Klipper upstream");
             let refreshed = match refresh_checkout(&source) {
                 Ok(refreshed) => refreshed,
-                Err(error) => return fail(error.to_string()),
+                Err(error) => {
+                    ui.action(&format!("error: {error}"));
+                    return fail(error.to_string());
+                }
             };
+            ui.action(&format!("checkout refresh: {}", refresh_label(&refreshed)));
             Some(refreshed)
         } else {
             None
         };
-    let workspace = arguments
-        .workspace
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("mcu-update-{}", std::process::id())));
+    ui.action("discovering MCUs from Moonraker");
     let inventory =
         match MoonrakerClient::new(&arguments.connection.moonraker.moonraker).discover_mcus() {
             Ok(v) => v,
-            Err(e) => return fail(e.to_string()),
+            Err(error) => {
+                ui.action(&format!("error: {error}"));
+                return fail(error.to_string());
+            }
         };
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
@@ -565,6 +622,10 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         &checkout,
         &inventory,
         refreshed.as_ref(),
+    ));
+    ui.block(&format!(
+        "Run log:           {}\n",
+        run_log.path().display()
     ));
     let selection = if arguments.all {
         UpdateSelection::All
@@ -588,11 +649,11 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         ui.block("\nno eligible MCUs require an update\n");
         return ExitCode::SUCCESS;
     }
-    let workspace = match RunWorkspace::create(workspace) {
-        Ok(v) => v,
-        Err(e) => return fail(e.to_string()),
-    };
-    let coordinator = BuildCoordinator::new(&source, SystemCommandRunner, SystemCommandRunner);
+    let coordinator = BuildCoordinator::new(
+        &source,
+        LoggingCommandRunner::new(SystemCommandRunner, run_log.clone()),
+        LoggingCommandRunner::new(SystemCommandRunner, run_log.clone()),
+    );
     let options = SystemFlashOptions {
         katapult: SystemKatapultOptions {
             baud_rate: 250_000,
@@ -622,11 +683,15 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         }
         let pending = match coordinator.prepare(&inventory, &plan, &workspace, &name) {
             Ok(v) => v,
-            Err(e) => return fail(e.to_string()),
+            Err(error) => {
+                ui.action(&format!("error: {error}"));
+                return fail(error.to_string());
+            }
         };
-        match coordinator.execute_and_flash_system_with_progress(
+        match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
             options.clone(),
+            Some(&run_log),
             |progress| ui.progress(progress),
         ) {
             Ok(v) => {
@@ -634,6 +699,7 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
                 ui.begin("waiting for MCU restart");
                 if let Err(error) = wait_for_application(mcu) {
                     ui.finish_failure();
+                    ui.action(&format!("error: {error}"));
                     return fail(error);
                 }
                 ui.finish_success("MCU restart confirmed");
@@ -641,7 +707,9 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
             }
             Err(error) => {
                 ui.finish_failure();
-                return fail(update_failure(error));
+                let message = update_failure(error);
+                ui.action(&format!("error: {message}"));
+                return fail(message);
             }
         }
     }
@@ -653,7 +721,9 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     ui.begin("starting Klipper");
     if let Err(error) = coordinator.start_after_batch() {
         ui.finish_failure();
-        return fail(error.to_string());
+        let message = error.to_string();
+        ui.action(&format!("error: {message}"));
+        return fail(message);
     }
     ui.finish_success("Klipper ready");
     ui.begin("waiting for updated MCUs to reconnect");
@@ -663,6 +733,7 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         &checkout,
     ) {
         ui.finish_failure();
+        ui.action(&format!("error: {error}"));
         return fail(error);
     }
     ui.finish_success("all updated MCUs connected");
@@ -671,6 +742,7 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         accepted.len(),
         mcu_count_label(accepted.len())
     ));
+    ui.action("run completed successfully");
     ExitCode::SUCCESS
 }
 

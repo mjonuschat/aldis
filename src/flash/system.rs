@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::build::SystemCommandRunner;
 use crate::flash::FlashBackend;
 use crate::flash::FlashResult;
 use crate::flash::bossa::{
     BossaError, BossaTarget, flash_system as flash_bossa,
+    flash_system_with_runner as flash_bossa_with_runner,
     target_from_kconfig as bossa_target_from_kconfig,
 };
 use crate::flash::katapult::backend::KatapultFlashError;
@@ -26,6 +28,7 @@ use crate::flash::usb_bootloader::{
 };
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
+use crate::run_log::{LoggingCommandRunner, RunLog};
 
 /// A selected USB transfer route bound to the observed USB topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,6 +162,17 @@ pub fn flash_prepared_system_with_progress(
     prepared: &PreparedBuild,
     firmware: &[u8],
     options: SystemFlashOptions,
+    progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    flash_prepared_system_with_progress_and_log(prepared, firmware, options, None, progress)
+}
+
+/// Flashes one prepared artifact while retaining external command output in an optional run log.
+pub fn flash_prepared_system_with_progress_and_log(
+    prepared: &PreparedBuild,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    command_log: Option<&RunLog>,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     match prepared
@@ -171,6 +185,7 @@ pub fn flash_prepared_system_with_progress(
             &prepared.request.kconfig,
             firmware,
             options,
+            command_log,
             &mut progress,
         ),
         McuTransport::Can { interface, uuid } => {
@@ -184,6 +199,7 @@ fn flash_serial_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
+    command_log: Option<&RunLog>,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
@@ -217,8 +233,18 @@ fn flash_serial_system(
         SerialFlashRoute::Bossa {
             serial_device,
             target,
-        } => flash_bossa(&options.bossac_program, &serial_device, target, firmware)
+        } => match command_log {
+            Some(log) => flash_bossa_with_runner(
+                LoggingCommandRunner::new(SystemCommandRunner, log.clone()),
+                &options.bossac_program,
+                &serial_device,
+                target,
+                firmware,
+            )
             .map_err(SystemFlashError::Bossa),
+            None => flash_bossa(&options.bossac_program, &serial_device, target, firmware)
+                .map_err(SystemFlashError::Bossa),
+        },
         SerialFlashRoute::Stm32Dfu { sysfs_path, target } => flash_stm32_at_path(
             crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
             &sysfs_path,
