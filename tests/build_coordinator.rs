@@ -106,6 +106,57 @@ fn starts_klipper_once_after_a_completed_batch() {
     );
 }
 
+#[test]
+fn does_not_restart_klipper_when_a_later_batch_flash_fails() {
+    let root = temporary_directory();
+    let source_dir = root.join("klipper");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory");
+    fs::write(source_dir.join("out/klipper.bin"), b"firmware").expect("source artifact");
+    let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
+    let inventory =
+        parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
+    let plan = build_update_plan(&inventory);
+    let build_runner = FakeRunner::new([success_output(), success_output()]);
+    let service_runner = FakeRunner::new([
+        state_output(true, b"active\n"),
+        success_output(),
+        state_output(false, b"inactive\n"),
+    ]);
+    let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
+    let pending = coordinator
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead")
+        .expect("prepare");
+
+    assert!(
+        coordinator
+            .execute_and_flash(pending.approve(), |_, _| Err::<
+                mcu_update::flash::FlashResult,
+                _,
+            >("flash failed"))
+            .is_err()
+    );
+    assert!(
+        service_runner
+            .commands
+            .lock()
+            .expect("runner lock")
+            .iter()
+            .all(|command| command
+                .arguments
+                .first()
+                .is_none_or(|action| action != "start"))
+    );
+}
+
+#[test]
+fn rejects_a_restart_that_does_not_make_klipper_active() {
+    let root = temporary_directory();
+    let runner = FakeRunner::new([success_output(), state_output(false, b"inactive\n")]);
+    let coordinator = BuildCoordinator::new(&root, FakeRunner::new([]), runner);
+
+    assert!(coordinator.start_after_batch().is_err());
+}
+
 #[derive(Clone)]
 struct FakeRunner {
     commands: Arc<Mutex<Vec<BuildCommand>>>,
