@@ -7,7 +7,9 @@ use std::{fs, process::Command};
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use mcu_update::build::SystemCommandRunner;
-use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
+use mcu_update::checkout::{
+    RefreshResult, refresh as refresh_checkout, revision as checkout_revision,
+};
 use mcu_update::coordinator::{BuildCoordinator, FlashCoordinatorError, UpdateProgress};
 use mcu_update::eligibility::{
     CheckoutRevision, Eligibility, RevisionStatus, UpdateSelection, assess_mcu, is_selected,
@@ -235,7 +237,7 @@ fn status(arguments: ConnectionArgs) -> ExitCode {
         Err(error) => return fail(error.to_string()),
     };
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    print!("{}", format_status(&source, &checkout, &inventory));
+    print!("{}", format_status(&source, &checkout, &inventory, None));
     ExitCode::SUCCESS
 }
 
@@ -243,11 +245,13 @@ fn format_status(
     source: &std::path::Path,
     checkout: &CheckoutRevision,
     inventory: &McuInventory,
+    refreshed: Option<&RefreshResult>,
 ) -> String {
+    let revision = refreshed.map_or_else(|| checkout_label(checkout).to_owned(), refresh_label);
     let mut output = format!(
         "Klipper source:    {}\nCheckout revision: {}\n",
         source.display(),
-        checkout_label(checkout),
+        revision,
     );
     for mcu in &inventory.mcus {
         let status = assess_mcu(mcu, checkout);
@@ -322,13 +326,16 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         .connection
         .klipper_source
         .unwrap_or_else(default_klipper_source);
-    if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
-        let refreshed = match refresh_checkout(&source) {
-            Ok(refreshed) => refreshed,
-            Err(error) => return fail(error.to_string()),
+    let refreshed =
+        if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
+            let refreshed = match refresh_checkout(&source) {
+                Ok(refreshed) => refreshed,
+                Err(error) => return fail(error.to_string()),
+            };
+            Some(refreshed)
+        } else {
+            None
         };
-        print_refresh(&refreshed);
-    }
     let workspace = arguments
         .workspace
         .unwrap_or_else(|| std::env::temp_dir().join(format!("mcu-update-{}", std::process::id())));
@@ -339,7 +346,10 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         };
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    println!("{}", format_status(&source, &checkout, &inventory));
+    println!(
+        "{}",
+        format_status(&source, &checkout, &inventory, refreshed.as_ref())
+    );
     let selection = if arguments.all {
         UpdateSelection::All
     } else {
@@ -448,18 +458,18 @@ fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
     )
 }
 
-fn print_refresh(refreshed: &mcu_update::checkout::RefreshResult) {
+fn refresh_label(refreshed: &RefreshResult) -> String {
     let suffix = if refreshed.commits_advanced == 1 {
         "commit"
     } else {
         "commits"
     };
-    println!(
-        "Klipper source: {} -> {} ({} {suffix})",
+    format!(
+        "{} -> {} ({} {suffix})",
         checkout_label(&refreshed.before),
         checkout_label(&refreshed.after),
         refreshed.commits_advanced,
-    );
+    )
 }
 
 fn print_update_progress(progress: UpdateProgress) {
@@ -570,6 +580,7 @@ mod tests {
     };
     use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
+    use mcu_update::checkout::RefreshResult;
     use mcu_update::coordinator::{CoordinatorError, FlashCoordinatorError};
     use mcu_update::eligibility::CheckoutRevision;
     use mcu_update::flash::system::SystemFlashError;
@@ -627,6 +638,7 @@ mod tests {
                 std::path::Path::new("/home/pi/klipper"),
                 &CheckoutRevision::Known("v0.13.0-756-g2d7717e3".to_owned()),
                 &inventory,
+                None,
             ),
             concat!(
                 "Klipper source:    /home/pi/klipper\n",
@@ -638,6 +650,31 @@ mod tests {
                 "  connection:   serial (/dev/serial/by-id/mcu)\n",
                 "  supported:    yes\n",
                 "  needs update: yes\n",
+            )
+        );
+    }
+
+    #[test]
+    fn includes_refresh_details_in_the_aligned_checkout_field() {
+        let refreshed = RefreshResult {
+            before: CheckoutRevision::Known("v0.12.0-123-deadbeef".to_owned()),
+            after: CheckoutRevision::Known("v0.13.0-756-g2d7717e3".to_owned()),
+            advanced: true,
+            commits_advanced: 4,
+        };
+
+        let output = format_status(
+            std::path::Path::new("/home/pi/klipper"),
+            &refreshed.after,
+            &McuInventory { mcus: Vec::new() },
+            Some(&refreshed),
+        );
+
+        assert_eq!(
+            output,
+            concat!(
+                "Klipper source:    /home/pi/klipper\n",
+                "Checkout revision: v0.12.0-123-deadbeef -> v0.13.0-756-g2d7717e3 (4 commits)\n",
             )
         );
     }
