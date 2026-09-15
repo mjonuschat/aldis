@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use picoboot::{Access, Picoboot};
 
-use crate::flash::FlashResult;
 use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
 use crate::flash::usb_bootloader::{
     SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
 };
+use crate::flash::{FlashBackend, FlashResult};
 
 /// A decoded contiguous UF2 image suitable for PicoBoot flash commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +147,26 @@ pub fn flash_system_at_path(
     firmware: &[u8],
 ) -> Result<FlashResult, PicoBootError> {
     flash_system_with_device(firmware, |device| device.sysfs_path() == sysfs_path)
+}
+
+/// A PicoBoot flash operation bound to one USB topology.
+pub struct PicoBootBackend<'a> {
+    sysfs_path: &'a Path,
+}
+
+impl<'a> PicoBootBackend<'a> {
+    /// Binds a PicoBoot flash operation to its USB topology.
+    pub fn new(sysfs_path: &'a Path) -> Self {
+        Self { sysfs_path }
+    }
+}
+
+impl FlashBackend for PicoBootBackend<'_> {
+    type Error = PicoBootError;
+
+    fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error> {
+        flash_system_at_path(self.sysfs_path, firmware)
+    }
 }
 
 fn flash_system_with_device(

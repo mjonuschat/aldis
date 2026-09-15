@@ -9,18 +9,16 @@ use crate::build::SystemCommandRunner;
 use crate::flash::FlashBackend;
 use crate::flash::FlashResult;
 use crate::flash::bossa::{
-    BossaError, BossaTarget, flash_system as flash_bossa,
-    flash_system_with_runner as flash_bossa_with_runner,
-    target_from_kconfig as bossa_target_from_kconfig,
+    BossaBackend, BossaError, BossaTarget, target_from_kconfig as bossa_target_from_kconfig,
 };
 use crate::flash::katapult::backend::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloader};
 use crate::flash::katapult::can::SocketCanIo;
 use crate::flash::katapult::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
 use crate::flash::katapult::{backend::KatapultBackend, system::SystemKatapultOptions};
-use crate::flash::picoboot::{PicoBootError, flash_system_at_path as flash_picoboot_at_path};
+use crate::flash::picoboot::{PicoBootBackend, PicoBootError};
 use crate::flash::stm32_dfu::{
-    Stm32DfuError, Stm32DfuTarget, flash_system_at_path as flash_stm32_at_path, target_from_kconfig,
+    Stm32DfuBackend, Stm32DfuError, Stm32DfuTarget, target_from_kconfig,
 };
 use crate::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderSelectionError,
@@ -257,17 +255,22 @@ fn flash_observed_usb(
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
             match command_log {
-                Some(log) => flash_bossa_with_runner(
+                Some(log) => BossaBackend::new(
                     LoggingCommandRunner::new(SystemCommandRunner, log.clone()),
                     &options.bossac_program,
                     &serial_device,
                     target,
-                    firmware,
                 )
-                .map_err(SystemFlashError::Bossa),
-                None => flash_bossa(&options.bossac_program, &serial_device, target, firmware)
-                    .map_err(SystemFlashError::Bossa),
+                .flash(firmware),
+                None => BossaBackend::new(
+                    SystemCommandRunner,
+                    &options.bossac_program,
+                    &serial_device,
+                    target,
+                )
+                .flash(firmware),
             }
+            .map_err(SystemFlashError::Bossa)
         }
         SerialFlashRoute::Stm32Dfu { sysfs_path, target } => {
             wait_for_usb_access(
@@ -277,12 +280,12 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            flash_stm32_at_path(
+            Stm32DfuBackend::new(
                 crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
                 &sysfs_path,
                 target,
-                firmware,
             )
+            .flash(firmware)
             .map_err(SystemFlashError::Stm32Dfu)
         }
         SerialFlashRoute::PicoBoot { sysfs_path } => {
@@ -293,7 +296,9 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            flash_picoboot_at_path(&sysfs_path, firmware).map_err(SystemFlashError::PicoBoot)
+            PicoBootBackend::new(&sysfs_path)
+                .flash(firmware)
+                .map_err(SystemFlashError::PicoBoot)
         }
     }
 }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::build::{BuildCommand, CommandError, CommandOutput, CommandRunner, SystemCommandRunner};
-use crate::flash::FlashResult;
+use crate::flash::{FlashBackend, FlashResult};
 
 /// SAMD flash placement required by BOSSA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,7 +93,7 @@ pub fn flash_system(
     firmware: &[u8],
 ) -> Result<FlashResult, BossaError> {
     flash_system_with_runner(
-        SystemCommandRunner,
+        &SystemCommandRunner,
         bossac_program,
         serial_device,
         target,
@@ -103,7 +103,7 @@ pub fn flash_system(
 
 /// Writes one firmware image through `bossac` using an injected command runner.
 pub fn flash_system_with_runner<R: CommandRunner>(
-    runner: R,
+    runner: &R,
     bossac_program: &Path,
     serial_device: &Path,
     target: BossaTarget,
@@ -133,7 +133,7 @@ pub fn flash_system_with_runner<R: CommandRunner>(
 }
 
 fn run_bossac<R: CommandRunner>(
-    runner: R,
+    runner: &R,
     bossac_program: &Path,
     serial_device: &Path,
     target: BossaTarget,
@@ -153,6 +153,45 @@ fn run_bossac<R: CommandRunner>(
             command: Box::new(command),
             output: Box::new(output),
         })
+    }
+}
+
+/// A BOSSA flash operation bound to one serial device, target, and command runner.
+pub struct BossaBackend<'a, R: CommandRunner> {
+    runner: R,
+    bossac_program: &'a Path,
+    serial_device: &'a Path,
+    target: BossaTarget,
+}
+
+impl<'a, R: CommandRunner> BossaBackend<'a, R> {
+    /// Binds a BOSSA flash operation to its device, target, and command runner.
+    pub fn new(
+        runner: R,
+        bossac_program: &'a Path,
+        serial_device: &'a Path,
+        target: BossaTarget,
+    ) -> Self {
+        Self {
+            runner,
+            bossac_program,
+            serial_device,
+            target,
+        }
+    }
+}
+
+impl<R: CommandRunner> FlashBackend for BossaBackend<'_, R> {
+    type Error = BossaError;
+
+    fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error> {
+        flash_system_with_runner(
+            &self.runner,
+            self.bossac_program,
+            self.serial_device,
+            self.target,
+            firmware,
+        )
     }
 }
 
