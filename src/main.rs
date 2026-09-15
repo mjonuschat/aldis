@@ -647,6 +647,7 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         .collect::<Vec<_>>();
     if offered.is_empty() {
         ui.block("\nno eligible MCUs require an update\n");
+        ui.action("run completed successfully: no eligible MCUs require an update");
         return ExitCode::SUCCESS;
     }
     let coordinator = BuildCoordinator::new(
@@ -715,6 +716,7 @@ fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     }
     if accepted.is_empty() {
         ui.block("\nno updates confirmed\n");
+        ui.action("run completed successfully: no updates confirmed");
         return ExitCode::SUCCESS;
     }
     ui.heading("Finishing update");
