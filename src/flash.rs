@@ -6,6 +6,7 @@ pub mod picoboot;
 pub mod stm32_dfu;
 pub mod system;
 pub mod usb_bootloader;
+pub(crate) mod usb_sysfs;
 
 /// Result details shared by native flashing backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

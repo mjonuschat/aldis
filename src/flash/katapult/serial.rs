@@ -15,6 +15,7 @@ use std::time::Instant;
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
 use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
+use crate::flash::usb_sysfs::usb_device_ancestor;
 
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
 pub const BOOTLOADER_ENTRY_REQUEST: &[u8] = b"~ \x1c Request Serial Bootloader!! ~";
@@ -306,14 +307,7 @@ impl UsbIdentity {
 fn usb_device_path(device: &Path) -> Option<PathBuf> {
     let tty = fs::canonicalize(device).ok()?.file_name()?.to_owned();
     let tty_path = fs::canonicalize(Path::new("/sys/class/tty").join(tty)).ok()?;
-    tty_path.ancestors().find_map(|candidate| {
-        let has_usb_identity =
-            candidate.join("idVendor").is_file() && candidate.join("idProduct").is_file();
-        (has_usb_identity
-            && candidate.join("busnum").is_file()
-            && candidate.join("devnum").is_file())
-        .then(|| candidate.to_path_buf())
-    })
+    usb_device_ancestor(&tty_path)
 }
 
 fn usb_identity(usb_path: &Path) -> UsbIdentity {

@@ -24,6 +24,7 @@ use crate::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderSelectionError,
     select_usb_bootloader,
 };
+use crate::flash::usb_sysfs::usb_device_ancestor;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::run_log::{LoggingCommandRunner, RunLog};
@@ -423,21 +424,12 @@ fn usb_can_bridge(kconfig: &str) -> bool {
 
 fn usb_device_path_for_can_interface(interface: &str) -> io::Result<PathBuf> {
     let interface_path = std::fs::canonicalize(Path::new("/sys/class/net").join(interface))?;
-    interface_path
-        .ancestors()
-        .find(|candidate| {
-            candidate.join("idVendor").is_file()
-                && candidate.join("idProduct").is_file()
-                && candidate.join("busnum").is_file()
-                && candidate.join("devnum").is_file()
-        })
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("could not find a USB device for CAN interface {interface:?}"),
-            )
-        })
+    usb_device_ancestor(&interface_path).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("could not find a USB device for CAN interface {interface:?}"),
+        )
+    })
 }
 
 fn usb_identity(usb_path: &Path) -> io::Result<(String, String)> {
