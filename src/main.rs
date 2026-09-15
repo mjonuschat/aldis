@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{fs, process::Command};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use mcu_update::coordinator::BuildCoordinator;
@@ -61,13 +61,21 @@ struct ConnectionArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("selection")
+        .required(true)
+        .args(["targets", "all", "auto"])
+))]
 struct UpdateArgs {
-    /// MCU name reported by Moonraker.
-    #[arg(required_unless_present = "all")]
-    target: Option<String>,
+    /// One or more MCU names reported by Moonraker.
+    #[arg(value_name = "MCU", num_args = 1.., conflicts_with_all = ["all", "auto"])]
+    targets: Vec<String>,
     /// Update every eligible MCU.
-    #[arg(long, conflicts_with = "target")]
+    #[arg(long, conflicts_with_all = ["targets", "auto"])]
     all: bool,
+    /// Fast-forward, then update every outdated supported MCU without prompts.
+    #[arg(long, conflicts_with_all = ["targets", "all", "force", "pull"])]
+    auto: bool,
     /// Update even when the MCU already reports the checkout revision.
     #[arg(long)]
     force: bool,
@@ -315,7 +323,7 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         .connection
         .klipper_source
         .unwrap_or_else(default_klipper_source);
-    if arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
+    if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
         let refreshed = match refresh_checkout(&source) {
             Ok(refreshed) => refreshed,
             Err(error) => return fail(error.to_string()),
@@ -341,31 +349,40 @@ fn update(arguments: UpdateArgs) -> ExitCode {
         };
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    let target = arguments.target.as_ref();
-    let selection = match target {
-        Some(target) if arguments.force => UpdateSelection::Force(target.clone()),
-        Some(_) => UpdateSelection::Required,
-        None => UpdateSelection::All,
+    let selection = if arguments.all || arguments.auto {
+        UpdateSelection::All
+    } else {
+        UpdateSelection::Required
     };
     let offered = inventory
         .mcus
         .iter()
-        .filter(|mcu| target.is_none() || Some(&mcu.name) == target)
-        .filter(|mcu| is_selected(mcu, &checkout, &selection))
+        .filter(|mcu| arguments.targets.is_empty() || arguments.targets.contains(&mcu.name))
+        .filter(|mcu| {
+            if arguments.force {
+                assess_mcu(mcu, &checkout).eligibility == Eligibility::Eligible
+            } else {
+                is_selected(mcu, &checkout, &selection)
+            }
+        })
         .map(|mcu| mcu.name.clone())
         .collect::<Vec<_>>();
     if offered.is_empty() {
         println!("no eligible MCUs require an update");
         return ExitCode::SUCCESS;
     }
-    let accepted = offered
-        .into_iter()
-        .filter(|name| {
-            eprint!("Update {name}? [y/N] ");
-            let _ = io::stderr().flush();
-            matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
-        })
-        .collect::<Vec<_>>();
+    let accepted = if arguments.auto {
+        offered
+    } else {
+        offered
+            .into_iter()
+            .filter(|name| {
+                eprint!("Update {name}? [y/N] ");
+                let _ = io::stderr().flush();
+                matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
+            })
+            .collect::<Vec<_>>()
+    };
     if accepted.is_empty() {
         println!("no updates confirmed");
         return ExitCode::SUCCESS;
@@ -526,8 +543,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Cli, format_status, selected_mcus_are_ready, setup_check_report, setup_install_report,
-        sudo_policy_allows_service_status, update_failure, wait_for_application_with_timeout,
+        Cli, CliCommand, format_status, selected_mcus_are_ready, setup_check_report,
+        setup_install_report, sudo_policy_allows_service_status, update_failure,
+        wait_for_application_with_timeout,
     };
     use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
@@ -550,6 +568,27 @@ mod tests {
         assert!(Cli::try_parse_from(["mcu-update", "update"]).is_err());
         assert!(Cli::try_parse_from(["mcu-update", "update", "mcu", "--all"]).is_err());
         assert!(Cli::try_parse_from(["mcu-update", "update", "--all"]).is_ok());
+    }
+
+    #[test]
+    fn accepts_multiple_mcu_targets_or_noninteractive_auto_updates() {
+        let CliCommand::Update(targeted) =
+            Cli::try_parse_from(["mcu-update", "update", "mcu", "mcu toolhead"])
+                .expect("parse multiple targets")
+                .command
+        else {
+            panic!("expected update command");
+        };
+        assert_eq!(targeted.targets, ["mcu", "mcu toolhead"]);
+
+        let CliCommand::Update(automatic) = Cli::try_parse_from(["mcu-update", "update", "--auto"])
+            .expect("parse automatic update")
+            .command
+        else {
+            panic!("expected update command");
+        };
+        assert!(automatic.auto);
+        assert!(Cli::try_parse_from(["mcu-update", "update", "--auto", "--pull"]).is_err());
     }
 
     #[test]
