@@ -1,0 +1,97 @@
+name: Build
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  check:
+    name: Check
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check
+
+  test:
+    name: Test Suite
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  lints:
+    name: Lints
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check dependency file changes
+        id: dependency-files
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          files=$(gh api --paginate "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --jq '.[].filename')
+          if printf '%s\n' "$files" | grep -Eq '(^|/)Cargo\.toml$|^Cargo\.lock$|^deny\.toml$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - uses: actions/checkout@v6
+        if: ${{ github.event_name != 'pull_request' || steps.dependency-files.outputs.changed == 'true' }}
+      - name: Install cargo-audit
+        if: ${{ github.event_name != 'pull_request' || steps.dependency-files.outputs.changed == 'true' }}
+        run: |
+          VERSION=$(gh api repos/rustsec/rustsec/releases --jq '[.[].tag_name | select(startswith("cargo-audit/"))][0] | ltrimstr("cargo-audit/")')
+          curl -sSL "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2F${VERSION}/cargo-audit-x86_64-unknown-linux-gnu-${VERSION}.tgz" | tar xz --strip-components=1 -C /usr/local/bin "cargo-audit-x86_64-unknown-linux-gnu-${VERSION}/cargo-audit"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: cargo audit
+        if: ${{ github.event_name != 'pull_request' || steps.dependency-files.outputs.changed == 'true' }}
+      - name: Skip security audit
+        if: ${{ github.event_name == 'pull_request' && steps.dependency-files.outputs.changed != 'true' }}
+        run: echo "No Cargo.toml, Cargo.lock, or deny.toml changes in this PR; skipping cargo audit."
+
+  deny:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check dependency file changes
+        id: dependency-files
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          files=$(gh api --paginate "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --jq '.[].filename')
+          if printf '%s\n' "$files" | grep -Eq '(^|/)Cargo\.toml$|^Cargo\.lock$|^deny\.toml$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - uses: actions/checkout@v6
+        if: ${{ github.event_name != 'pull_request' || steps.dependency-files.outputs.changed == 'true' }}
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        if: ${{ github.event_name != 'pull_request' || steps.dependency-files.outputs.changed == 'true' }}
+      - name: Skip dependency check
+        if: ${{ github.event_name == 'pull_request' && steps.dependency-files.outputs.changed != 'true' }}
+        run: echo "No Cargo.toml, Cargo.lock, or deny.toml changes in this PR; skipping cargo-deny."

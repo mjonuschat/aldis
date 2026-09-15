@@ -1,0 +1,132 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-**'  # Pre-release versions
+      - 'v[0-9]+.[0-9]+.[0-9]+'     # Release versions
+  workflow_dispatch:
+
+env:
+  BIN_NAME: aldis
+  PROJECT_NAME: aldis
+  REPO_NAME: mjonuschat/aldis
+
+jobs:
+  dist:
+    name: Dist
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # don't fail other jobs if one fails
+      matrix:
+        build: [x86_64-linux, aarch64-linux]
+        include:
+        - build: x86_64-linux
+          target: x86_64-unknown-linux-gnu
+        - build: aarch64-linux
+          target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.build == 'aarch64-linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache cargo & target directories
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo test
+        if: matrix.build != 'aarch64-linux'
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --target ${{ matrix.target }} --release --locked
+
+      - name: Strip binary
+        run: |
+          STRIP_CMD="strip"
+          if [ "${{ matrix.build }}" = "aarch64-linux" ]; then
+            STRIP_CMD="aarch64-linux-gnu-strip"
+          fi
+          $STRIP_CMD "target/${{ matrix.target }}/release/aldis"
+
+      - name: Package as archive
+        shell: bash
+        run: |
+          mkdir dist
+          cp LICENSE README.md dist/
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" "dist/"
+
+      - name: Publish release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: aldis-${{ matrix.build }}
+          path: dist
+
+  publish:
+    if: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: write
+    name: Publish
+    needs: [dist]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - run: ls -al artifacts/
+
+      - name: Generate release notes
+        id: changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Build archive
+        shell: bash
+        run: |
+          set -ex
+
+          rm -rf tmp
+          mkdir tmp
+          mkdir dist
+
+          for dir in artifacts/aldis-* ; do
+              platform=${dir#"artifacts/aldis-"}
+              # Non-versioned name so releases/latest/download/$pkgname.tar.xz is a stable URL.
+              pkgname="${PROJECT_NAME}-${platform}"
+
+              mkdir "tmp/$pkgname"
+              mv "$dir/$BIN_NAME" "tmp/$pkgname"
+              cp "$dir/LICENSE" "$dir/README.md" "tmp/$pkgname/" 2>/dev/null || true
+              chmod +x "tmp/$pkgname/$BIN_NAME"
+
+              tar cJf "dist/$pkgname.tar.xz" -C tmp "$pkgname"
+          done
+
+      - name: Upload binaries to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/*
+          file_glob: true
+          tag: ${{ github.ref }}
+          release_name: "aldis ${{ github.ref_name }}"
+          overwrite: true
+          body: ${{ steps.changelog.outputs.content }}
