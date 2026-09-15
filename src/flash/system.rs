@@ -1,8 +1,9 @@
 //! Topology-scoped native flashing dispatch for prepared MCU updates.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::flash::FlashBackend;
 use crate::flash::FlashResult;
@@ -65,6 +66,8 @@ pub enum SystemFlashError {
     MissingTransport,
     /// USB bootloader entry or topology observation failed.
     Bootloader(UsbBootloaderError),
+    /// The re-enumerated USB device was not accessible before the timeout.
+    UsbAccess(io::Error),
     /// The observed USB identity has no safe native backend.
     Selection(UsbBootloaderSelectionError),
     /// The observed STM32 route has no valid Kconfig application address.
@@ -163,6 +166,12 @@ fn flash_serial_system(
         options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::Bootloader)?;
+    wait_for_usb_access(
+        &observed.sysfs_path,
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+    )
+    .map_err(SystemFlashError::UsbAccess)?;
     match serial_route(observed, kconfig)? {
         SerialFlashRoute::Katapult { serial_device } => {
             let io = SystemSerialIo::open(
@@ -194,6 +203,46 @@ fn flash_serial_system(
     }
 }
 
+fn wait_for_usb_access(
+    sysfs_path: &Path,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> io::Result<()> {
+    let device_node = usb_device_node(sysfs_path)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_node)
+        {
+            Ok(_) => return Ok(()),
+            Err(_error) if Instant::now() < deadline => thread::sleep(poll_interval),
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{} was not readable and writable within {timeout:?}: {error}",
+                        device_node.display()
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn usb_device_node(sysfs_path: &Path) -> io::Result<PathBuf> {
+    let component = |name| {
+        std::fs::read_to_string(sysfs_path.join(name))?
+            .trim()
+            .parse::<u16>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    };
+    let bus = component("busnum")?;
+    let device = component("devnum")?;
+    Ok(PathBuf::from(format!("/dev/bus/usb/{bus:03}/{device:03}")))
+}
+
 fn flash_can_system(
     interface: &str,
     uuid: u64,
@@ -206,4 +255,39 @@ fn flash_can_system(
     thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;
     backend.flash(firmware).map_err(SystemFlashError::CanFlash)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::usb_device_node;
+
+    #[test]
+    fn locates_the_usb_device_node_from_its_sysfs_numbers() {
+        let root = unique_temporary_path();
+        fs::create_dir_all(&root).expect("create sysfs fixture");
+        fs::write(root.join("busnum"), "1\n").expect("write bus number");
+        fs::write(root.join("devnum"), "120\n").expect("write device number");
+
+        assert_eq!(
+            usb_device_node(&root).expect("derive device node"),
+            PathBuf::from("/dev/bus/usb/001/120")
+        );
+
+        fs::remove_dir_all(root).expect("remove sysfs fixture");
+    }
+
+    fn unique_temporary_path() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "mcu-update-usb-node-{}-{nonce}",
+            std::process::id()
+        ))
+    }
 }
