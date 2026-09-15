@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use mcu_update::moonraker::{McuInventory, MoonrakerClient};
+use mcu_update::moonraker::{McuInventory, MoonrakerAdapter};
 
 use cli::{Cli, CliCommand};
 
@@ -19,7 +19,7 @@ fn main() -> ExitCode {
     match cli.command {
         CliCommand::Status(arguments) => status::status(arguments),
         CliCommand::Inspect(arguments) => {
-            match MoonrakerClient::new(&arguments.moonraker).discover_mcus() {
+            match MoonrakerAdapter::new(&arguments.moonraker).discover_mcus() {
                 Ok(inventory) => {
                     print_inventory(&arguments.moonraker, &inventory);
                     ExitCode::SUCCESS

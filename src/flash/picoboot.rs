@@ -9,7 +9,7 @@ use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
 use crate::flash::usb_bootloader::{
     SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
 };
-use crate::flash::{FlashBackend, FlashResult};
+use crate::flash::{FlashPort, FlashResult};
 
 /// A decoded contiguous UF2 image suitable for PicoBoot flash commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,18 +150,18 @@ pub fn flash_system_at_path(
 }
 
 /// A PicoBoot flash operation bound to one USB topology.
-pub struct PicoBootBackend<'a> {
+pub struct PicoBootAdapter<'a> {
     sysfs_path: &'a Path,
 }
 
-impl<'a> PicoBootBackend<'a> {
+impl<'a> PicoBootAdapter<'a> {
     /// Binds a PicoBoot flash operation to its USB topology.
     pub fn new(sysfs_path: &'a Path) -> Self {
         Self { sysfs_path }
     }
 }
 
-impl FlashBackend for PicoBootBackend<'_> {
+impl FlashPort for PicoBootAdapter<'_> {
     type Error = PicoBootError;
 
     fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error> {

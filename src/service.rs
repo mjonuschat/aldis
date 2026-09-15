@@ -1,7 +1,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use crate::build::{BuildCommand, CommandError, CommandOutput, CommandRunner};
+use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 
 const KLIPPER_UNIT: &str = "klipper";
 
@@ -24,7 +24,7 @@ pub enum ServiceState {
 #[derive(Debug)]
 pub enum ServiceError {
     /// The host could not run a systemctl command.
-    CommandRunner {
+    CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
         /// The underlying runner failure.
@@ -42,7 +42,7 @@ pub enum ServiceError {
 impl fmt::Display for ServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CommandRunner { command, source } => {
+            Self::CommandPort { command, source } => {
                 write!(formatter, "could not invoke {}: {source}", command.program)
             }
             Self::CommandFailed { command, output } => write!(
@@ -58,7 +58,7 @@ impl fmt::Display for ServiceError {
 impl StdError for ServiceError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::CommandRunner { source, .. } => Some(source),
+            Self::CommandPort { source, .. } => Some(source),
             Self::CommandFailed { .. } => None,
         }
     }
@@ -71,7 +71,7 @@ pub struct KlipperService<R> {
 
 impl<R> KlipperService<R>
 where
-    R: CommandRunner,
+    R: CommandPort,
 {
     /// Creates a controller using `runner` to invoke systemctl.
     pub fn new(runner: R) -> Self {
@@ -129,7 +129,7 @@ where
         let output = self
             .runner
             .run(&command)
-            .map_err(|source| ServiceError::CommandRunner {
+            .map_err(|source| ServiceError::CommandPort {
                 command: command.clone(),
                 source,
             })?;

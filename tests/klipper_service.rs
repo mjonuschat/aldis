@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandRunner};
+use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 use mcu_update::service::{KlipperService, ServiceState};
 
 #[test]
@@ -55,7 +55,7 @@ impl FakeRunner {
     }
 }
 
-impl CommandRunner for FakeRunner {
+impl CommandPort for FakeRunner {
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
         self.commands
             .lock()

@@ -2,9 +2,9 @@
 
 use std::process::ExitCode;
 
-use mcu_update::checkout::{CheckoutPort, GitCheckout, RefreshResult};
+use mcu_update::checkout::{CheckoutPort, GitCheckoutAdapter, RefreshResult};
 use mcu_update::eligibility::{CheckoutRevision, Eligibility, RevisionStatus, assess_mcu};
-use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient, MoonrakerPort};
+use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
 
 use crate::cli::ConnectionArgs;
 use crate::fail;
@@ -13,8 +13,8 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
     let source = arguments
         .klipper_source
         .unwrap_or_else(crate::default_klipper_source);
-    let moonraker = MoonrakerClient::new(&arguments.moonraker.moonraker);
-    match status_report(&moonraker, &GitCheckout, &source) {
+    let moonraker = MoonrakerAdapter::new(&arguments.moonraker.moonraker);
+    match status_report(&moonraker, &GitCheckoutAdapter, &source) {
         Ok(report) => {
             print!("{report}");
             ExitCode::SUCCESS

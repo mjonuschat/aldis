@@ -4,10 +4,10 @@ use std::io;
 use std::thread;
 use std::time::Duration;
 
-use crate::flash::{FlashBackend, FlashResult};
+use crate::flash::{FlashPort, FlashResult};
 use crate::prepare::PreparedBuild;
 
-use super::backend::KatapultFlashError;
+use super::adapter::KatapultFlashError;
 use super::bootstrap::{
     CanBootstrapError, SerialBootstrapError, bootstrap_system_serial, request_can_bootloader,
 };

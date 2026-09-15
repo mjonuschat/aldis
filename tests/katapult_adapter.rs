@@ -1,5 +1,5 @@
-use mcu_update::flash::FlashBackend;
-use mcu_update::flash::katapult::backend::KatapultBackend;
+use mcu_update::flash::FlashPort;
+use mcu_update::flash::katapult::adapter::KatapultAdapter;
 use mcu_update::flash::katapult::session::Transport;
 use mcu_update::flash::katapult::{Command, crc16_ccitt};
 
@@ -55,7 +55,7 @@ fn flashes_verifies_and_starts_a_serial_katapult_target() {
         ],
         ..Default::default()
     };
-    let mut backend = KatapultBackend::new(transport);
+    let mut backend = KatapultAdapter::new(transport);
 
     assert_eq!(
         backend.flash(&[0xab]).unwrap(),
@@ -105,7 +105,7 @@ fn verifies_the_configured_can_uuid_before_transferring_firmware() {
         ],
         ..Default::default()
     };
-    let mut backend = KatapultBackend::for_canbus(transport, 0xe781_9ed8_e7d3);
+    let mut backend = KatapultAdapter::for_canbus(transport, 0xe781_9ed8_e7d3);
 
     backend.flash(&[0xcd]).unwrap();
 

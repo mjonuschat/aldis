@@ -6,20 +6,20 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::build::SystemCommandRunner;
-use crate::flash::FlashBackend;
+use crate::build::SystemCommandAdapter;
+use crate::flash::FlashPort;
 use crate::flash::FlashResult;
 use crate::flash::bossa::{
-    BossaBackend, BossaError, BossaTarget, target_from_kconfig as bossa_target_from_kconfig,
+    BossaAdapter, BossaError, BossaTarget, target_from_kconfig as bossa_target_from_kconfig,
 };
-use crate::flash::katapult::backend::KatapultFlashError;
+use crate::flash::katapult::adapter::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloader};
 use crate::flash::katapult::can::SocketCanIo;
 use crate::flash::katapult::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
-use crate::flash::katapult::{backend::KatapultBackend, system::SystemKatapultOptions};
-use crate::flash::picoboot::{PicoBootBackend, PicoBootError};
+use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
+use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
 use crate::flash::stm32_dfu::{
-    Stm32DfuBackend, Stm32DfuError, Stm32DfuTarget, target_from_kconfig,
+    Stm32DfuAdapter, Stm32DfuError, Stm32DfuTarget, target_from_kconfig,
 };
 use crate::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderSelectionError,
@@ -29,7 +29,7 @@ use crate::flash::usb_sysfs::usb_device_ancestor;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
-use crate::run_log::{LoggingCommandRunner, RunLog};
+use crate::run_log::{LoggingCommandAdapter, RunLog};
 
 /// A selected USB transfer route bound to the observed USB topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,7 +303,7 @@ fn flash_observed_usb(
                 options.katapult.poll_interval,
             )
             .map_err(SystemFlashError::KatapultOpen)?;
-            let mut backend = KatapultBackend::new(KatapultSerialTransport::new(io));
+            let mut backend = KatapultAdapter::new(KatapultSerialTransport::new(io));
             backend
                 .flash(firmware)
                 .map_err(SystemFlashError::KatapultFlash)
@@ -320,15 +320,15 @@ fn flash_observed_usb(
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
             match command_log {
-                Some(log) => BossaBackend::new(
-                    LoggingCommandRunner::new(SystemCommandRunner, log.clone()),
+                Some(log) => BossaAdapter::new(
+                    LoggingCommandAdapter::new(SystemCommandAdapter, log.clone()),
                     &options.bossac_program,
                     &serial_device,
                     target,
                 )
                 .flash(firmware),
-                None => BossaBackend::new(
-                    SystemCommandRunner,
+                None => BossaAdapter::new(
+                    SystemCommandAdapter,
                     &options.bossac_program,
                     &serial_device,
                     target,
@@ -345,7 +345,7 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            Stm32DfuBackend::new(
+            Stm32DfuAdapter::new(
                 crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
                 &sysfs_path,
                 target,
@@ -361,7 +361,7 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            PicoBootBackend::new(&sysfs_path)
+            PicoBootAdapter::new(&sysfs_path)
                 .flash(firmware)
                 .map_err(SystemFlashError::PicoBoot)
         }
@@ -501,7 +501,7 @@ mod tests {
 
     use super::{SystemFlashError, usb_can_bridge, usb_device_node};
     use crate::flash::katapult::Command;
-    use crate::flash::katapult::backend::KatapultFlashError;
+    use crate::flash::katapult::adapter::KatapultFlashError;
     use crate::flash::katapult::session::SessionError;
 
     #[test]

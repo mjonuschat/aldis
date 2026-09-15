@@ -93,16 +93,16 @@ impl StdError for CommandError {
 }
 
 /// Executes an explicit build command.
-pub trait CommandRunner {
+pub trait CommandPort {
     /// Runs `command` and returns its captured output.
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError>;
 }
 
 /// Runs commands through the host operating system.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct SystemCommandRunner;
+pub struct SystemCommandAdapter;
 
-impl CommandRunner for SystemCommandRunner {
+impl CommandPort for SystemCommandAdapter {
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
         let mut process = Command::new(&command.program);
         process.args(&command.arguments);
@@ -132,7 +132,7 @@ pub enum BuildError {
         source: io::Error,
     },
     /// The command runner could not invoke Make.
-    CommandRunner {
+    CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
         /// The underlying runner failure.
@@ -152,7 +152,7 @@ impl fmt::Display for BuildError {
         match self {
             Self::InvalidRequest(message) => write!(formatter, "invalid build request: {message}"),
             Self::Io { action, source } => write!(formatter, "could not {action}: {source}"),
-            Self::CommandRunner { command, source } => {
+            Self::CommandPort { command, source } => {
                 write!(formatter, "could not invoke {}: {source}", command.program)
             }
             Self::CommandFailed { command, output } => write!(
@@ -169,7 +169,7 @@ impl StdError for BuildError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::CommandRunner { source, .. } => Some(source),
+            Self::CommandPort { source, .. } => Some(source),
             Self::InvalidRequest(_) | Self::CommandFailed { .. } => None,
         }
     }
@@ -183,7 +183,7 @@ pub struct KlipperBuilder<R> {
 
 impl<R> KlipperBuilder<R>
 where
-    R: CommandRunner,
+    R: CommandPort,
 {
     /// Creates a builder rooted at the checked-out Klipper source tree.
     pub fn new(source_dir: impl Into<PathBuf>, runner: R) -> Self {
@@ -270,7 +270,7 @@ where
         let output = self
             .runner
             .run(&command)
-            .map_err(|source| BuildError::CommandRunner {
+            .map_err(|source| BuildError::CommandPort {
                 command: command.clone(),
                 source,
             })?;

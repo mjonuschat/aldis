@@ -4,8 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::build::{BuildCommand, CommandError, CommandOutput, CommandRunner, SystemCommandRunner};
-use crate::flash::{FlashBackend, FlashResult};
+use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort, SystemCommandAdapter};
+use crate::flash::{FlashPort, FlashResult};
 
 /// SAMD flash placement required by BOSSA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,7 +27,7 @@ pub enum BossaError {
         source: std::io::Error,
     },
     /// The command runner could not invoke `bossac`.
-    CommandRunner {
+    CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
         /// The underlying runner failure.
@@ -93,7 +93,7 @@ pub fn flash_system(
     firmware: &[u8],
 ) -> Result<FlashResult, BossaError> {
     flash_system_with_runner(
-        &SystemCommandRunner,
+        &SystemCommandAdapter,
         bossac_program,
         serial_device,
         target,
@@ -102,7 +102,7 @@ pub fn flash_system(
 }
 
 /// Writes one firmware image through `bossac` using an injected command runner.
-pub fn flash_system_with_runner<R: CommandRunner>(
+pub fn flash_system_with_runner<R: CommandPort>(
     runner: &R,
     bossac_program: &Path,
     serial_device: &Path,
@@ -132,7 +132,7 @@ pub fn flash_system_with_runner<R: CommandRunner>(
     })
 }
 
-fn run_bossac<R: CommandRunner>(
+fn run_bossac<R: CommandPort>(
     runner: &R,
     bossac_program: &Path,
     serial_device: &Path,
@@ -142,7 +142,7 @@ fn run_bossac<R: CommandRunner>(
     let command = bossac_command(bossac_program, serial_device, target, firmware_path);
     let output = runner
         .run(&command)
-        .map_err(|source| BossaError::CommandRunner {
+        .map_err(|source| BossaError::CommandPort {
             command: command.clone(),
             source,
         })?;
@@ -157,14 +157,14 @@ fn run_bossac<R: CommandRunner>(
 }
 
 /// A BOSSA flash operation bound to one serial device, target, and command runner.
-pub struct BossaBackend<'a, R: CommandRunner> {
+pub struct BossaAdapter<'a, R: CommandPort> {
     runner: R,
     bossac_program: &'a Path,
     serial_device: &'a Path,
     target: BossaTarget,
 }
 
-impl<'a, R: CommandRunner> BossaBackend<'a, R> {
+impl<'a, R: CommandPort> BossaAdapter<'a, R> {
     /// Binds a BOSSA flash operation to its device, target, and command runner.
     pub fn new(
         runner: R,
@@ -181,7 +181,7 @@ impl<'a, R: CommandRunner> BossaBackend<'a, R> {
     }
 }
 
-impl<R: CommandRunner> FlashBackend for BossaBackend<'_, R> {
+impl<R: CommandPort> FlashPort for BossaAdapter<'_, R> {
     type Error = BossaError;
 
     fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error> {

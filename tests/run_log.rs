@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcu_update::build::{BuildCommand, CommandOutput, CommandRunner};
-use mcu_update::run_log::{LoggingCommandRunner, RunLog};
+use mcu_update::build::{BuildCommand, CommandOutput, CommandPort};
+use mcu_update::run_log::{LoggingCommandAdapter, RunLog};
 
 #[test]
 fn retains_commands_actions_and_complete_output_for_failed_runs() {
@@ -11,7 +11,7 @@ fn retains_commands_actions_and_complete_output_for_failed_runs() {
     fs::create_dir_all(&root).expect("create run directory");
     let log = RunLog::create(&root).expect("create run log");
     log.action("starting firmware build");
-    let runner = LoggingCommandRunner::new(FailingRunner, log.clone());
+    let runner = LoggingCommandAdapter::new(FailingRunner, log.clone());
     let command = BuildCommand {
         program: "make".to_owned(),
         arguments: vec!["olddefconfig".to_owned()],
@@ -36,7 +36,7 @@ fn retains_complete_output_for_successful_commands() {
     let root = temporary_directory();
     fs::create_dir_all(&root).expect("create run directory");
     let log = RunLog::create(&root).expect("create run log");
-    let runner = LoggingCommandRunner::new(SuccessfulRunner, log.clone());
+    let runner = LoggingCommandAdapter::new(SuccessfulRunner, log.clone());
     let command = BuildCommand {
         program: "make".to_owned(),
         arguments: vec!["KCONFIG_CONFIG=/tmp/mcu.config".to_owned()],
@@ -60,7 +60,7 @@ fn retains_complete_output_for_successful_commands() {
 
 struct FailingRunner;
 
-impl CommandRunner for FailingRunner {
+impl CommandPort for FailingRunner {
     fn run(
         &self,
         _command: &BuildCommand,
@@ -75,7 +75,7 @@ impl CommandRunner for FailingRunner {
 
 struct SuccessfulRunner;
 
-impl CommandRunner for SuccessfulRunner {
+impl CommandPort for SuccessfulRunner {
     fn run(
         &self,
         _command: &BuildCommand,

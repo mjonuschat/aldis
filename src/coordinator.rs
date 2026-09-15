@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandRunner, KlipperBuilder};
+use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, KlipperBuilder};
 use crate::flash::FlashResult;
 use crate::flash::system::{
     SystemFlashError, SystemFlashOptions, SystemFlashProgress,
@@ -133,8 +133,8 @@ pub struct BuildCoordinator<B, S> {
 
 impl<B, S> BuildCoordinator<B, S>
 where
-    B: CommandRunner,
-    S: CommandRunner,
+    B: CommandPort,
+    S: CommandPort,
 {
     /// Creates a coordinator rooted at a checked-out Klipper source tree.
     pub fn new(klipper_source_dir: impl Into<PathBuf>, build_runner: B, service_runner: S) -> Self {

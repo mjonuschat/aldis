@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::backend::KatapultBackend;
+use super::adapter::KatapultAdapter;
 use super::can::{CanError, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport};
 use super::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
 use crate::flash::usb_bootloader::{
@@ -43,7 +43,7 @@ pub fn bootstrap_system_serial(
     bootloader_timeout: Duration,
     poll_interval: Duration,
     read_timeout: Duration,
-) -> Result<KatapultBackend<KatapultSerialTransport<SystemSerialIo>>, SerialBootstrapError> {
+) -> Result<KatapultAdapter<KatapultSerialTransport<SystemSerialIo>>, SerialBootstrapError> {
     let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
         running_device,
         bootloader_timeout,
@@ -57,7 +57,7 @@ pub fn bootstrap_system_serial(
         };
     let io = SystemSerialIo::open(&bootloader_device, baud_rate, read_timeout)
         .map_err(SerialBootstrapError::Open)?;
-    Ok(KatapultBackend::new(KatapultSerialTransport::new(io)))
+    Ok(KatapultAdapter::new(KatapultSerialTransport::new(io)))
 }
 
 /// A CAN target that has been asked to enter Katapult but is not yet connected.
@@ -81,11 +81,11 @@ impl<T: CanIo> CanKatapultBootstrap<T> {
     /// Assigns Katapult's temporary node ID and returns a ready flashing backend.
     pub fn connect(
         mut self,
-    ) -> Result<KatapultBackend<KatapultCanTransport<T>>, CanBootstrapError<T::Error>> {
+    ) -> Result<KatapultAdapter<KatapultCanTransport<T>>, CanBootstrapError<T::Error>> {
         self.transport
             .assign_node()
             .map_err(CanBootstrapError::Transport)?;
-        Ok(KatapultBackend::for_canbus(self.transport, self.uuid))
+        Ok(KatapultAdapter::for_canbus(self.transport, self.uuid))
     }
 }
 

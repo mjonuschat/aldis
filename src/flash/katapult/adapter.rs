@@ -1,7 +1,7 @@
 //! Katapult flashing backend assembled from a ready transport session.
 
 use super::session::{KatapultSession, SessionError, Transport};
-use crate::flash::{FlashBackend, FlashResult};
+use crate::flash::{FlashPort, FlashResult};
 
 /// A failure while flashing a Katapult target.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,12 +14,12 @@ pub enum KatapultFlashError {
 ///
 /// This backend does not enter a bootloader or assign a CAN node. Callers must
 /// perform those transport-specific state changes before constructing it.
-pub struct KatapultBackend<T> {
+pub struct KatapultAdapter<T> {
     session: KatapultSession<T>,
     expected_canbus_uuid: Option<u64>,
 }
 
-impl<T> KatapultBackend<T> {
+impl<T> KatapultAdapter<T> {
     /// Creates a backend for a serial or otherwise already-identified target.
     pub fn new(transport: T) -> Self {
         Self {
@@ -42,7 +42,7 @@ impl<T> KatapultBackend<T> {
     }
 }
 
-impl<T: Transport> FlashBackend for KatapultBackend<T> {
+impl<T: Transport> FlashPort for KatapultAdapter<T> {
     type Error = KatapultFlashError;
 
     /// Connects, optionally validates the CAN identity, transfers and verifies

@@ -84,24 +84,24 @@ impl From<serde_json::Error> for MoonrakerError {
 /// A source of Klipper MCU inventory from Moonraker.
 ///
 /// Isolates callers that only need to discover MCUs from the concrete
-/// `ureq`-backed [`MoonrakerClient`], so they can be tested against a fake.
+/// `ureq`-backed [`MoonrakerAdapter`], so they can be tested against a fake.
 pub trait MoonrakerPort {
     /// Queries Moonraker for the currently configured MCU objects.
     fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError>;
 }
 
-pub struct MoonrakerClient {
+pub struct MoonrakerAdapter {
     base_url: String,
     agent: ureq::Agent,
 }
 
-impl MoonrakerPort for MoonrakerClient {
+impl MoonrakerPort for MoonrakerAdapter {
     fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
-        MoonrakerClient::discover_mcus(self)
+        MoonrakerAdapter::discover_mcus(self)
     }
 }
 
-impl MoonrakerClient {
+impl MoonrakerAdapter {
     pub fn new(base_url: impl Into<String>) -> Self {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(5)))

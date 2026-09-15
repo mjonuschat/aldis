@@ -17,11 +17,11 @@ pub struct FlashResult {
     pub padded_bytes: usize,
 }
 
-/// A native backend capable of writing and verifying a firmware image.
-pub trait FlashBackend {
-    /// Backend-specific failure type.
+/// A port for writing and verifying a firmware image, implemented by each native adapter.
+pub trait FlashPort {
+    /// Adapter-specific failure type.
     type Error;
 
-    /// Writes `firmware` and verifies the result through the backend protocol.
+    /// Writes `firmware` and verifies the result through the adapter's protocol.
     fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error>;
 }

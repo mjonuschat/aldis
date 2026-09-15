@@ -91,9 +91,9 @@ pub trait CheckoutPort {
 
 /// A [`CheckoutPort`] backed by the local Git checkout through `libgit2`.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct GitCheckout;
+pub struct GitCheckoutAdapter;
 
-impl CheckoutPort for GitCheckout {
+impl CheckoutPort for GitCheckoutAdapter {
     fn revision(&self, path: &Path) -> Result<CheckoutRevision, CheckoutError> {
         revision(path)
     }

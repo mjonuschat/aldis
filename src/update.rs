@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mcu_update::build::SystemCommandRunner;
+use mcu_update::build::SystemCommandAdapter;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use mcu_update::coordinator::{BuildCoordinator, FlashCoordinatorError};
 use mcu_update::eligibility::{
@@ -13,10 +13,10 @@ use mcu_update::eligibility::{
 };
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
-use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient, MoonrakerPort};
+use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
 use mcu_update::plan::build_update_plan;
 use mcu_update::retry::retry_until_available;
-use mcu_update::run_log::{LoggingCommandRunner, RunLog};
+use mcu_update::run_log::{LoggingCommandAdapter, RunLog};
 use mcu_update::workspace::RunWorkspace;
 
 use crate::cli::UpdateArgs;
@@ -60,7 +60,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         };
     ui.action("discovering MCUs from Moonraker");
     let inventory =
-        match MoonrakerClient::new(&arguments.connection.moonraker.moonraker).discover_mcus() {
+        match MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker).discover_mcus() {
             Ok(v) => v,
             Err(error) => {
                 ui.action(&format!("error: {error}"));
@@ -104,8 +104,8 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     }
     let coordinator = BuildCoordinator::new(
         &source,
-        LoggingCommandRunner::new(SystemCommandRunner, run_log.clone()),
-        LoggingCommandRunner::new(SystemCommandRunner, run_log.clone()),
+        LoggingCommandAdapter::new(SystemCommandAdapter, run_log.clone()),
+        LoggingCommandAdapter::new(SystemCommandAdapter, run_log.clone()),
     );
     let options = SystemFlashOptions {
         katapult: SystemKatapultOptions {
@@ -182,7 +182,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     ui.finish_success("Klipper ready");
     ui.begin("waiting for updated MCUs to reconnect");
     if let Err(error) = wait_for_mcus(
-        &MoonrakerClient::new(&arguments.connection.moonraker.moonraker),
+        &MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker),
         &accepted,
         &checkout,
     ) {

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::build::{BuildCommand, CommandError, CommandOutput, CommandRunner};
+use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 
 /// A persistent, append-only record of one updater run.
 #[derive(Clone, Debug)]
@@ -118,19 +118,19 @@ impl RunLog {
 
 /// A command runner that mirrors every command and its complete captured output into a run log.
 #[derive(Clone)]
-pub struct LoggingCommandRunner<R> {
+pub struct LoggingCommandAdapter<R> {
     inner: R,
     log: RunLog,
 }
 
-impl<R> LoggingCommandRunner<R> {
+impl<R> LoggingCommandAdapter<R> {
     /// Wraps `inner` so its command trace is retained in `log`.
     pub fn new(inner: R, log: RunLog) -> Self {
         Self { inner, log }
     }
 }
 
-impl<R: CommandRunner> CommandRunner for LoggingCommandRunner<R> {
+impl<R: CommandPort> CommandPort for LoggingCommandAdapter<R> {
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
         self.log.command_started(command);
         match self.inner.run(command) {

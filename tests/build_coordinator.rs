@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandRunner};
+use mcu_update::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 use mcu_update::coordinator::{BuildCoordinator, UpdateProgress};
 use mcu_update::moonraker::parse_inventory;
 use mcu_update::plan::build_update_plan;
@@ -248,7 +248,7 @@ impl FakeRunner {
     }
 }
 
-impl CommandRunner for FakeRunner {
+impl CommandPort for FakeRunner {
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
         self.commands
             .lock()

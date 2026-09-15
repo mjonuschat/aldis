@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mcu_update::build::{
-    BuildCommand, BuildError, BuildRequest, CommandOutput, CommandRunner, KlipperBuilder,
+    BuildCommand, BuildError, BuildRequest, CommandOutput, CommandPort, KlipperBuilder,
 };
 
 #[test]
@@ -155,7 +155,7 @@ impl FakeRunner {
     }
 }
 
-impl CommandRunner for FakeRunner {
+impl CommandPort for FakeRunner {
     fn run(
         &self,
         command: &BuildCommand,
@@ -170,7 +170,7 @@ impl CommandRunner for FakeRunner {
 
 struct FailingRunner;
 
-impl CommandRunner for FailingRunner {
+impl CommandPort for FailingRunner {
     fn run(
         &self,
         _command: &BuildCommand,
@@ -187,7 +187,7 @@ struct ExpandingRunner {
     expanded_kconfig: String,
 }
 
-impl CommandRunner for ExpandingRunner {
+impl CommandPort for ExpandingRunner {
     fn run(
         &self,
         command: &BuildCommand,

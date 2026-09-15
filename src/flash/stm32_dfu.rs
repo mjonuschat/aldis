@@ -11,7 +11,7 @@ use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
 use crate::flash::usb_bootloader::{
     SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
 };
-use crate::flash::{FlashBackend, FlashResult};
+use crate::flash::{FlashPort, FlashResult};
 
 /// An explicitly selected STM32 DFU USB identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,13 +254,13 @@ pub fn flash_system_at_path(
 }
 
 /// An STM32 DFU flash operation bound to one USB topology and application target.
-pub struct Stm32DfuBackend<'a> {
+pub struct Stm32DfuAdapter<'a> {
     identity: Stm32DfuDevice,
     sysfs_path: &'a Path,
     target: Stm32DfuTarget,
 }
 
-impl<'a> Stm32DfuBackend<'a> {
+impl<'a> Stm32DfuAdapter<'a> {
     /// Binds an STM32 DFU flash operation to its device identity, USB topology, and target.
     pub fn new(identity: Stm32DfuDevice, sysfs_path: &'a Path, target: Stm32DfuTarget) -> Self {
         Self {
@@ -271,7 +271,7 @@ impl<'a> Stm32DfuBackend<'a> {
     }
 }
 
-impl FlashBackend for Stm32DfuBackend<'_> {
+impl FlashPort for Stm32DfuAdapter<'_> {
     type Error = Stm32DfuError;
 
     fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error> {
