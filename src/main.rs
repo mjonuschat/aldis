@@ -10,7 +10,9 @@ use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use mcu_update::coordinator::BuildCoordinator;
 use mcu_update::coordinator::FlashCoordinatorError;
-use mcu_update::eligibility::{CheckoutRevision, UpdateSelection, assess_mcu, is_selected};
+use mcu_update::eligibility::{
+    CheckoutRevision, Eligibility, RevisionStatus, UpdateSelection, assess_mcu, is_selected,
+};
 use mcu_update::flash::katapult::system::SystemKatapultOptions;
 use mcu_update::flash::system::{SystemFlashError, SystemFlashOptions};
 use mcu_update::moonraker::{McuInventory, McuTransport, MoonrakerClient};
@@ -113,17 +115,20 @@ fn setup(arguments: SetupArgs) -> ExitCode {
 
 fn install_setup() -> ExitCode {
     let Some(user) = std::env::var_os("SUDO_USER").and_then(|user| user.into_string().ok()) else {
-        return fail("setup must be invoked with sudo by the target user".to_owned());
+        return fail("setup must be run with sudo; run: sudo mcu-update setup".to_owned());
     };
     if !valid_user_name(&user) {
         return fail("SUDO_USER is not a valid account name".to_owned());
     }
-    if let Err(error) = fs::write(UDEV_RULES_PATH, udev_rules()) {
-        return fail(format!("could not install udev rules: {error}"));
-    }
-    if let Err(error) = fs::write(SUDOERS_PATH, sudoers_policy(&user)) {
-        return fail(format!("could not install service policy: {error}"));
-    }
+    let rules_action = match install_file(UDEV_RULES_PATH, udev_rules(), "udev rules") {
+        Ok(action) => action,
+        Err(error) => return fail(error),
+    };
+    let service_policy = sudoers_policy(&user);
+    let service_action = match install_file(SUDOERS_PATH, &service_policy, "service policy") {
+        Ok(action) => action,
+        Err(error) => return fail(error),
+    };
     match Command::new("chmod").args(["440", SUDOERS_PATH]).status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
@@ -145,8 +150,23 @@ fn install_setup() -> ExitCode {
         }
         Err(error) => return fail(format!("could not reload udev rules: {error}")),
     }
-    println!("mcu-update setup is ready for {user}");
+    println!("{}", setup_install_report(rules_action, service_action));
     ExitCode::SUCCESS
+}
+
+fn install_file(path: &str, contents: &str, description: &str) -> Result<&'static str, String> {
+    if fs::read_to_string(path).is_ok_and(|current| current == contents) {
+        return Ok("already current");
+    }
+    fs::write(path, contents)
+        .map_err(|error| format!("could not install {description}: {error}"))?;
+    Ok("installed")
+}
+
+fn setup_install_report(rules_action: &str, service_action: &str) -> String {
+    format!(
+        "mcu-update setup:\n  udev rules: {rules_action}\n  service policy: {service_action}\n  service policy permissions: set to 0440\n  udev rules: reloaded"
+    )
 }
 
 fn check_setup() -> ExitCode {
@@ -155,12 +175,24 @@ fn check_setup() -> ExitCode {
         .args(["-n", "/bin/systemctl", "is-active", "klipper"])
         .output()
         .is_ok_and(|output| sudo_policy_allows_service_status(&output.stdout));
+    println!("{}", setup_check_report(rules, service));
     if rules && service {
-        println!("mcu-update setup is ready");
         ExitCode::SUCCESS
     } else {
         fail("mcu-update setup is incomplete; run sudo mcu-update setup".to_owned())
     }
+}
+
+fn setup_check_report(rules: bool, service: bool) -> String {
+    format!(
+        "mcu-update setup:\n  udev rules: {}\n  Klipper service access: {}",
+        if rules {
+            "ready"
+        } else {
+            "missing or outdated"
+        },
+        if service { "ready" } else { "unavailable" },
+    )
 }
 
 fn sudo_policy_allows_service_status(stdout: &[u8]) -> bool {
@@ -196,18 +228,79 @@ fn status(arguments: ConnectionArgs) -> ExitCode {
         Err(error) => return fail(error.to_string()),
     };
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
-    println!(
-        "Klipper source: {}\nCheckout revision: {checkout:?}",
-        source.display()
+    print!("{}", format_status(&source, &checkout, &inventory));
+    ExitCode::SUCCESS
+}
+
+fn format_status(
+    source: &std::path::Path,
+    checkout: &CheckoutRevision,
+    inventory: &McuInventory,
+) -> String {
+    let mut output = format!(
+        "Klipper source:    {}\nCheckout revision: {}\n",
+        source.display(),
+        checkout_label(checkout),
     );
     for mcu in &inventory.mcus {
-        let result = assess_mcu(mcu, &checkout);
-        println!(
-            "\n{}\n  app: {:?}\n  running: {:?}\n  transport: {:?}\n  eligibility: {:?}\n  revision: {:?}",
-            mcu.name, mcu.app, mcu.version, mcu.transport, result.eligibility, result.revision
-        );
+        let status = assess_mcu(mcu, checkout);
+        output.push_str(&format!("\n{}\n", mcu.name));
+        for (label, value) in [
+            ("firmware:", firmware_label(mcu)),
+            (
+                "version:",
+                mcu.version.as_deref().unwrap_or("unknown").to_owned(),
+            ),
+            ("model:", mcu.mcu.clone()),
+            ("connection:", connection_label(mcu.transport.as_ref())),
+            ("supported:", supported_label(status.eligibility)),
+            ("needs update:", update_label(status.revision)),
+        ] {
+            output.push_str(&format!("  {label:<13} {value}\n"));
+        }
     }
-    ExitCode::SUCCESS
+    output
+}
+
+fn checkout_label(checkout: &CheckoutRevision) -> &str {
+    match checkout {
+        CheckoutRevision::Known(revision) => revision,
+        CheckoutRevision::Indeterminate => "unknown",
+    }
+}
+
+fn firmware_label(mcu: &mcu_update::moonraker::Mcu) -> String {
+    if let Some(app) = mcu.app.as_deref().filter(|app| !app.trim().is_empty()) {
+        app.to_owned()
+    } else if !mcu.kconfig.trim().is_empty() {
+        "Klipper".to_owned()
+    } else {
+        "unknown".to_owned()
+    }
+}
+
+fn connection_label(transport: Option<&McuTransport>) -> String {
+    match transport {
+        Some(McuTransport::Serial { device }) => format!("serial ({device})"),
+        Some(McuTransport::Can { interface, uuid }) => format!("CAN ({interface}, {uuid:012x})"),
+        None => "not configured".to_owned(),
+    }
+}
+
+fn supported_label(eligibility: Eligibility) -> String {
+    match eligibility {
+        Eligibility::Eligible => "yes".to_owned(),
+        Eligibility::ExternallyManaged | Eligibility::Unsupported => "no".to_owned(),
+    }
+}
+
+fn update_label(revision: Option<RevisionStatus>) -> String {
+    match revision {
+        Some(RevisionStatus::Current) => "no".to_owned(),
+        Some(RevisionStatus::UpdateRequired) => "yes".to_owned(),
+        Some(RevisionStatus::Indeterminate) => "unknown".to_owned(),
+        None => "n/a".to_owned(),
+    }
 }
 
 fn default_klipper_source() -> PathBuf {
@@ -433,8 +526,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Cli, selected_mcus_are_ready, sudo_policy_allows_service_status, update_failure,
-        wait_for_application_with_timeout,
+        Cli, format_status, selected_mcus_are_ready, setup_check_report, setup_install_report,
+        sudo_policy_allows_service_status, update_failure, wait_for_application_with_timeout,
     };
     use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
@@ -460,11 +553,57 @@ mod tests {
     }
 
     #[test]
+    fn renders_human_readable_klipper_status() {
+        let inventory = McuInventory {
+            mcus: vec![mcu(
+                "mcu",
+                "v0.12.0-123-deadbeef",
+                Some("/dev/serial/by-id/mcu"),
+            )],
+        };
+
+        assert_eq!(
+            format_status(
+                std::path::Path::new("/home/pi/klipper"),
+                &CheckoutRevision::Known("v0.13.0-756-g2d7717e3".to_owned()),
+                &inventory,
+            ),
+            concat!(
+                "Klipper source:    /home/pi/klipper\n",
+                "Checkout revision: v0.13.0-756-g2d7717e3\n\n",
+                "mcu\n",
+                "  firmware:     Klipper\n",
+                "  version:      v0.12.0-123-deadbeef\n",
+                "  model:        test\n",
+                "  connection:   serial (/dev/serial/by-id/mcu)\n",
+                "  supported:    yes\n",
+                "  needs update: yes\n",
+            )
+        );
+    }
+
+    #[test]
     fn recognizes_a_permitted_inactive_klipper_status() {
         assert!(sudo_policy_allows_service_status(b"inactive\n"));
         assert!(!sudo_policy_allows_service_status(
             b"sudo: a password is required\n"
         ));
+    }
+
+    #[test]
+    fn reports_each_setup_prerequisite() {
+        assert_eq!(
+            setup_check_report(true, false),
+            "mcu-update setup:\n  udev rules: ready\n  Klipper service access: unavailable"
+        );
+    }
+
+    #[test]
+    fn reports_setup_install_actions() {
+        assert_eq!(
+            setup_install_report("already current", "installed"),
+            "mcu-update setup:\n  udev rules: already current\n  service policy: installed\n  service policy permissions: set to 0440\n  udev rules: reloaded"
+        );
     }
 
     #[test]
