@@ -1,5 +1,6 @@
 //! Topology-scoped native flashing dispatch for prepared MCU updates.
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -107,6 +108,68 @@ pub enum SystemFlashError {
     /// Katapult rejected or could not verify its CAN transfer.
     CanFlash(KatapultFlashError),
 }
+
+impl fmt::Display for SystemFlashError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::flash::katapult::Command;
+        use crate::flash::katapult::session::SessionError;
+
+        match self {
+            Self::CanFlash(KatapultFlashError::Session(SessionError::RetriesExhausted {
+                command: Command::Connect,
+                ..
+            })) => write!(
+                f,
+                "the CAN bootloader did not respond to a connection request"
+            ),
+            Self::CanFlash(_) => write!(
+                f,
+                "the CAN bootloader rejected or could not verify the firmware transfer"
+            ),
+            Self::Can(_) => write!(f, "could not enter the bootloader over CAN"),
+            Self::CanSocket(error) => {
+                write!(f, "could not open the configured CAN interface: {error}")
+            }
+            Self::CanUsbTopology(error) => {
+                write!(f, "could not identify the USB CAN adapter: {error}")
+            }
+            Self::Bootloader(_) => {
+                write!(
+                    f,
+                    "the expected USB bootloader did not appear before the timeout"
+                )
+            }
+            Self::UsbAccess(error) => {
+                write!(f, "the USB bootloader was not accessible: {error}")
+            }
+            Self::KatapultOpen(error) => {
+                write!(f, "could not open the Katapult bootloader: {error}")
+            }
+            Self::KatapultFlash(_) => write!(
+                f,
+                "the Katapult bootloader rejected or could not verify the firmware transfer"
+            ),
+            Self::Stm32Dfu(_) => write!(f, "STM32 DFU flashing failed"),
+            Self::PicoBoot(_) => write!(f, "RP PicoBoot flashing failed"),
+            Self::Bossa(_) => write!(f, "BOSSA flashing failed"),
+            Self::Stm32Target(_) => write!(
+                f,
+                "the STM32 firmware configuration has no valid flash address"
+            ),
+            Self::BossaTarget(_) => write!(
+                f,
+                "the SAMD firmware configuration has no valid flash offset"
+            ),
+            Self::Selection(_) => write!(
+                f,
+                "the re-enumerated bootloader is not supported for automatic flashing"
+            ),
+            Self::MissingTransport => write!(f, "the MCU does not expose a configured transport"),
+        }
+    }
+}
+
+impl std::error::Error for SystemFlashError {}
 
 /// Derives exactly one native USB route from one observed bootloader.
 pub fn serial_route(
@@ -436,12 +499,32 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{usb_can_bridge, usb_device_node};
+    use super::{SystemFlashError, usb_can_bridge, usb_device_node};
+    use crate::flash::katapult::Command;
+    use crate::flash::katapult::backend::KatapultFlashError;
+    use crate::flash::katapult::session::SessionError;
 
     #[test]
     fn recognizes_a_usb_can_bridge_from_embedded_kconfig() {
         assert!(usb_can_bridge("CONFIG_USBCANBUS=y\n"));
         assert!(!usb_can_bridge("# CONFIG_USBCANBUS is not set\n"));
+    }
+
+    #[test]
+    fn explains_an_unresponsive_can_bootloader_without_a_debug_dump() {
+        let detail = SystemFlashError::CanFlash(KatapultFlashError::Session(
+            SessionError::RetriesExhausted {
+                command: Command::Connect,
+                last_failure: "transport error".to_owned(),
+            },
+        ))
+        .to_string();
+
+        assert_eq!(
+            detail,
+            "the CAN bootloader did not respond to a connection request"
+        );
+        assert!(!detail.contains("RetriesExhausted"));
     }
 
     #[test]

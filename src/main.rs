@@ -759,62 +759,11 @@ fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
         FlashCoordinatorError::Artifact(error) => {
             format!("could not read the built firmware: {error}")
         }
-        FlashCoordinatorError::Flash(error) => flash_failure_detail(&error),
+        FlashCoordinatorError::Flash(error) => error.to_string(),
     };
     format!(
         "update failed: {detail}. Klipper may still be stopped; fix the issue, then rerun update"
     )
-}
-
-fn flash_failure_detail(error: &SystemFlashError) -> String {
-    use mcu_update::flash::katapult::backend::KatapultFlashError;
-    use mcu_update::flash::katapult::session::SessionError;
-
-    match error {
-        SystemFlashError::CanFlash(KatapultFlashError::Session(
-            SessionError::RetriesExhausted {
-                command: mcu_update::flash::katapult::Command::Connect,
-                ..
-            },
-        )) => "the CAN bootloader did not respond to a connection request".to_owned(),
-        SystemFlashError::CanFlash(_) => {
-            "the CAN bootloader rejected or could not verify the firmware transfer".to_owned()
-        }
-        SystemFlashError::Can(_) => "could not enter the bootloader over CAN".to_owned(),
-        SystemFlashError::CanSocket(error) => {
-            format!("could not open the configured CAN interface: {error}")
-        }
-        SystemFlashError::CanUsbTopology(error) => {
-            format!("could not identify the USB CAN adapter: {error}")
-        }
-        SystemFlashError::Bootloader(_) => {
-            "the expected USB bootloader did not appear before the timeout".to_owned()
-        }
-        SystemFlashError::UsbAccess(error) => {
-            format!("the USB bootloader was not accessible: {error}")
-        }
-        SystemFlashError::KatapultOpen(error) => {
-            format!("could not open the Katapult bootloader: {error}")
-        }
-        SystemFlashError::KatapultFlash(_) => {
-            "the Katapult bootloader rejected or could not verify the firmware transfer".to_owned()
-        }
-        SystemFlashError::Stm32Dfu(_) => "STM32 DFU flashing failed".to_owned(),
-        SystemFlashError::PicoBoot(_) => "RP PicoBoot flashing failed".to_owned(),
-        SystemFlashError::Bossa(_) => "BOSSA flashing failed".to_owned(),
-        SystemFlashError::Stm32Target(_) => {
-            "the STM32 firmware configuration has no valid flash address".to_owned()
-        }
-        SystemFlashError::BossaTarget(_) => {
-            "the SAMD firmware configuration has no valid flash offset".to_owned()
-        }
-        SystemFlashError::Selection(_) => {
-            "the re-enumerated bootloader is not supported for automatic flashing".to_owned()
-        }
-        SystemFlashError::MissingTransport => {
-            "the MCU does not expose a configured transport".to_owned()
-        }
-    }
 }
 
 fn refresh_label(refreshed: &RefreshResult) -> String {
@@ -920,19 +869,15 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Cli, CliCommand, ColorMode, colors_enabled, flash_failure_detail, format_status,
-        mcu_count_label, plain_success_line, selected_mcus_are_ready, setup_check_report,
-        setup_install_report, sudo_policy_allows_service_status, update_failure,
-        wait_for_application_with_timeout,
+        Cli, CliCommand, ColorMode, colors_enabled, format_status, mcu_count_label,
+        plain_success_line, selected_mcus_are_ready, setup_check_report, setup_install_report,
+        sudo_policy_allows_service_status, update_failure, wait_for_application_with_timeout,
     };
     use clap::{CommandFactory, Parser};
     use mcu_update::build::{BuildCommand, BuildError, CommandOutput};
     use mcu_update::checkout::RefreshResult;
     use mcu_update::coordinator::{CoordinatorError, FlashCoordinatorError};
     use mcu_update::eligibility::CheckoutRevision;
-    use mcu_update::flash::katapult::{
-        Command, backend::KatapultFlashError, session::SessionError,
-    };
     use mcu_update::flash::system::SystemFlashError;
     use mcu_update::moonraker::{Mcu, McuInventory, McuTransport};
 
@@ -1089,22 +1034,6 @@ mod tests {
         assert!(message.contains("make failed: permission denied"));
         assert!(!message.contains("unrelated output"));
         assert!(message.contains("may still be stopped"));
-    }
-
-    #[test]
-    fn explains_an_unresponsive_can_bootloader_without_a_debug_dump() {
-        let detail = flash_failure_detail(&SystemFlashError::CanFlash(
-            KatapultFlashError::Session(SessionError::RetriesExhausted {
-                command: Command::Connect,
-                last_failure: "transport error".to_owned(),
-            }),
-        ));
-
-        assert_eq!(
-            detail,
-            "the CAN bootloader did not respond to a connection request"
-        );
-        assert!(!detail.contains("RetriesExhausted"));
     }
 
     #[test]
