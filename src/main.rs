@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, process::Command};
 
 use mcu_update::build::SystemCommandRunner;
 use mcu_update::checkout::{refresh as refresh_checkout, revision as checkout_revision};
@@ -15,6 +16,9 @@ use mcu_update::plan::build_update_plan;
 use mcu_update::workspace::RunWorkspace;
 
 const DEFAULT_MOONRAKER_URL: &str = "http://127.0.0.1:7125";
+const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/80-mcu-update.rules";
+const SUDOERS_PATH: &str = "/etc/sudoers.d/mcu-update";
+const UDEV_RULES: &str = include_str!("../templates/80-mcu-update.rules");
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -37,8 +41,74 @@ fn main() -> ExitCode {
             }
         }
         "update" => update(args.collect()),
+        "setup" => setup(args.collect()),
         _ => usage("unknown command"),
     }
+}
+
+fn setup(arguments: Vec<String>) -> ExitCode {
+    match arguments.as_slice() {
+        [] => install_setup(),
+        [flag] if flag == "--check" => check_setup(),
+        _ => usage("expected no setup option or --check"),
+    }
+}
+
+fn install_setup() -> ExitCode {
+    let Some(user) = std::env::var_os("SUDO_USER").and_then(|user| user.into_string().ok()) else {
+        return fail("setup must be invoked with sudo by the target user".to_owned());
+    };
+    if !valid_user_name(&user) {
+        return fail("SUDO_USER is not a valid account name".to_owned());
+    }
+    if let Err(error) = fs::write(UDEV_RULES_PATH, udev_rules()) {
+        return fail(format!("could not install udev rules: {error}"));
+    }
+    if let Err(error) = fs::write(SUDOERS_PATH, sudoers_policy(&user)) {
+        return fail(format!("could not install service policy: {error}"));
+    }
+    if let Err(error) = Command::new("chmod").args(["440", SUDOERS_PATH]).status() {
+        return fail(format!("could not protect service policy: {error}"));
+    }
+    if let Err(error) = Command::new("udevadm")
+        .args(["control", "--reload-rules"])
+        .status()
+    {
+        return fail(format!("could not reload udev rules: {error}"));
+    }
+    println!("mcu-update setup is ready for {user}");
+    ExitCode::SUCCESS
+}
+
+fn check_setup() -> ExitCode {
+    let rules = fs::read_to_string(UDEV_RULES_PATH).is_ok_and(|contents| contents == udev_rules());
+    let service = Command::new("sudo")
+        .args(["-n", "true"])
+        .status()
+        .is_ok_and(|status| status.success());
+    if rules && service {
+        println!("mcu-update setup is ready");
+        ExitCode::SUCCESS
+    } else {
+        fail("mcu-update setup is incomplete; run sudo mcu-update setup".to_owned())
+    }
+}
+
+fn valid_user_name(user: &str) -> bool {
+    !user.is_empty()
+        && user
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn udev_rules() -> &'static str {
+    UDEV_RULES
+}
+
+fn sudoers_policy(user: &str) -> String {
+    format!(
+        "{user} ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, /bin/systemctl start klipper\n"
+    )
 }
 
 fn status(arguments: Vec<String>) -> ExitCode {

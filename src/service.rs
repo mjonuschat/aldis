@@ -119,8 +119,11 @@ where
         arguments: [&str; N],
     ) -> Result<(BuildCommand, CommandOutput), ServiceError> {
         let command = BuildCommand {
-            program: "systemctl".to_owned(),
-            arguments: arguments.into_iter().map(str::to_owned).collect(),
+            program: "sudo".to_owned(),
+            arguments: std::iter::once("-n".to_owned())
+                .chain(std::iter::once("/bin/systemctl".to_owned()))
+                .chain(arguments.into_iter().map(str::to_owned))
+                .collect(),
             current_dir: None,
         };
         let output = self

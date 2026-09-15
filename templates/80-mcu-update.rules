@@ -1,0 +1,8 @@
+# STM32 ROM DFU bootloader.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="df11", MODE="0660", GROUP="dialout"
+
+# RP2040 ROM PicoBoot bootloader.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="0003", MODE="0660", GROUP="dialout"
+
+# RP2350 ROM PicoBoot bootloader.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000f", MODE="0660", GROUP="dialout"

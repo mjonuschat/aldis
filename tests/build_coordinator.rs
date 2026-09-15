@@ -71,9 +71,27 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
             .map(|command| command.arguments.as_slice())
             .collect::<Vec<_>>(),
         vec![
-            ["is-active".to_owned(), "klipper".to_owned()].as_slice(),
-            ["stop".to_owned(), "klipper".to_owned()].as_slice(),
-            ["is-active".to_owned(), "klipper".to_owned()].as_slice(),
+            [
+                "-n".to_owned(),
+                "/bin/systemctl".to_owned(),
+                "is-active".to_owned(),
+                "klipper".to_owned()
+            ]
+            .as_slice(),
+            [
+                "-n".to_owned(),
+                "/bin/systemctl".to_owned(),
+                "stop".to_owned(),
+                "klipper".to_owned()
+            ]
+            .as_slice(),
+            [
+                "-n".to_owned(),
+                "/bin/systemctl".to_owned(),
+                "is-active".to_owned(),
+                "klipper".to_owned()
+            ]
+            .as_slice(),
         ]
     );
     let make_commands = make_runner.commands.lock().expect("runner lock");
@@ -100,8 +118,20 @@ fn starts_klipper_once_after_a_completed_batch() {
             .map(|command| command.arguments.as_slice())
             .collect::<Vec<_>>(),
         vec![
-            ["start".to_owned(), "klipper".to_owned()].as_slice(),
-            ["is-active".to_owned(), "klipper".to_owned()].as_slice(),
+            [
+                "-n".to_owned(),
+                "/bin/systemctl".to_owned(),
+                "start".to_owned(),
+                "klipper".to_owned()
+            ]
+            .as_slice(),
+            [
+                "-n".to_owned(),
+                "/bin/systemctl".to_owned(),
+                "is-active".to_owned(),
+                "klipper".to_owned()
+            ]
+            .as_slice(),
         ]
     );
 }

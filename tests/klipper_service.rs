@@ -17,10 +17,16 @@ fn checks_then_stops_klipper_with_explicit_systemctl_commands() {
 
     let commands = runner.commands.lock().expect("runner lock");
     assert_eq!(commands.len(), 2);
-    assert_eq!(commands[0].program, "systemctl");
+    assert_eq!(commands[0].program, "sudo");
     assert_eq!(commands[0].current_dir, None);
-    assert_eq!(commands[0].arguments, ["is-active", "klipper"]);
-    assert_eq!(commands[1].arguments, ["stop", "klipper"]);
+    assert_eq!(
+        commands[0].arguments,
+        ["-n", "/bin/systemctl", "is-active", "klipper"]
+    );
+    assert_eq!(
+        commands[1].arguments,
+        ["-n", "/bin/systemctl", "stop", "klipper"]
+    );
 }
 
 #[test]
