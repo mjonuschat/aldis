@@ -3,6 +3,7 @@
 //! Wire mapping follows Katapult's CAN flasher implementation:
 //! <https://github.com/Arksine/katapult/blob/master/scripts/flashtool.py>.
 
+use std::fmt;
 use std::io;
 use std::time::Duration;
 
@@ -65,9 +66,6 @@ pub trait CanIo {
 }
 
 /// An error while exchanging Katapult protocol frames over CAN.
-// Not thiserror-derived: bounding E to std::error::Error would require bounding
-// CanIo::Error too, which tests/katapult_can.rs and tests/katapult_bootstrap.rs's
-// ScriptedCanIo (Error = ()) can't satisfy.
 #[derive(Debug)]
 pub enum CanTransportError<E> {
     /// The underlying CAN implementation failed.
@@ -84,6 +82,31 @@ pub enum CanTransportError<E> {
         /// Number of bytes actually received.
         actual: usize,
     },
+}
+
+impl fmt::Display for CanTransportError<io::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(_) => write!(f, "CAN transport error"),
+            Self::ResponseTooLarge { length } => write!(
+                f,
+                "CAN response of {length} bytes exceeds the maximum {MAX_RESPONSE_FRAME_BYTES} bytes"
+            ),
+            Self::ResponseLengthExceeded { expected, actual } => write!(
+                f,
+                "CAN response of {actual} bytes exceeds the {expected} bytes declared by its header"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CanTransportError<io::Error> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::ResponseTooLarge { .. } | Self::ResponseLengthExceeded { .. } => None,
+        }
+    }
 }
 
 impl CanFrame {

@@ -1,5 +1,7 @@
 //! Explicit transitions from a running MCU transport to a ready Katapult backend.
 
+use std::fmt;
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
@@ -11,15 +13,30 @@ use crate::flash::usb_bootloader::{
 };
 
 /// A failure while transitioning a CAN MCU into a ready Katapult session.
-// Not thiserror-derived: bounding E to std::error::Error would require bounding
-// CanIo::Error too, which tests/katapult_can.rs and tests/katapult_bootstrap.rs's
-// ScriptedCanIo (Error = ()) can't satisfy.
 #[derive(Debug)]
 pub enum CanBootstrapError<E> {
     /// The configured CAN UUID cannot be represented by Katapult.
     Address(CanError),
     /// The CAN reboot or node-assignment command failed.
     Transport(CanTransportError<E>),
+}
+
+impl fmt::Display for CanBootstrapError<io::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Address(error) => write!(f, "{error}"),
+            Self::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for CanBootstrapError<io::Error> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Address(error) => error.source(),
+            Self::Transport(error) => error.source(),
+        }
+    }
 }
 
 /// A failure while creating a ready serial Katapult backend.

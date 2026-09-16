@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, KlipperBuilder};
@@ -63,8 +64,6 @@ pub enum CoordinatorError {
 }
 
 /// Failure while executing an approved build and its caller-supplied flash operation.
-// Not thiserror-derived: no consumer needs Display/Error, and an unconstrained E lets
-// execute_and_flash accept non-Error callback error types (see tests/build_coordinator.rs).
 #[derive(Debug)]
 pub enum FlashCoordinatorError<E> {
     /// The service transition or Klipper build failed.
@@ -73,6 +72,26 @@ pub enum FlashCoordinatorError<E> {
     Artifact(std::io::Error),
     /// The selected native backend failed.
     Flash(E),
+}
+
+impl fmt::Display for FlashCoordinatorError<SystemFlashError> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Coordinator(error) => write!(f, "{error}"),
+            Self::Artifact(_) => write!(f, "could not read the built firmware"),
+            Self::Flash(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for FlashCoordinatorError<SystemFlashError> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Coordinator(error) => std::error::Error::source(error),
+            Self::Artifact(error) => Some(error),
+            Self::Flash(_) => None,
+        }
+    }
 }
 
 /// The completed build and native flash result for one approved MCU.

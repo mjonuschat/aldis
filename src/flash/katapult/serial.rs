@@ -3,6 +3,7 @@
 //! The bootloader entry sequence and protocol framing follow
 //! <https://github.com/Arksine/katapult/blob/master/scripts/flashtool.py>.
 
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -40,9 +41,6 @@ pub trait SerialIo {
 }
 
 /// An error while exchanging Katapult protocol frames over serial.
-// Not thiserror-derived: bounding E to std::error::Error would require bounding
-// SerialIo::Error too, which tests/katapult_serial.rs's ScriptedSerial
-// (Error = ()) can't satisfy.
 #[derive(Debug)]
 pub enum SerialTransportError<E> {
     /// The underlying serial implementation failed.
@@ -59,6 +57,31 @@ pub enum SerialTransportError<E> {
         /// Number of bytes actually received.
         actual: usize,
     },
+}
+
+impl fmt::Display for SerialTransportError<io::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(_) => write!(f, "serial transport error"),
+            Self::ResponseTooLarge { length } => write!(
+                f,
+                "serial response of {length} bytes exceeds the maximum {MAX_RESPONSE_FRAME_BYTES} bytes"
+            ),
+            Self::ResponseLengthExceeded { expected, actual } => write!(
+                f,
+                "serial response of {actual} bytes exceeds the {expected} bytes declared by its header"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SerialTransportError<io::Error> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::ResponseTooLarge { .. } | Self::ResponseLengthExceeded { .. } => None,
+        }
+    }
 }
 
 /// A sequential Katapult transport over serial bytes.
