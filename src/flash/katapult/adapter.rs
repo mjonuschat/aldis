@@ -1,5 +1,7 @@
 //! Katapult flashing backend assembled from a ready transport session.
 
+use std::fmt;
+
 use super::session::{KatapultSession, SessionError, Transport};
 use crate::flash::{FlashPort, FlashResult};
 
@@ -42,7 +44,10 @@ impl<T> KatapultAdapter<T> {
     }
 }
 
-impl<T: Transport> FlashPort for KatapultAdapter<T> {
+impl<T: Transport> FlashPort for KatapultAdapter<T>
+where
+    T::Error: fmt::Debug,
+{
     type Error = KatapultFlashError;
 
     /// Connects, optionally validates the CAN identity, transfers and verifies

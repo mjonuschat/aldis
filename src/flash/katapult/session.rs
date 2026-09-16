@@ -1,5 +1,7 @@
 //! Retry and response-validation logic shared by Katapult transports.
 
+use std::fmt;
+
 use sha1::{Digest, Sha1};
 
 use super::{Command, FrameError, decode_response, encode_command};
@@ -116,7 +118,10 @@ impl<T> KatapultSession<T> {
     }
 }
 
-impl<T: Transport> KatapultSession<T> {
+impl<T: Transport> KatapultSession<T>
+where
+    T::Error: fmt::Debug,
+{
     /// Connects and validates the advertised target geometry.
     pub fn connect(&mut self) -> Result<KatapultConnection, SessionError> {
         let response = self.command(Command::Connect, &[])?;
@@ -180,8 +185,8 @@ impl<T: Transport> KatapultSession<T> {
         for _ in 0..MAX_ATTEMPTS {
             let response = match self.transport.exchange(&request) {
                 Ok(response) => response,
-                Err(_) => {
-                    last_failure = String::from("transport error");
+                Err(error) => {
+                    last_failure = format!("transport error: {error:?}");
                     continue;
                 }
             };

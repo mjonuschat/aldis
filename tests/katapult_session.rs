@@ -15,6 +15,15 @@ impl Transport for ScriptedTransport {
     }
 }
 
+struct FailingTransport;
+
+impl Transport for FailingTransport {
+    type Error = &'static str;
+    fn exchange(&mut self, _request: &[u8]) -> Result<Vec<u8>, Self::Error> {
+        Err("bus off")
+    }
+}
+
 fn response(command: Command, payload: &[u8]) -> Vec<u8> {
     let mut frame = vec![0x01, 0x88, 0xa0, ((payload.len() + 4) / 4) as u8];
     frame.extend_from_slice(&(command as u32).to_le_bytes());
@@ -101,5 +110,20 @@ fn rejects_corrupted_readback() {
     assert_eq!(
         session.upload(&[0xab], KatapultTarget::new(application_start, 64).unwrap()),
         Err(SessionError::ChecksumMismatch)
+    );
+}
+
+#[test]
+fn reports_the_underlying_transport_error_once_retries_are_exhausted() {
+    let mut session = KatapultSession::new(FailingTransport);
+
+    let error = session.complete().unwrap_err();
+
+    let SessionError::RetriesExhausted { last_failure, .. } = error else {
+        panic!("expected RetriesExhausted, got {error:?}");
+    };
+    assert!(
+        last_failure.contains("bus off"),
+        "expected the transport's own error in {last_failure:?}"
     );
 }
