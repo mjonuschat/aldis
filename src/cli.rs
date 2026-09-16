@@ -16,6 +16,9 @@ pub(crate) struct Cli {
     /// Disable animated progress indicators.
     #[arg(long, global = true)]
     pub(crate) no_progress: bool,
+    /// Increase log verbosity. Repeat for more detail (e.g. -vv).
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub(crate) verbose: u8,
     #[command(subcommand)]
     pub(crate) command: CliCommand,
 }
@@ -151,5 +154,11 @@ mod tests {
             panic!("expected update command");
         };
         assert!(cleaned.clean);
+    }
+
+    #[test]
+    fn accepts_repeated_verbose_flags() {
+        let cli = Cli::try_parse_from(["aldis", "-vv", "update", "--all"]).expect("parse verbose");
+        assert_eq!(cli.verbose, 2);
     }
 }
