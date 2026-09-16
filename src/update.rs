@@ -161,6 +161,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
             }
             Err(error) => {
                 ui.finish_failure();
+                run_log.action(&format!("debug: flash failed: {error:?}"));
                 let message = update_failure(error);
                 ui.action(&format!("error: {message}"));
                 return fail(message);
