@@ -26,9 +26,10 @@ pub enum KatapultEndpoint {
 }
 
 /// A prepared MCU cannot be used with the Katapult backend.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EndpointError {
     /// Moonraker reported neither a serial nor CAN transport for the target.
+    #[error("moonraker reported neither a serial nor CAN transport for {target_name}")]
     MissingTransport {
         /// Moonraker's MCU object name.
         target_name: String,

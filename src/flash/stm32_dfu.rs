@@ -62,36 +62,52 @@ pub fn target_from_kconfig(kconfig: &str) -> Result<Stm32DfuTarget, Stm32DfuErro
 }
 
 /// A native STM32 DFU transfer failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Stm32DfuError {
     /// Embedded Kconfig did not select exactly one STM32 flash-start symbol.
+    #[error("embedded Kconfig did not select exactly one STM32 flash-start symbol")]
     InvalidFlashStartConfiguration,
     /// DFU enumeration or device opening failed.
-    Discovery(nusb::Error),
+    #[error("STM32 DFU device discovery failed: {0}")]
+    Discovery(#[source] nusb::Error),
     /// No DFU device matched the explicitly configured USB identity.
+    #[error(
+        "no STM32 DFU device found for vendor 0x{:04x} product 0x{:04x}",
+        .0.vendor_id, .0.product_id
+    )]
     DeviceNotFound(Stm32DfuDevice),
     /// More than one DFU device matched the configured USB identity.
+    #[error(
+        "{matches} STM32 DFU devices matched vendor 0x{:04x} product 0x{:04x}, expected exactly one",
+        device.vendor_id, device.product_id
+    )]
     AmbiguousDevice {
         device: Stm32DfuDevice,
         matches: usize,
     },
     /// The DFU transport rejected an operation.
-    Transport(dfu_nusb::Error),
+    #[error("STM32 DFU transport error: {0}")]
+    Transport(#[source] dfu_nusb::Error),
     /// Uploaded bytes did not match the firmware artifact.
+    #[error("flash readback did not match the written firmware")]
     VerificationMismatch,
 }
 
 /// Failure while transitioning a running STM32 USB serial MCU to ROM DFU.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Stm32DfuBootstrapError {
     /// The running USB serial MCU did not re-enumerate as STM32 ROM DFU.
-    Bootloader(UsbBootloaderError),
+    #[error("{0}")]
+    Bootloader(#[source] UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
-    Selection(UsbBootloaderSelectionError),
+    #[error("{0}")]
+    Selection(#[source] UsbBootloaderSelectionError),
     /// A supported but non-STM32 bootloader appeared at the selected topology.
+    #[error("expected STM32 ROM DFU but found {0:?}")]
     UnexpectedBootloader(SelectedUsbBootloader),
     /// Native DfuSe flashing failed after ROM DFU appeared.
-    Flash(Stm32DfuError),
+    #[error("{0}")]
+    Flash(#[source] Stm32DfuError),
 }
 
 /// Requests ROM DFU through a running USB serial STM32 MCU and flashes it.
