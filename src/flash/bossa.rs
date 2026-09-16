@@ -21,7 +21,7 @@ pub enum BossaError {
     #[error("Kconfig does not select exactly one BOSSA flash start offset")]
     InvalidFlashStartConfiguration,
     /// The temporary firmware file could not be written or removed.
-    #[error("could not {action}: {source}")]
+    #[error("could not {action}")]
     Io {
         /// The operation being attempted.
         action: &'static str,
@@ -30,7 +30,7 @@ pub enum BossaError {
         source: std::io::Error,
     },
     /// The command runner could not invoke `bossac`.
-    #[error("could not invoke {}: {source}", command.program)]
+    #[error("could not invoke {}", command.program)]
     CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
