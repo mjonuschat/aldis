@@ -1,6 +1,4 @@
 use std::collections::BTreeMap;
-use std::error::Error as StdError;
-use std::fmt;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -40,45 +38,14 @@ pub enum McuTransport {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum MoonrakerError {
-    Http(ureq::Error),
-    Json(serde_json::Error),
+    #[error("Moonraker request failed: {0}")]
+    Http(#[from] ureq::Error),
+    #[error("Moonraker returned invalid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Moonraker response is invalid: {0}")]
     InvalidResponse(String),
-}
-
-impl fmt::Display for MoonrakerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Http(error) => write!(formatter, "Moonraker request failed: {error}"),
-            Self::Json(error) => write!(formatter, "Moonraker returned invalid JSON: {error}"),
-            Self::InvalidResponse(message) => {
-                write!(formatter, "Moonraker response is invalid: {message}")
-            }
-        }
-    }
-}
-
-impl StdError for MoonrakerError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Http(error) => Some(error),
-            Self::Json(error) => Some(error),
-            Self::InvalidResponse(_) => None,
-        }
-    }
-}
-
-impl From<ureq::Error> for MoonrakerError {
-    fn from(error: ureq::Error) -> Self {
-        Self::Http(error)
-    }
-}
-
-impl From<serde_json::Error> for MoonrakerError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Json(error)
-    }
 }
 
 /// A source of Klipper MCU inventory from Moonraker.

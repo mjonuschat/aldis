@@ -1,7 +1,5 @@
 //! Durable, human-readable traces for one updater run.
 
-use std::error::Error as StdError;
-use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -18,32 +16,15 @@ pub struct RunLog {
 }
 
 /// Errors while creating the durable record for an updater run.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RunLogError {
     /// The log file could not be created in the run workspace.
-    Create { path: PathBuf, source: io::Error },
-}
-
-impl fmt::Display for RunLogError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Create { path, source } => {
-                write!(
-                    formatter,
-                    "could not create run log {}: {source}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl StdError for RunLogError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Create { source, .. } => Some(source),
-        }
-    }
+    #[error("could not create run log {}: {source}", path.display())]
+    Create {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 impl RunLog {
