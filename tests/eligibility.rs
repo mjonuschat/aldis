@@ -1,5 +1,6 @@
 use aldis::eligibility::{
     CheckoutRevision, Eligibility, RevisionStatus, UpdateSelection, assess_mcu, is_selected,
+    revisions_match,
 };
 use aldis::moonraker::Mcu;
 
@@ -71,6 +72,47 @@ fn compares_only_known_eligible_revisions() {
         &CheckoutRevision::Indeterminate,
     );
     assert_eq!(unknown.revision, Some(RevisionStatus::Indeterminate));
+}
+
+#[test]
+fn tolerates_a_differently_abbreviated_commit_hash() {
+    assert!(revisions_match(
+        "v0.13.0-762-g9871eeef1",
+        "v0.13.0-762-g9871eeef"
+    ));
+    assert!(revisions_match(
+        "v0.13.0-762-g9871eeef",
+        "v0.13.0-762-g9871eeef1"
+    ));
+    assert!(!revisions_match(
+        "v0.13.0-762-g9871eeef1",
+        "v0.13.0-762-gdeadbeef"
+    ));
+}
+
+#[test]
+fn requires_matching_dirty_state() {
+    assert!(!revisions_match(
+        "v0.13.0-762-g9871eeef-dirty",
+        "v0.13.0-762-g9871eeef"
+    ));
+    assert!(revisions_match(
+        "v0.13.0-762-g9871eeef1-dirty",
+        "v0.13.0-762-g9871eeef-dirty"
+    ));
+}
+
+#[test]
+fn treats_a_flashed_mcu_at_the_firmwares_own_abbreviation_length_as_current() {
+    let status = assess_mcu(
+        &mcu(
+            Some("Klipper"),
+            Some("v0.13.0-762-g9871eeef1"),
+            "CONFIG=x\n",
+        ),
+        &CheckoutRevision::Known("v0.13.0-762-g9871eeef".to_owned()),
+    );
+    assert_eq!(status.revision, Some(RevisionStatus::Current));
 }
 
 #[test]

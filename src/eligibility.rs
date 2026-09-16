@@ -70,7 +70,9 @@ pub fn is_selected(mcu: &Mcu, checkout: &CheckoutRevision, selection: &UpdateSel
 pub fn assess_mcu(mcu: &Mcu, checkout: &CheckoutRevision) -> McuStatus {
     let eligibility = classify_mcu(mcu);
     let revision = (eligibility == Eligibility::Eligible).then(|| match (&mcu.version, checkout) {
-        (Some(running), CheckoutRevision::Known(selected)) if running == selected => {
+        (Some(running), CheckoutRevision::Known(selected))
+            if revisions_match(running, selected) =>
+        {
             RevisionStatus::Current
         }
         (Some(_), CheckoutRevision::Known(_)) => RevisionStatus::UpdateRequired,
@@ -80,6 +82,33 @@ pub fn assess_mcu(mcu: &Mcu, checkout: &CheckoutRevision) -> McuStatus {
         eligibility,
         revision,
     }
+}
+
+/// Compares a running firmware version against a selected checkout revision.
+///
+/// The two sides may embed the commit hash at different abbreviation lengths:
+/// libgit2 (used to compute `selected`) has no equivalent to real git's size-based
+/// "auto" abbreviation heuristic (used by Klipper's own build to compute `running`),
+/// so an exact string match would spuriously report an up-to-date MCU as needing an
+/// update. Any abbreviation of the same commit hash is a prefix of any longer one,
+/// so tolerate a length difference in the hash by comparing prefixes instead.
+pub fn revisions_match(running: &str, selected: &str) -> bool {
+    let (running_base, running_dirty) = split_dirty_suffix(running);
+    let (selected_base, selected_dirty) = split_dirty_suffix(selected);
+    if running_dirty != selected_dirty {
+        return false;
+    }
+    if running_base.len() <= selected_base.len() {
+        selected_base.starts_with(running_base)
+    } else {
+        running_base.starts_with(selected_base)
+    }
+}
+
+fn split_dirty_suffix(revision: &str) -> (&str, bool) {
+    revision
+        .strip_suffix("-dirty")
+        .map_or((revision, false), |base| (base, true))
 }
 
 /// Classifies eligibility without inferring from MCU family or transport.

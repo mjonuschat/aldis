@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
-use aldis::eligibility::{CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected};
+use aldis::eligibility::{
+    CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected, revisions_match,
+};
 use aldis::flash::katapult::system::SystemKatapultOptions;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
@@ -281,7 +283,10 @@ fn selected_mcus_are_ready(
             .iter()
             .find(|mcu| &mcu.name == name)
             .is_some_and(|mcu| match checkout {
-                CheckoutRevision::Known(revision) => mcu.version.as_deref() == Some(revision),
+                CheckoutRevision::Known(revision) => mcu
+                    .version
+                    .as_deref()
+                    .is_some_and(|version| revisions_match(version, revision)),
                 CheckoutRevision::Indeterminate => true,
             })
     })

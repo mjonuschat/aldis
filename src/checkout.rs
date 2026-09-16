@@ -132,6 +132,12 @@ pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
     let description = repository
         .describe(&describe)
         .map_err(CheckoutError::Describe)?;
+    // This abbreviation length need not match the one Klipper's own `git describe`
+    // (no --abbrev override) picks when it embeds a version in firmware: libgit2 has
+    // no equivalent to git's size-based "auto" abbreviation heuristic, so any fixed
+    // length can differ. Comparisons against a running MCU's reported version use
+    // `eligibility::revisions_match`, which tolerates that by prefix rather than
+    // requiring the hash abbreviations to be the same length.
     let mut format = DescribeFormatOptions::new();
     format.always_use_long_format(true).abbreviated_size(8);
     let revision = description
