@@ -25,11 +25,10 @@ use crate::status::{checkout_label, format_status, refresh_label};
 use crate::ui::UpdateUi;
 
 pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
-    let source = arguments
-        .connection
-        .klipper_source
-        .unwrap_or_else(crate::default_klipper_source);
-    let workspace_path = arguments.workspace.unwrap_or_else(default_run_workspace);
+    let workspace_path = arguments
+        .workspace
+        .clone()
+        .unwrap_or_else(default_run_workspace);
     let workspace = match RunWorkspace::create(workspace_path) {
         Ok(workspace) => workspace,
         Err(error) => return fail(error.to_string()),
@@ -39,6 +38,25 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         Err(error) => return fail(error.to_string()),
     };
     ui.set_log(run_log.clone());
+    match run_update(arguments, &mut ui, &workspace, &run_log) {
+        Ok(()) => ExitCode::SUCCESS,
+        // The run log is reported exactly once, here, rather than at every
+        // failure site, so it's always the last thing printed regardless of
+        // which step failed.
+        Err(message) => fail(format!("{message}\nRun log: {}", run_log.path().display())),
+    }
+}
+
+fn run_update(
+    arguments: UpdateArgs,
+    ui: &mut UpdateUi,
+    workspace: &RunWorkspace,
+    run_log: &RunLog,
+) -> Result<(), String> {
+    let source = arguments
+        .connection
+        .klipper_source
+        .unwrap_or_else(crate::default_klipper_source);
     ui.action(&format!(
         "updating from Klipper source {}",
         source.display()
@@ -46,27 +64,22 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     let refreshed =
         if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
             ui.action("refreshing configured Klipper upstream");
-            let refreshed = match refresh_checkout(&source) {
-                Ok(refreshed) => refreshed,
-                Err(error) => {
-                    ui.action(&format!("error: {error}"));
-                    return fail(error.to_string());
-                }
-            };
+            let refreshed = refresh_checkout(&source).map_err(|error| {
+                ui.action(&format!("error: {error}"));
+                error.to_string()
+            })?;
             ui.action(&format!("checkout refresh: {}", refresh_label(&refreshed)));
             Some(refreshed)
         } else {
             None
         };
     ui.action("discovering MCUs from Moonraker");
-    let inventory =
-        match MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker).discover_mcus() {
-            Ok(v) => v,
-            Err(error) => {
-                ui.action(&format!("error: {error}"));
-                return fail(error.to_string());
-            }
-        };
+    let inventory = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker)
+        .discover_mcus()
+        .map_err(|error| {
+            ui.action(&format!("error: {error}"));
+            error.to_string()
+        })?;
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
     ui.block(&format_status(
@@ -100,7 +113,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     if offered.is_empty() {
         ui.block("\nno eligible MCUs require an update\n");
         ui.action("run completed successfully: no eligible MCUs require an update");
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
     let coordinator = BuildCoordinator::new(
         &source,
@@ -112,7 +125,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
             baud_rate: 250_000,
             bootloader_timeout: Duration::from_secs(10),
             poll_interval: Duration::from_millis(50),
-            read_timeout: Duration::from_millis(100),
+            read_timeout: Duration::from_secs(5),
             can_bootloader_settle: Duration::from_millis(100),
         },
         bossac_program: source.join("lib/bossac/bin/bossac"),
@@ -134,18 +147,16 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
                 continue;
             }
         }
-        let pending =
-            match coordinator.prepare(&inventory, &plan, &workspace, &name, arguments.clean) {
-                Ok(v) => v,
-                Err(error) => {
-                    ui.action(&format!("error: {error}"));
-                    return fail(error.to_string());
-                }
-            };
+        let pending = coordinator
+            .prepare(&inventory, &plan, workspace, &name, arguments.clean)
+            .map_err(|error| {
+                ui.action(&format!("error: {error}"));
+                error.to_string()
+            })?;
         match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
             options.clone(),
-            Some(&run_log),
+            Some(run_log),
             |progress| ui.progress(progress),
         ) {
             Ok(v) => {
@@ -154,7 +165,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
                 if let Err(error) = wait_for_application(mcu) {
                     ui.finish_failure();
                     ui.action(&format!("error: {error}"));
-                    return fail(error);
+                    return Err(error);
                 }
                 ui.finish_success("MCU restart confirmed");
                 accepted.push(name);
@@ -164,14 +175,14 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
                 run_log.action(&format!("debug: flash failed: {error:?}"));
                 let message = update_failure(error);
                 ui.action(&format!("error: {message}"));
-                return fail(message);
+                return Err(message);
             }
         }
     }
     if accepted.is_empty() {
         ui.block("\nno updates confirmed\n");
         ui.action("run completed successfully: no updates confirmed");
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
     ui.heading("Finishing update");
     ui.begin("starting Klipper");
@@ -179,7 +190,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         ui.finish_failure();
         let message = error.to_string();
         ui.action(&format!("error: {message}"));
-        return fail(message);
+        return Err(message);
     }
     ui.finish_success("Klipper ready");
     ui.begin("waiting for updated MCUs to reconnect");
@@ -190,7 +201,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     ) {
         ui.finish_failure();
         ui.action(&format!("error: {error}"));
-        return fail(error);
+        return Err(error);
     }
     ui.finish_success("all updated MCUs connected");
     ui.heading(&format!(
@@ -199,7 +210,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         mcu_count_label(accepted.len())
     ));
     ui.action("run completed successfully");
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 fn default_run_workspace() -> PathBuf {
