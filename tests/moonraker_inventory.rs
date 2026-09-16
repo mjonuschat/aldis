@@ -1,3 +1,4 @@
+use aldis::eligibility::{Eligibility, classify_mcu};
 use aldis::moonraker::{McuTransport, parse_inventory};
 
 #[test]
@@ -29,5 +30,35 @@ fn parses_mcu_inventory_from_a_moonraker_object_query() {
     assert_eq!(
         inventory.mcus[1].kconfig,
         "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32G0B1=y\nCONFIG_STM32_MMENU_CANBUS_PB0_PB1=y\n"
+    );
+}
+
+#[test]
+fn accepts_an_mcu_object_with_no_kconfig_as_unsupported_rather_than_failing() {
+    let response = r#"{
+      "result": {
+        "status": {
+          "mcu beacon": {
+            "app": "Beacon",
+            "mcu_version": "v1.2.3",
+            "mcu_constants": {
+              "MCU": "rp2040"
+            }
+          },
+          "configfile": {
+            "settings": {}
+          }
+        }
+      }
+    }"#;
+
+    let inventory =
+        parse_inventory(response).expect("a missing mcu_kconfig should not fail discovery");
+
+    assert_eq!(inventory.mcus.len(), 1);
+    assert_eq!(inventory.mcus[0].kconfig, "");
+    assert_eq!(
+        classify_mcu(&inventory.mcus[0]),
+        Eligibility::ExternallyManaged
     );
 }

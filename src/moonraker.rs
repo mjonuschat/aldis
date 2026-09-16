@@ -185,11 +185,10 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
                     ))
                 })?
                 .to_owned();
-            let kconfig = status.mcu_kconfig.ok_or_else(|| {
-                MoonrakerError::InvalidResponse(format!(
-                    "MCU object {name:?} does not expose mcu_kconfig"
-                ))
-            })?;
+            // Firmware not built by aldis (e.g. Beacon) has no Kconfig to report;
+            // `classify_mcu` already treats an empty Kconfig as `Unsupported`
+            // rather than failing MCU discovery outright.
+            let kconfig = status.mcu_kconfig.unwrap_or_default();
             let transport = settings
                 .get(&name)
                 .map(|settings| parse_transport(&name, settings))
