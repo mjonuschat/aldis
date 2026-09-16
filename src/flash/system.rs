@@ -109,6 +109,9 @@ pub enum SystemFlashError {
     CanFlash(KatapultFlashError),
 }
 
+// Not thiserror-derived: this pattern-matches into nested variants for friendlier
+// user-facing messages, which a flat per-variant derive can't express — see
+// docs/superpowers/specs/2026-09-16-observability-migration-design.md.
 impl fmt::Display for SystemFlashError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::flash::katapult::Command;
