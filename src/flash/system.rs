@@ -75,9 +75,6 @@ pub enum SystemFlashProgress {
 }
 
 /// A selected update cannot be dispatched to a native backend.
-// Not thiserror-derived: its Display impl pattern-matches into nested variants for
-// friendlier user-facing messages, which a flat per-variant derive can't express — see
-// docs/superpowers/specs/2026-09-16-observability-migration-design.md.
 #[derive(Debug)]
 pub enum SystemFlashError {
     /// The prepared target did not retain a configured transport.
@@ -172,7 +169,23 @@ impl fmt::Display for SystemFlashError {
     }
 }
 
-impl std::error::Error for SystemFlashError {}
+impl std::error::Error for SystemFlashError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MissingTransport | Self::Can(_) => None,
+            Self::Bootloader(error) => Some(error),
+            Self::UsbAccess(error) => Some(error),
+            Self::Selection(error) => Some(error),
+            Self::Stm32Target(error) | Self::Stm32Dfu(error) => Some(error),
+            Self::BossaTarget(error) | Self::Bossa(error) => Some(error),
+            Self::KatapultOpen(error) => Some(error),
+            Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
+            Self::PicoBoot(error) => Some(error),
+            Self::CanSocket(error) => Some(error),
+            Self::CanUsbTopology(error) => Some(error),
+        }
+    }
+}
 
 /// Derives exactly one native USB route from one observed bootloader.
 pub fn serial_route(
