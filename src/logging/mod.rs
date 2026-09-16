@@ -23,8 +23,13 @@ fn stderr_level_for(verbosity: u8) -> tracing::Level {
 pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
     let stderr_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity).to_string()));
+    // tracing-subscriber caches a span's formatted fields on the span itself,
+    // keyed by field-formatter type; whichever fmt layer formats the span
+    // first (here, stderr) would otherwise poison the file layer's cached
+    // copy with ANSI codes even though the file layer sets with_ansi(false).
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
+        .with_ansi(false)
         .with_filter(stderr_filter);
 
     let file = std::fs::OpenOptions::new()
@@ -54,6 +59,7 @@ pub fn init_stderr_only(verbosity: u8) -> anyhow::Result<()> {
         .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity).to_string()));
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
+        .with_ansi(false)
         .with_filter(stderr_filter);
 
     tracing_subscriber::registry()
