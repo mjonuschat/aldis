@@ -39,7 +39,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
     };
     let run_log = match RunLog::create(workspace.root()) {
         Ok(log) => log,
-        Err(error) => return fail(error.to_string()),
+        Err(error) => return fail(aldis::error_chain(&error)),
     };
     ui.set_log(run_log.clone());
     match run_update(arguments, &mut ui, &workspace, &run_log) {

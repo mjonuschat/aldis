@@ -19,7 +19,7 @@ pub struct RunLog {
 #[derive(Debug, thiserror::Error)]
 pub enum RunLogError {
     /// The log file could not be created in the run workspace.
-    #[error("could not create run log {}: {source}", path.display())]
+    #[error("could not create run log {}", path.display())]
     Create {
         path: PathBuf,
         #[source]
