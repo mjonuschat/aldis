@@ -35,7 +35,7 @@ pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)
         .with_ansi(false)
-        .with_filter(EnvFilter::new("debug"));
+        .with_filter(EnvFilter::new("debug,dfu_core=info"));
 
     tracing_subscriber::registry()
         .with(stderr_layer)
