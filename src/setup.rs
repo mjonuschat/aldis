@@ -3,6 +3,8 @@
 use std::fs;
 use std::process::{Command, ExitCode};
 
+use anyhow::{Context, bail};
+
 use crate::cli::SetupArgs;
 use crate::fail;
 
@@ -14,57 +16,46 @@ pub(crate) fn setup(arguments: SetupArgs) -> ExitCode {
     if arguments.check {
         check_setup()
     } else {
-        install_setup()
+        match install_setup() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(format!("{error:#}")),
+        }
     }
 }
 
-fn install_setup() -> ExitCode {
+fn install_setup() -> anyhow::Result<()> {
     let Some(user) = std::env::var_os("SUDO_USER").and_then(|user| user.into_string().ok()) else {
-        return fail("setup must be run with sudo; run: sudo aldis setup".to_owned());
+        bail!("setup must be run with sudo; run: sudo aldis setup");
     };
     if !valid_user_name(&user) {
-        return fail("SUDO_USER is not a valid account name".to_owned());
+        bail!("SUDO_USER is not a valid account name");
     }
-    let rules_action = match install_file(UDEV_RULES_PATH, udev_rules(), "udev rules") {
-        Ok(action) => action,
-        Err(error) => return fail(error),
-    };
+    let rules_action = install_file(UDEV_RULES_PATH, udev_rules(), "udev rules")?;
     let service_policy = sudoers_policy(&user);
-    let service_action = match install_file(SUDOERS_PATH, &service_policy, "service policy") {
-        Ok(action) => action,
-        Err(error) => return fail(error),
-    };
-    match Command::new("chmod").args(["440", SUDOERS_PATH]).status() {
-        Ok(status) if status.success() => {}
-        Ok(status) => {
-            return fail(format!(
-                "could not protect service policy: chmod exited with {status}"
-            ));
-        }
-        Err(error) => return fail(format!("could not protect service policy: {error}")),
+    let service_action = install_file(SUDOERS_PATH, &service_policy, "service policy")?;
+    let status = Command::new("chmod")
+        .args(["440", SUDOERS_PATH])
+        .status()
+        .context("could not protect service policy")?;
+    if !status.success() {
+        bail!("could not protect service policy: chmod exited with {status}");
     }
-    match Command::new("udevadm")
+    let status = Command::new("udevadm")
         .args(["control", "--reload-rules"])
         .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(status) => {
-            return fail(format!(
-                "could not reload udev rules: udevadm exited with {status}"
-            ));
-        }
-        Err(error) => return fail(format!("could not reload udev rules: {error}")),
+        .context("could not reload udev rules")?;
+    if !status.success() {
+        bail!("could not reload udev rules: udevadm exited with {status}");
     }
     println!("{}", setup_install_report(rules_action, service_action));
-    ExitCode::SUCCESS
+    Ok(())
 }
 
-fn install_file(path: &str, contents: &str, description: &str) -> Result<&'static str, String> {
+fn install_file(path: &str, contents: &str, description: &str) -> anyhow::Result<&'static str> {
     if fs::read_to_string(path).is_ok_and(|current| current == contents) {
         return Ok("already current");
     }
-    fs::write(path, contents)
-        .map_err(|error| format!("could not install {description}: {error}"))?;
+    fs::write(path, contents).with_context(|| format!("could not install {description}"))?;
     Ok("installed")
 }
 

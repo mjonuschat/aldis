@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use aldis::checkout::{CheckoutPort, GitCheckoutAdapter, RefreshResult};
 use aldis::eligibility::{CheckoutRevision, Eligibility, RevisionStatus, assess_mcu};
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
+use anyhow::Context;
 
 use crate::cli::ConnectionArgs;
 use crate::fail;
@@ -19,7 +20,7 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
             print!("{report}");
             ExitCode::SUCCESS
         }
-        Err(error) => fail(error),
+        Err(error) => fail(format!("{error:#}")),
     }
 }
 
@@ -27,10 +28,10 @@ fn status_report(
     moonraker: &impl MoonrakerPort,
     checkout: &impl CheckoutPort,
     source: &std::path::Path,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     let inventory = moonraker
         .discover_mcus()
-        .map_err(|error| error.to_string())?;
+        .context("failed to discover MCUs")?;
     let revision = checkout
         .revision(source)
         .unwrap_or(CheckoutRevision::Indeterminate);
@@ -209,7 +210,7 @@ mod tests {
         let error = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
             .expect_err("status report should fail");
 
-        assert!(error.contains("no MCU objects were reported"));
+        assert!(format!("{error:#}").contains("no MCU objects were reported"));
     }
 
     struct FakeMoonraker(Result<McuInventory, String>);
