@@ -73,7 +73,7 @@ impl CommandOutput {
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
     /// The operating system could not spawn or collect the process.
-    #[error("could not run build command: {0}")]
+    #[error("could not run build command")]
     Spawn(#[source] io::Error),
 }
 
@@ -111,7 +111,7 @@ pub enum BuildError {
     #[error("invalid build request: {0}")]
     InvalidRequest(String),
     /// The host filesystem operation failed.
-    #[error("could not {action}: {source}")]
+    #[error("could not {action}")]
     Io {
         /// The operation being attempted.
         action: &'static str,
@@ -120,7 +120,7 @@ pub enum BuildError {
         source: io::Error,
     },
     /// The command runner could not invoke Make.
-    #[error("could not invoke {}: {source}", command.program)]
+    #[error("could not invoke {}", command.program)]
     CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,

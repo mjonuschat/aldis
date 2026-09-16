@@ -97,17 +97,17 @@ pub enum Stm32DfuError {
 #[derive(Debug, thiserror::Error)]
 pub enum Stm32DfuBootstrapError {
     /// The running USB serial MCU did not re-enumerate as STM32 ROM DFU.
-    #[error("{0}")]
-    Bootloader(#[source] UsbBootloaderError),
+    #[error(transparent)]
+    Bootloader(UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
-    #[error("{0}")]
-    Selection(#[source] UsbBootloaderSelectionError),
+    #[error(transparent)]
+    Selection(UsbBootloaderSelectionError),
     /// A supported but non-STM32 bootloader appeared at the selected topology.
     #[error("expected STM32 ROM DFU but found {0:?}")]
     UnexpectedBootloader(SelectedUsbBootloader),
     /// Native DfuSe flashing failed after ROM DFU appeared.
-    #[error("{0}")]
-    Flash(#[source] Stm32DfuError),
+    #[error(transparent)]
+    Flash(Stm32DfuError),
 }
 
 /// Requests ROM DFU through a running USB serial STM32 MCU and flashes it.

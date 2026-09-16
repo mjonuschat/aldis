@@ -24,7 +24,7 @@ pub enum WorkspaceError {
     #[error("run workspace {} already exists; choose a new per-run directory", .0.display())]
     AlreadyExists(PathBuf),
     /// The host filesystem operation failed.
-    #[error("could not {action}: {source}")]
+    #[error("could not {action}")]
     Io {
         /// The operation being attempted.
         action: &'static str,

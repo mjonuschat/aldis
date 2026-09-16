@@ -46,19 +46,19 @@ pub struct ApprovedBuild {
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinatorError {
     /// The isolated workspace could not reserve target paths.
-    #[error("workspace preparation failed: {0}")]
+    #[error("workspace preparation failed")]
     Workspace(#[source] WorkspaceError),
     /// The selected plan target could not be matched to Moonraker inventory.
-    #[error("build preparation failed: {0}")]
+    #[error("build preparation failed")]
     Preparation(#[source] PreparationError),
     /// Klipper's service state could not be queried or changed.
-    #[error("Klipper service operation failed: {0}")]
+    #[error("Klipper service operation failed")]
     Service(#[source] ServiceError),
     /// Klipper is not in a state that permits a controlled build transition.
     #[error("Klipper must be active or inactive, found {0:?}")]
     UnexpectedKlipperState(ServiceState),
     /// Klipper's build pipeline failed.
-    #[error("Klipper build failed: {0}")]
+    #[error("Klipper build failed")]
     Build(#[source] BuildError),
 }
 

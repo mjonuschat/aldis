@@ -26,8 +26,8 @@ pub enum CanBootstrapError<E> {
 #[derive(Debug, thiserror::Error)]
 pub enum SerialBootstrapError {
     /// The running USB device did not re-enumerate as Katapult.
-    #[error("running USB device did not re-enumerate as Katapult: {0:?}")]
-    Bootloader(UsbBootloaderError),
+    #[error("running USB device did not re-enumerate as Katapult: {0}")]
+    Bootloader(#[source] UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
     #[error("observed bootloader is unsupported or cannot be used safely: {0}")]
     Selection(#[source] UsbBootloaderSelectionError),
@@ -35,8 +35,8 @@ pub enum SerialBootstrapError {
     #[error("expected a Katapult bootloader, found {0:?} at the selected topology")]
     UnexpectedBootloader(SelectedUsbBootloader),
     /// The detected Katapult serial device could not be opened.
-    #[error("could not open the detected Katapult serial device: {0}")]
-    Open(#[source] serialport::Error),
+    #[error(transparent)]
+    Open(serialport::Error),
 }
 
 /// Enters Katapult on a USB serial target and opens a ready serial backend.

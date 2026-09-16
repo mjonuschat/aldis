@@ -22,8 +22,8 @@ pub trait Transport {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SessionError {
     /// The request frame could not be encoded.
-    #[error("could not encode request frame: {0:?}")]
-    Encode(FrameError),
+    #[error("could not encode request frame: {0}")]
+    Encode(#[source] FrameError),
     /// Katapult advertised unsupported target geometry.
     #[error("unsupported target geometry: {0}")]
     Target(#[source] TargetError),

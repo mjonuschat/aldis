@@ -9,8 +9,8 @@ use crate::flash::{FlashPort, FlashResult};
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum KatapultFlashError {
     /// Katapult rejected or could not verify a protocol operation.
-    #[error("{0}")]
-    Session(#[source] SessionError),
+    #[error(transparent)]
+    Session(SessionError),
 }
 
 /// A ready Katapult bootloader session that can flash one firmware artifact.

@@ -38,11 +38,11 @@ pub struct SystemKatapultOptions {
 #[derive(Debug, thiserror::Error)]
 pub enum SystemKatapultError {
     /// The prepared target has no supported transport.
-    #[error("no supported Katapult transport: {0:?}")]
-    Endpoint(EndpointError),
+    #[error("no supported Katapult transport: {0}")]
+    Endpoint(#[source] EndpointError),
     /// Serial bootloader transition failed.
-    #[error("serial bootloader transition failed: {0:?}")]
-    Serial(SerialBootstrapError),
+    #[error("serial bootloader transition failed: {0}")]
+    Serial(#[source] SerialBootstrapError),
     /// SocketCAN could not be opened.
     #[error("could not open SocketCAN interface: {0}")]
     CanSocket(#[source] io::Error),

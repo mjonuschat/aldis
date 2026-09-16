@@ -76,7 +76,7 @@ impl RunLog {
     }
 
     fn command_failed_to_start(&self, error: &CommandError) {
-        let _ = self.write(format!("command error: {error}\n").as_bytes());
+        let _ = self.write(format!("command error: {}\n", crate::error_chain(error)).as_bytes());
     }
 
     fn write_output(&self, output: &[u8]) -> io::Result<()> {

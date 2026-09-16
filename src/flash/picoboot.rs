@@ -82,17 +82,17 @@ pub fn bootstrap_system_serial(
 #[derive(Debug, thiserror::Error)]
 pub enum PicoBootBootstrapError {
     /// The running device did not re-enumerate as PicoBoot.
-    #[error("device did not re-enumerate as a USB bootloader: {0:?}")]
-    Bootloader(UsbBootloaderError),
+    #[error("device did not re-enumerate as a USB bootloader: {0}")]
+    Bootloader(#[source] UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
-    #[error("could not select a USB bootloader backend: {0:?}")]
-    Selection(UsbBootloaderSelectionError),
+    #[error("could not select a USB bootloader backend: {0}")]
+    Selection(#[source] UsbBootloaderSelectionError),
     /// A supported but non-PicoBoot bootloader appeared at the selected topology.
     #[error("expected a PicoBoot bootloader, found {0:?}")]
     UnexpectedBootloader(SelectedUsbBootloader),
     /// The native transfer failed after PicoBoot appeared.
-    #[error("PicoBoot flash failed: {0}")]
-    Flash(#[source] PicoBootError),
+    #[error(transparent)]
+    Flash(PicoBootError),
 }
 
 /// Decodes one contiguous RP2040 UF2 image.

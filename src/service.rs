@@ -21,7 +21,7 @@ pub enum ServiceState {
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     /// The host could not run a systemctl command.
-    #[error("could not invoke {}: {source}", command.program)]
+    #[error("could not invoke {}", command.program)]
     CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,

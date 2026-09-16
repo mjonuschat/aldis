@@ -13,13 +13,13 @@ use crate::eligibility::CheckoutRevision;
 #[derive(Debug, thiserror::Error)]
 pub enum CheckoutError {
     /// The path is not an accessible Git repository.
-    #[error("could not open the Klipper checkout: {0}")]
+    #[error("could not open the Klipper checkout")]
     Repository(#[source] git2::Error),
     /// The checkout revision could not be described.
-    #[error("could not describe the Klipper checkout: {0}")]
+    #[error("could not describe the Klipper checkout")]
     Describe(#[source] git2::Error),
     /// Worktree state could not be checked.
-    #[error("could not inspect the Klipper checkout: {0}")]
+    #[error("could not inspect the Klipper checkout")]
     Status(#[source] git2::Error),
     /// The checked-out branch does not name an upstream to refresh from.
     #[error("the checked-out Klipper branch has no configured upstream")]
@@ -35,7 +35,7 @@ pub enum CheckoutError {
         upstream: String,
     },
     /// Fetching, checking out, or updating the configured upstream failed.
-    #[error("could not {action} the Klipper checkout: {source}")]
+    #[error("could not {action} the Klipper checkout")]
     Refresh {
         /// The refresh operation that failed.
         action: &'static str,

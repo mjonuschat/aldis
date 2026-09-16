@@ -40,9 +40,9 @@ pub enum McuTransport {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MoonrakerError {
-    #[error("Moonraker request failed: {0}")]
+    #[error("Moonraker request failed")]
     Http(#[from] ureq::Error),
-    #[error("Moonraker returned invalid JSON: {0}")]
+    #[error("Moonraker returned invalid JSON")]
     Json(#[from] serde_json::Error),
     #[error("Moonraker response is invalid: {0}")]
     InvalidResponse(String),
