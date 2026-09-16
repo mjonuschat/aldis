@@ -189,9 +189,13 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
             // `classify_mcu` already treats an empty Kconfig as `Unsupported`
             // rather than failing MCU discovery outright.
             let kconfig = status.mcu_kconfig.unwrap_or_default();
+            // Klipper lowercases config section names in configfile.settings,
+            // but printer.objects.list preserves the declared case, so an
+            // exact-match lookup here misses sections like `[mcu RP2040]`.
             let transport = settings
-                .get(&name)
-                .map(|settings| parse_transport(&name, settings))
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+                .map(|(_, settings)| parse_transport(&name, settings))
                 .transpose()?
                 .flatten();
 

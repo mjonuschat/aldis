@@ -34,6 +34,43 @@ fn parses_mcu_inventory_from_a_moonraker_object_query() {
 }
 
 #[test]
+fn matches_settings_case_insensitively_against_the_object_name() {
+    // Klipper lowercases config section names in configfile.settings, but
+    // printer.objects.list preserves the case the section was declared with
+    // (e.g. `[mcu RP2040]`).
+    let response = r#"{
+      "result": {
+        "status": {
+          "mcu RP2040": {
+            "app": "Klipper",
+            "mcu_version": "v0.12.0",
+            "mcu_constants": {
+              "MCU": "rp2040"
+            },
+            "mcu_kconfig": "CONFIG_LOW_LEVEL_OPTIONS=y\n"
+          },
+          "configfile": {
+            "settings": {
+              "mcu rp2040": {
+                "serial": "/dev/serial/by-id/usb-Klipper_rp2040_50547747686A651C-if00"
+              }
+            }
+          }
+        }
+      }
+    }"#;
+
+    let inventory = parse_inventory(response).expect("fixture should parse");
+
+    assert_eq!(
+        inventory.mcus[0].transport,
+        Some(McuTransport::Serial {
+            device: "/dev/serial/by-id/usb-Klipper_rp2040_50547747686A651C-if00".to_owned(),
+        })
+    );
+}
+
+#[test]
 fn accepts_an_mcu_object_with_no_kconfig_as_unsupported_rather_than_failing() {
     let response = r#"{
       "result": {
