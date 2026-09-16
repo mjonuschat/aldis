@@ -9,7 +9,6 @@ use std::thread;
 use std::time::Duration;
 
 use aldis::coordinator::UpdateProgress;
-use aldis::run_log::RunLog;
 
 use crate::cli::ColorMode;
 
@@ -17,7 +16,6 @@ pub(crate) struct UpdateUi {
     color: bool,
     interactive: bool,
     active: Option<ActiveProgress>,
-    log: Option<RunLog>,
 }
 
 struct ActiveProgress {
@@ -37,18 +35,11 @@ impl UpdateUi {
             color: colors_enabled(color_mode, interactive),
             interactive: interactive && !no_progress,
             active: None,
-            log: None,
         }
-    }
-
-    pub(crate) fn set_log(&mut self, log: RunLog) {
-        self.log = Some(log);
     }
 
     pub(crate) fn action(&self, action: &str) {
-        if let Some(log) = &self.log {
-            log.action(action);
-        }
+        tracing::info!(action, "action");
     }
 
     pub(crate) fn block(&mut self, text: &str) {

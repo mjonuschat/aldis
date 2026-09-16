@@ -23,9 +23,11 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => fail(format!("{error:#}")),
         },
-        CliCommand::Update(arguments) => {
-            update::update(arguments, ui::UpdateUi::new(cli.color, cli.no_progress))
-        }
+        CliCommand::Update(arguments) => update::update(
+            arguments,
+            cli.verbose,
+            ui::UpdateUi::new(cli.color, cli.no_progress),
+        ),
         CliCommand::Setup(arguments) => setup::setup(arguments),
     }
 }

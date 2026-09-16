@@ -30,7 +30,6 @@ use crate::logging::LoggingCommandAdapter;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
-use crate::run_log::RunLog;
 
 /// A selected USB transfer route bound to the observed USB topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,15 +245,15 @@ pub fn flash_prepared_system_with_progress(
     options: SystemFlashOptions,
     progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
-    flash_prepared_system_with_progress_and_log(prepared, firmware, options, None, progress)
+    flash_prepared_system_with_progress_and_log(prepared, firmware, options, false, progress)
 }
 
-/// Flashes one prepared artifact while retaining external command output in an optional run log.
+/// Flashes one prepared artifact, optionally logging external command output.
 pub fn flash_prepared_system_with_progress_and_log(
     prepared: &PreparedBuild,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: Option<&RunLog>,
+    command_log: bool,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     match prepared
@@ -287,7 +286,7 @@ fn flash_serial_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: Option<&RunLog>,
+    command_log: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
@@ -305,7 +304,7 @@ fn flash_observed_usb(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: Option<&RunLog>,
+    command_log: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::BootloaderReady);
@@ -336,21 +335,22 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            match command_log {
-                Some(_) => BossaAdapter::new(
+            if command_log {
+                BossaAdapter::new(
                     LoggingCommandAdapter::new(SystemCommandAdapter),
                     &options.bossac_program,
                     &serial_device,
                     target,
                 )
-                .flash(firmware),
-                None => BossaAdapter::new(
+                .flash(firmware)
+            } else {
+                BossaAdapter::new(
                     SystemCommandAdapter,
                     &options.bossac_program,
                     &serial_device,
                     target,
                 )
-                .flash(firmware),
+                .flash(firmware)
             }
             .map_err(SystemFlashError::Bossa)
         }
@@ -447,7 +447,7 @@ fn flash_can_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: Option<&RunLog>,
+    command_log: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);

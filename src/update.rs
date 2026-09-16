@@ -1,7 +1,7 @@
 //! The interactive build-and-flash update command.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -15,11 +15,10 @@ use aldis::eligibility::{
 };
 use aldis::flash::katapult::system::SystemKatapultOptions;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
-use aldis::logging::LoggingCommandAdapter;
+use aldis::logging::{self, LoggingCommandAdapter};
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
 use aldis::plan::build_update_plan;
 use aldis::retry::retry_until_available;
-use aldis::run_log::RunLog;
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::UpdateArgs;
@@ -27,14 +26,18 @@ use crate::fail;
 use crate::status::{checkout_label, format_status, refresh_label};
 use crate::ui::UpdateUi;
 
-pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
-    match update_and_report_run_log(arguments, &mut ui) {
+pub(crate) fn update(arguments: UpdateArgs, verbose: u8, mut ui: UpdateUi) -> ExitCode {
+    match update_and_report_run_log(arguments, verbose, &mut ui) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(format!("{error:#}")),
     }
 }
 
-fn update_and_report_run_log(arguments: UpdateArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
+fn update_and_report_run_log(
+    arguments: UpdateArgs,
+    verbose: u8,
+    ui: &mut UpdateUi,
+) -> anyhow::Result<()> {
     let workspace = match &arguments.workspace {
         Some(path) => RunWorkspace::create(path.clone())?,
         None => {
@@ -42,20 +45,20 @@ fn update_and_report_run_log(arguments: UpdateArgs, ui: &mut UpdateUi) -> anyhow
             RunWorkspace::adopt(path)
         }
     };
-    let run_log = RunLog::create(workspace.root())?;
-    ui.set_log(run_log.clone());
+    let run_log_path = workspace.root().join("run.log");
+    let _guard = logging::init(verbose, &run_log_path).context("could not start logging")?;
     // The run log is reported exactly once, here, rather than at every
     // failure site, so it's always the last thing printed regardless of
     // which step failed.
-    run_update(arguments, ui, &workspace, &run_log)
-        .map_err(|error| anyhow::anyhow!("{error:#}\nRun log: {}", run_log.path().display()))
+    run_update(arguments, ui, &workspace, &run_log_path)
+        .map_err(|error| anyhow::anyhow!("{error:#}\nRun log: {}", run_log_path.display()))
 }
 
 fn run_update(
     arguments: UpdateArgs,
     ui: &mut UpdateUi,
     workspace: &RunWorkspace,
-    run_log: &RunLog,
+    run_log_path: &Path,
 ) -> anyhow::Result<()> {
     let source = arguments
         .connection
@@ -151,7 +154,7 @@ fn run_update(
         match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
             options.clone(),
-            Some(run_log),
+            true,
             |progress| ui.progress(progress),
         ) {
             Ok(v) => {
@@ -167,7 +170,7 @@ fn run_update(
             }
             Err(error) => {
                 ui.finish_failure();
-                run_log.action(&format!("debug: flash failed: {error:?}"));
+                tracing::debug!(?error, "flash failed");
                 let message = update_failure(error);
                 ui.action(&format!("error: {message}"));
                 return Err(anyhow::anyhow!(message));
@@ -202,7 +205,7 @@ fn run_update(
         "Update complete: {} {} updated (run log: {})",
         accepted.len(),
         mcu_count_label(accepted.len()),
-        run_log.path().display()
+        run_log_path.display()
     ));
     ui.action("run completed successfully");
     Ok(())

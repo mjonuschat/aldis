@@ -10,7 +10,6 @@ use crate::flash::system::{
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
-use crate::run_log::RunLog;
 use crate::service::{KlipperService, ServiceError, ServiceState};
 use crate::workspace::{RunWorkspace, WorkspaceError};
 
@@ -243,15 +242,15 @@ where
         options: SystemFlashOptions,
         progress: impl FnMut(UpdateProgress),
     ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
-        self.execute_and_flash_system_with_progress_and_log(approved, options, None, progress)
+        self.execute_and_flash_system_with_progress_and_log(approved, options, false, progress)
     }
 
-    /// Builds and flashes through native backends while retaining external command output.
+    /// Builds and flashes through native backends while logging external command output.
     pub fn execute_and_flash_system_with_progress_and_log(
         &self,
         approved: ApprovedBuild,
         options: SystemFlashOptions,
-        command_log: Option<&RunLog>,
+        command_log: bool,
         mut progress: impl FnMut(UpdateProgress),
     ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
         let mut prepared = approved.pending.prepared.clone();
