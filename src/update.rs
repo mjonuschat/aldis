@@ -262,35 +262,51 @@ fn wait_for_mcus(
     selected: &[String],
     checkout: &CheckoutRevision,
 ) -> Result<(), String> {
-    retry_until_available(Duration::from_secs(30), Duration::from_millis(250), || {
-        client
-            .discover_mcus()
-            .ok()
-            .filter(|inventory| selected_mcus_are_ready(inventory, selected, checkout))
-            .map(|_| ())
-            .ok_or(())
+    retry_until_available(
+        Duration::from_secs(30),
+        Duration::from_millis(250),
+        || match client.discover_mcus() {
+            Ok(inventory) => match pending_mcus(&inventory, selected, checkout) {
+                pending if pending.is_empty() => Ok(()),
+                pending => Err(format!("still waiting on: {}", pending.join(", "))),
+            },
+            Err(error) => Err(format!("could not query Moonraker: {error}")),
+        },
+    )
+    .map_err(|last_state| {
+        format!("Klipper did not reconnect every updated MCU at the built revision ({last_state})")
     })
-    .map_err(|()| "Klipper did not reconnect every updated MCU at the built revision".to_owned())
 }
 
-fn selected_mcus_are_ready(
+/// Selected MCU names not yet reporting `checkout`'s revision, each annotated with its
+/// current state so a timeout explains what was actually observed.
+fn pending_mcus(
     inventory: &McuInventory,
     selected: &[String],
     checkout: &CheckoutRevision,
-) -> bool {
-    selected.iter().all(|name| {
-        inventory
-            .mcus
-            .iter()
-            .find(|mcu| &mcu.name == name)
-            .is_some_and(|mcu| match checkout {
-                CheckoutRevision::Known(revision) => mcu
-                    .version
-                    .as_deref()
-                    .is_some_and(|version| revisions_match(version, revision)),
-                CheckoutRevision::Indeterminate => true,
-            })
-    })
+) -> Vec<String> {
+    selected
+        .iter()
+        .filter_map(
+            |name| match inventory.mcus.iter().find(|mcu| &mcu.name == name) {
+                None => Some(format!("{name} (not reported by Moonraker)")),
+                Some(mcu) => match checkout {
+                    CheckoutRevision::Known(revision)
+                        if !mcu
+                            .version
+                            .as_deref()
+                            .is_some_and(|version| revisions_match(version, revision)) =>
+                    {
+                        Some(format!(
+                            "{name} (reports {})",
+                            mcu.version.as_deref().unwrap_or("unknown")
+                        ))
+                    }
+                    _ => None,
+                },
+            },
+        )
+        .collect()
 }
 
 fn confirm_pull() -> bool {
@@ -310,8 +326,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        mcu_count_label, selected_mcus_are_ready, update_failure,
-        wait_for_application_with_timeout, wait_for_mcus,
+        mcu_count_label, pending_mcus, update_failure, wait_for_application_with_timeout,
+        wait_for_mcus,
     };
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
     use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
@@ -362,19 +378,21 @@ mod tests {
         let only_one = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
         };
-        assert!(!selected_mcus_are_ready(&only_one, &selected, &checkout));
+        assert_eq!(
+            pending_mcus(&only_one, &selected, &checkout),
+            vec!["mcu rp2040 (not reported by Moonraker)".to_owned()]
+        );
         let wrong_version = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v1", None)],
         };
-        assert!(!selected_mcus_are_ready(
-            &wrong_version,
-            &selected,
-            &checkout
-        ));
+        assert_eq!(
+            pending_mcus(&wrong_version, &selected, &checkout),
+            vec!["mcu rp2040 (reports v1)".to_owned()]
+        );
         let complete = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v2", None)],
         };
-        assert!(selected_mcus_are_ready(&complete, &selected, &checkout));
+        assert!(pending_mcus(&complete, &selected, &checkout).is_empty());
     }
 
     #[test]
