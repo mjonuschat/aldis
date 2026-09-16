@@ -153,6 +153,8 @@ mod tests {
         assert!(contents.contains("configuration output"));
         assert!(contents.contains("invalid Kconfig symbol"));
         assert!(contents.contains("failure"));
+        assert!(contents.contains("make"));
+        assert!(contents.contains("olddefconfig (cd /home/pi/klipper)"));
     }
 
     #[test]
@@ -179,5 +181,7 @@ mod tests {
         assert!(contents.contains("compiled 1 object"));
         assert!(contents.contains("warning: retained for diagnosis"));
         assert!(contents.contains("success"));
+        assert!(contents.contains("make"));
+        assert!(contents.contains("KCONFIG_CONFIG=/tmp/mcu.config"));
     }
 }
