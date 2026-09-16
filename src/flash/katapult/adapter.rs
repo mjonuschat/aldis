@@ -6,10 +6,11 @@ use super::session::{KatapultSession, SessionError, Transport};
 use crate::flash::{FlashPort, FlashResult};
 
 /// A failure while flashing a Katapult target.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum KatapultFlashError {
     /// Katapult rejected or could not verify a protocol operation.
-    Session(SessionError),
+    #[error("{0}")]
+    Session(#[source] SessionError),
 }
 
 /// A ready Katapult bootloader session that can flash one firmware artifact.

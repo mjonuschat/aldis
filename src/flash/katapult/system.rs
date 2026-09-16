@@ -35,18 +35,23 @@ pub struct SystemKatapultOptions {
 }
 
 /// A failure while selecting, bootstrapping, or flashing Katapult on Linux.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SystemKatapultError {
     /// The prepared target has no supported transport.
+    #[error("no supported Katapult transport: {0:?}")]
     Endpoint(EndpointError),
     /// Serial bootloader transition failed.
+    #[error("serial bootloader transition failed: {0:?}")]
     Serial(SerialBootstrapError),
     /// SocketCAN could not be opened.
-    CanSocket(io::Error),
+    #[error("could not open SocketCAN interface: {0}")]
+    CanSocket(#[source] io::Error),
     /// CAN bootstrap transition failed.
-    Can(CanBootstrapError<io::Error>),
+    #[error("CAN bootstrap transition failed: {0}")]
+    Can(#[source] CanBootstrapError<io::Error>),
     /// Katapult rejected or could not verify the transfer.
-    Flash(KatapultFlashError),
+    #[error("Katapult flash failed: {0}")]
+    Flash(#[source] KatapultFlashError),
 }
 
 /// Flashes one prepared target after the caller has stopped Klipper.

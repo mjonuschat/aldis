@@ -19,40 +19,49 @@ pub trait Transport {
 }
 
 /// Errors returned by a Katapult session.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SessionError {
     /// The request frame could not be encoded.
+    #[error("could not encode request frame: {0:?}")]
     Encode(FrameError),
     /// Katapult advertised unsupported target geometry.
-    Target(TargetError),
+    #[error("unsupported target geometry: {0}")]
+    Target(#[source] TargetError),
     /// The bounded retry policy could not obtain a valid response.
+    #[error("no valid response to {command:?} after retrying: {last_failure}")]
     RetriesExhausted {
         command: Command,
         last_failure: String,
     },
     /// A response did not contain required data.
+    #[error("{command:?} response too short: expected at least {expected} bytes, got {actual}")]
     ResponseDataTooShort {
         command: Command,
         expected: usize,
         actual: usize,
     },
     /// A response did not have the exact required data length.
+    #[error("{command:?} response length mismatch: expected {expected} bytes, got {actual}")]
     ResponseDataLengthMismatch {
         command: Command,
         expected: usize,
         actual: usize,
     },
     /// Katapult acknowledged a different address than requested.
+    #[error("{command:?} acknowledged address {actual:#x}, expected {expected:#x}")]
     AddressMismatch {
         command: Command,
         expected: u32,
         actual: u32,
     },
     /// Firmware block addressing exceeded a 32-bit application address.
+    #[error("firmware block address exceeds a 32-bit application address")]
     AddressOverflow,
     /// Readback SHA-1 does not match the transmitted padded data.
+    #[error("readback SHA-1 does not match the transmitted padded data")]
     ChecksumMismatch,
     /// Katapult's CAN UUID does not match Moonraker's configured UUID.
+    #[error("Katapult CAN UUID {actual:#x} does not match configured UUID {expected:#x}")]
     CanbusUuidMismatch { expected: u64, actual: u64 },
 }
 
@@ -64,9 +73,10 @@ pub struct KatapultTarget {
 }
 
 /// An unsupported Katapult target geometry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TargetError {
     /// Katapult advertised a block size not supported by the protocol implementation.
+    #[error("unsupported Katapult block size: {block_size}")]
     UnsupportedBlockSize { block_size: u32 },
 }
 
