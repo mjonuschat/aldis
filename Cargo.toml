@@ -20,6 +20,9 @@ serialport = { version = "4.10.1", default-features = false }
 tempfile = "3.23.0"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["net", "rt"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 ureq = "3.4.1"
 
 socketcan = { version = "4.0.0", default-features = false }
