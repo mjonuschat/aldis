@@ -71,6 +71,44 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && steps.dependency-files.outputs.changed != 'true' }}
         run: echo "No Cargo.toml, Cargo.lock, or deny.toml changes in this PR; skipping cargo audit."
 
+  dist:
+    name: Dist (${{ matrix.build }})
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [x86_64-linux, aarch64-linux]
+        include:
+          - build: x86_64-linux
+            target: x86_64-unknown-linux-gnu
+          - build: aarch64-linux
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cross-compilation tools
+        if: matrix.build == 'aarch64-linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build binary
+        run: cargo build --target ${{ matrix.target }} --release --locked
+      - name: Strip binary
+        run: |
+          STRIP_CMD="strip"
+          if [ "${{ matrix.build }}" = "aarch64-linux" ]; then
+            STRIP_CMD="aarch64-linux-gnu-strip"
+          fi
+          "$STRIP_CMD" "target/${{ matrix.target }}/release/aldis"
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: aldis-${{ github.sha }}-${{ matrix.build }}
+          path: target/${{ matrix.target }}/release/aldis
+          retention-days: 14
+
   deny:
     name: Dependency Check
     runs-on: ubuntu-latest
