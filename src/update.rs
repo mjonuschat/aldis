@@ -270,6 +270,9 @@ fn wait_for_application_with_timeout(
             .exists()
             .then_some(())
             .ok_or(())
+            .inspect_err(|()| {
+                tracing::debug!(device = %device, "mcu device not yet re-enumerated, still waiting");
+            })
     })
     .map_err(|()| format!("{} did not re-enumerate at {device}", mcu.name))
 }
@@ -279,17 +282,19 @@ fn wait_for_mcus(
     selected: &[String],
     checkout: &CheckoutRevision,
 ) -> Result<(), String> {
-    retry_until_available(
-        Duration::from_secs(30),
-        Duration::from_millis(250),
-        || match client.discover_mcus() {
+    retry_until_available(Duration::from_secs(30), Duration::from_millis(250), || {
+        let attempt_result = match client.discover_mcus() {
             Ok(inventory) => match pending_mcus(&inventory, selected, checkout) {
                 pending if pending.is_empty() => Ok(()),
                 pending => Err(format!("still waiting on: {}", pending.join(", "))),
             },
             Err(error) => Err(format!("could not query Moonraker: {error}")),
-        },
-    )
+        };
+        if let Err(ref error) = attempt_result {
+            tracing::debug!(error = %error, "mcus not yet ready, still waiting");
+        }
+        attempt_result
+    })
     .map_err(|last_state| {
         format!("Klipper did not reconnect every updated MCU at the built revision ({last_state})")
     })

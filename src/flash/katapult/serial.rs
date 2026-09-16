@@ -239,6 +239,11 @@ impl SystemSerialIo {
                     serial_device: usb_tty(usb_path),
                 })
             } else {
+                tracing::debug!(
+                    usb_id = %identity.usb_id,
+                    manufacturer = %identity.manufacturer,
+                    "usb bootloader not yet observed, still waiting"
+                );
                 Err(())
             }
         })
@@ -282,6 +287,11 @@ impl SystemSerialIo {
             {
                 Ok(result)
             } else {
+                tracing::debug!(
+                    usb_id = %identity.usb_id,
+                    manufacturer = %identity.manufacturer,
+                    "usb bootloader identity not yet matched, still waiting"
+                );
                 Err(())
             }
         })

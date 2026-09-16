@@ -393,7 +393,9 @@ fn open_katapult_serial_when_ready(
     poll_interval: Duration,
 ) -> serialport::Result<SystemSerialIo> {
     retry_until_available(timeout, poll_interval, || {
-        SystemSerialIo::open(serial_device, baud_rate, read_timeout)
+        SystemSerialIo::open(serial_device, baud_rate, read_timeout).inspect_err(|error| {
+            tracing::debug!(error = %error, "katapult serial device not yet ready, still waiting");
+        })
     })
 }
 
@@ -416,6 +418,9 @@ fn wait_for_device_access(
             .read(true)
             .write(true)
             .open(device_node)
+            .inspect_err(|error| {
+                tracing::debug!(error = %error, "device not yet accessible, still waiting");
+            })
     })
     .map(|_| ())
     .map_err(|error| {
