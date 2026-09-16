@@ -30,9 +30,13 @@ fn install_setup() -> anyhow::Result<()> {
     if !valid_user_name(&user) {
         bail!("SUDO_USER is not a valid account name");
     }
+    tracing::info!("installing udev rules");
     let rules_action = install_file(UDEV_RULES_PATH, udev_rules(), "udev rules")?;
+    tracing::debug!(rules_action, "udev rules installed");
+    tracing::info!("installing service policy");
     let service_policy = sudoers_policy(&user);
     let service_action = install_file(SUDOERS_PATH, &service_policy, "service policy")?;
+    tracing::debug!(service_action, "service policy installed");
     let status = Command::new("chmod")
         .args(["440", SUDOERS_PATH])
         .status()
@@ -47,6 +51,7 @@ fn install_setup() -> anyhow::Result<()> {
     if !status.success() {
         bail!("could not reload udev rules: udevadm exited with {status}");
     }
+    tracing::info!("udev rules reloaded");
     println!("{}", setup_install_report(rules_action, service_action));
     Ok(())
 }
@@ -66,11 +71,13 @@ fn setup_install_report(rules_action: &str, service_action: &str) -> String {
 }
 
 fn check_setup() -> ExitCode {
+    tracing::info!("checking aldis setup");
     let rules = fs::read_to_string(UDEV_RULES_PATH).is_ok_and(|contents| contents == udev_rules());
     let service = Command::new("sudo")
         .args(["-n", "/bin/systemctl", "is-active", "klipper"])
         .output()
         .is_ok_and(|output| sudo_policy_allows_service_status(&output.stdout));
+    tracing::debug!(rules, service, "setup check results");
     println!("{}", setup_check_report(rules, service));
     if rules && service {
         ExitCode::SUCCESS

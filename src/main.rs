@@ -69,6 +69,7 @@ fn init_logging(verbose: u8) -> Option<WorkerGuard> {
 }
 
 fn inspect(arguments: &MoonrakerArgs) -> anyhow::Result<()> {
+    tracing::info!("discovering MCUs from Moonraker");
     let inventory = MoonrakerAdapter::new(&arguments.moonraker)
         .discover_mcus()
         .context("failed to discover MCUs")?;

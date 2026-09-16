@@ -29,12 +29,14 @@ fn status_report(
     checkout: &impl CheckoutPort,
     source: &std::path::Path,
 ) -> anyhow::Result<String> {
+    tracing::info!("discovering MCUs from Moonraker");
     let inventory = moonraker
         .discover_mcus()
         .context("failed to discover MCUs")?;
     let revision = checkout
         .revision(source)
         .unwrap_or(CheckoutRevision::Indeterminate);
+    tracing::debug!(?revision, "checkout revision resolved");
     Ok(format_status(source, &revision, &inventory, None))
 }
 
