@@ -134,7 +134,6 @@ fn run_update(
             read_timeout: Duration::from_secs(5),
             can_bootloader_settle: Duration::from_millis(100),
         },
-        bossac_program: source.join("lib/bossac/bin/bossac"),
     };
     let mut accepted = Vec::new();
     for name in offered {

@@ -6,12 +6,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::build::SystemCommandAdapter;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
-use crate::flash::bossa::{
-    BossaAdapter, BossaError, BossaTarget, target_from_kconfig as bossa_target_from_kconfig,
-};
 use crate::flash::katapult::adapter::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloader};
 use crate::flash::katapult::can::SocketCanIo;
@@ -26,7 +22,6 @@ use crate::flash::usb_bootloader::{
     select_usb_bootloader,
 };
 use crate::flash::usb_sysfs::usb_device_ancestor;
-use crate::logging::LoggingCommandAdapter;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
@@ -36,13 +31,6 @@ use crate::retry::retry_until_available;
 pub enum SerialFlashRoute {
     /// Katapult's serial bootloader device.
     Katapult { serial_device: PathBuf },
-    /// BOSSA-compatible SAM-BA serial bootloader and its Kconfig-derived offset.
-    Bossa {
-        /// BOSSA serial device at the observed topology.
-        serial_device: PathBuf,
-        /// Application placement derived from the prepared Kconfig.
-        target: BossaTarget,
-    },
     /// STM32 ROM DFU and its Kconfig-derived application target.
     Stm32Dfu {
         /// USB topology retained across re-enumeration.
@@ -59,8 +47,6 @@ pub enum SerialFlashRoute {
 pub struct SystemFlashOptions {
     /// Timing and baud settings for Katapult.
     pub katapult: SystemKatapultOptions,
-    /// `bossac` executable used for BOSSA-compatible SAMD bootloaders.
-    pub bossac_program: PathBuf,
 }
 
 /// A visible phase of a native bootloader transfer.
@@ -87,8 +73,6 @@ pub enum SystemFlashError {
     Selection(UsbBootloaderSelectionError),
     /// The observed STM32 route has no valid Kconfig application address.
     Stm32Target(Stm32DfuError),
-    /// The observed BOSSA route has no valid Kconfig application offset.
-    BossaTarget(BossaError),
     /// The Katapult USB serial device could not be opened.
     KatapultOpen(serialport::Error),
     /// Katapult rejected or could not verify its USB serial transfer.
@@ -97,8 +81,6 @@ pub enum SystemFlashError {
     Stm32Dfu(Stm32DfuError),
     /// PicoBoot flashing failed.
     PicoBoot(PicoBootError),
-    /// BOSSA flashing failed.
-    Bossa(BossaError),
     /// The CAN socket could not be opened.
     CanSocket(io::Error),
     /// A USB-CAN bridge could not be related to its USB topology.
@@ -151,14 +133,9 @@ impl fmt::Display for SystemFlashError {
             ),
             Self::Stm32Dfu(_) => write!(f, "STM32 DFU flashing failed"),
             Self::PicoBoot(_) => write!(f, "RP PicoBoot flashing failed"),
-            Self::Bossa(_) => write!(f, "BOSSA flashing failed"),
             Self::Stm32Target(_) => write!(
                 f,
                 "the STM32 firmware configuration has no valid flash address"
-            ),
-            Self::BossaTarget(_) => write!(
-                f,
-                "the SAMD firmware configuration has no valid flash offset"
             ),
             Self::Selection(_) => write!(
                 f,
@@ -177,7 +154,6 @@ impl std::error::Error for SystemFlashError {
             Self::UsbAccess(error) => Some(error),
             Self::Selection(error) => Some(error),
             Self::Stm32Target(error) | Self::Stm32Dfu(error) => Some(error),
-            Self::BossaTarget(error) | Self::Bossa(error) => Some(error),
             Self::KatapultOpen(error) => Some(error),
             Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
             Self::PicoBoot(error) => Some(error),
@@ -192,15 +168,10 @@ pub fn serial_route(
     observed: ObservedUsbBootloader,
     kconfig: &str,
 ) -> Result<SerialFlashRoute, SystemFlashError> {
-    let bossa_target = bossa_target_from_kconfig(kconfig);
-    match select_usb_bootloader(observed.clone()) {
+    match select_usb_bootloader(observed) {
         Ok(SelectedUsbBootloader::Katapult { serial_device, .. }) => {
             Ok(SerialFlashRoute::Katapult { serial_device })
         }
-        Ok(SelectedUsbBootloader::Bossa { serial_device, .. }) => Ok(SerialFlashRoute::Bossa {
-            serial_device,
-            target: bossa_target.map_err(SystemFlashError::BossaTarget)?,
-        }),
         Ok(SelectedUsbBootloader::Stm32Dfu { sysfs_path }) => Ok(SerialFlashRoute::Stm32Dfu {
             sysfs_path,
             target: target_from_kconfig(kconfig).map_err(SystemFlashError::Stm32Target)?,
@@ -208,29 +179,11 @@ pub fn serial_route(
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
         }
-        Err(UsbBootloaderSelectionError::Unsupported { .. }) => {
-            let target = bossa_target.map_err(|_| {
-                SystemFlashError::Selection(UsbBootloaderSelectionError::Unsupported {
-                    usb_id: observed.usb_id.clone(),
-                    manufacturer: observed.manufacturer.clone(),
-                })
-            })?;
-            let serial_device = observed.serial_device.ok_or_else(|| {
-                SystemFlashError::Selection(UsbBootloaderSelectionError::BossaSerialDeviceMissing(
-                    observed.sysfs_path.clone(),
-                ))
-            })?;
-            Ok(SerialFlashRoute::Bossa {
-                serial_device,
-                target,
-            })
-        }
         Err(error) => Err(SystemFlashError::Selection(error)),
     }
 }
 
-/// Flashes one prepared artifact while reporting native bootloader phases,
-/// logging any external command's (e.g. `bossac`) captured output.
+/// Flashes one prepared artifact while reporting native bootloader phases.
 pub fn flash_prepared_system_with_progress(
     prepared: &PreparedBuild,
     firmware: &[u8],
@@ -300,26 +253,6 @@ fn flash_observed_usb(
             backend
                 .flash(firmware)
                 .map_err(SystemFlashError::KatapultFlash)
-        }
-        SerialFlashRoute::Bossa {
-            serial_device,
-            target,
-        } => {
-            wait_for_device_access(
-                &serial_device,
-                Duration::from_secs(5),
-                Duration::from_millis(50),
-            )
-            .map_err(SystemFlashError::UsbAccess)?;
-            progress(SystemFlashProgress::Flashing);
-            BossaAdapter::new(
-                LoggingCommandAdapter::new(SystemCommandAdapter),
-                &options.bossac_program,
-                &serial_device,
-                target,
-            )
-            .flash(firmware)
-            .map_err(SystemFlashError::Bossa)
         }
         SerialFlashRoute::Stm32Dfu { sysfs_path, target } => {
             wait_for_usb_access(

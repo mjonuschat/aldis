@@ -225,8 +225,7 @@ where
     /// Builds and flashes through native backends while reporting each visible phase.
     ///
     /// This preserves [`Self::execute_and_flash`]'s service boundary: Klipper is
-    /// stopped before the build and is never restarted by this operation. Any
-    /// external command's (e.g. `bossac`) captured output is always logged.
+    /// stopped before the build and is never restarted by this operation.
     pub fn execute_and_flash_system_with_progress(
         &self,
         approved: ApprovedBuild,
