@@ -3,7 +3,7 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
@@ -25,13 +25,15 @@ use crate::status::{checkout_label, format_status, refresh_label};
 use crate::ui::UpdateUi;
 
 pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
-    let workspace_path = arguments
-        .workspace
-        .clone()
-        .unwrap_or_else(default_run_workspace);
-    let workspace = match RunWorkspace::create(workspace_path) {
-        Ok(workspace) => workspace,
-        Err(error) => return fail(error.to_string()),
+    let workspace = match &arguments.workspace {
+        Some(path) => match RunWorkspace::create(path.clone()) {
+            Ok(workspace) => workspace,
+            Err(error) => return fail(error.to_string()),
+        },
+        None => match default_run_workspace() {
+            Ok(path) => RunWorkspace::adopt(path),
+            Err(error) => return fail(format!("could not create the run workspace: {error}")),
+        },
     };
     let run_log = match RunLog::create(workspace.root()) {
         Ok(log) => log,
@@ -87,10 +89,6 @@ fn run_update(
         &checkout,
         &inventory,
         refreshed.as_ref(),
-    ));
-    ui.block(&format!(
-        "Run log:           {}\n",
-        run_log.path().display()
     ));
     let selection = if arguments.all {
         UpdateSelection::All
@@ -205,30 +203,27 @@ fn run_update(
     }
     ui.finish_success("all updated MCUs connected");
     ui.heading(&format!(
-        "Update complete: {} {} updated",
+        "Update complete: {} {} updated (run log: {})",
         accepted.len(),
-        mcu_count_label(accepted.len())
+        mcu_count_label(accepted.len()),
+        run_log.path().display()
     ));
     ui.action("run completed successfully");
     Ok(())
 }
 
-fn default_run_workspace() -> PathBuf {
-    let state_dir = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".local/state"))
-        })
-        .unwrap_or_else(std::env::temp_dir);
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    state_dir
-        .join("aldis/runs")
-        .join(format!("run-{nonce}-{}", std::process::id()))
+/// Reserves a fresh, uniquely named run directory under the system temp
+/// directory (honoring `$TMPDIR`, `/tmp` otherwise) via `mkdtemp`, so a run's
+/// build artifacts and log don't outlive the reboot that clears it.
+///
+/// The directory is deliberately kept alive past `TempDir`'s scope: deleting
+/// it on drop would defeat the point of a run log the user can inspect
+/// after aldis exits.
+fn default_run_workspace() -> io::Result<PathBuf> {
+    Ok(tempfile::Builder::new()
+        .prefix("aldis-")
+        .tempdir_in(std::env::temp_dir())?
+        .keep())
 }
 
 fn mcu_count_label(count: usize) -> &'static str {

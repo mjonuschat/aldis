@@ -73,6 +73,13 @@ impl RunWorkspace {
         Ok(Self { root })
     }
 
+    /// Wraps a directory the caller already created uniquely and atomically
+    /// (e.g. via `tempfile`'s `mkdtemp`), skipping [`Self::create`]'s
+    /// pre-existence check since it would always fail here.
+    pub fn adopt(root: PathBuf) -> Self {
+        Self { root }
+    }
+
     /// Returns the workspace root retained for this run's artifacts and logs.
     pub fn root(&self) -> &Path {
         &self.root
