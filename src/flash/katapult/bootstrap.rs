@@ -43,8 +43,8 @@ impl std::error::Error for CanBootstrapError<io::Error> {
 #[derive(Debug, thiserror::Error)]
 pub enum SerialBootstrapError {
     /// The running USB device did not re-enumerate as Katapult.
-    #[error("running USB device did not re-enumerate as Katapult: {0}")]
-    Bootloader(#[source] UsbBootloaderError),
+    #[error(transparent)]
+    Bootloader(UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
     #[error("observed bootloader is unsupported or cannot be used safely: {0}")]
     Selection(#[source] UsbBootloaderSelectionError),
