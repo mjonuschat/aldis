@@ -3,6 +3,8 @@
 A tool for updating MCU firmware. `aldis` is named after the Aldis lamp,
 the signal lamp ships use to flash messages to each other.
 
+<img src="images/demo.gif" alt="aldis update --pull --all --force" width="800">
+
 ## What It Does
 
 `aldis` needs no per-MCU configuration: it discovers every supported MCU
