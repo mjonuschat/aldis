@@ -10,28 +10,32 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use aldis::moonraker::{McuInventory, MoonrakerAdapter};
+use anyhow::Context;
 use clap::Parser;
 
-use cli::{Cli, CliCommand};
+use cli::{Cli, CliCommand, MoonrakerArgs};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         CliCommand::Status(arguments) => status::status(arguments),
-        CliCommand::Inspect(arguments) => {
-            match MoonrakerAdapter::new(&arguments.moonraker).discover_mcus() {
-                Ok(inventory) => {
-                    print_inventory(&arguments.moonraker, &inventory);
-                    ExitCode::SUCCESS
-                }
-                Err(error) => fail(error.to_string()),
-            }
-        }
+        CliCommand::Inspect(arguments) => match inspect(&arguments) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(format!("{error:#}")),
+        },
         CliCommand::Update(arguments) => {
             update::update(arguments, ui::UpdateUi::new(cli.color, cli.no_progress))
         }
         CliCommand::Setup(arguments) => setup::setup(arguments),
     }
+}
+
+fn inspect(arguments: &MoonrakerArgs) -> anyhow::Result<()> {
+    let inventory = MoonrakerAdapter::new(&arguments.moonraker)
+        .discover_mcus()
+        .context("failed to discover MCUs")?;
+    print_inventory(&arguments.moonraker, &inventory);
+    Ok(())
 }
 
 pub(crate) fn default_klipper_source() -> PathBuf {
