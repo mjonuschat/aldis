@@ -46,6 +46,22 @@ pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
     Ok(guard)
 }
 
+/// Installs a stderr-only subscriber, for callers that cannot open a file
+/// layer's log path (e.g. permission errors on a shared temp directory) but
+/// still need `RUST_LOG`/verbosity-controlled diagnostics on stderr.
+pub fn init_stderr_only(verbosity: u8) -> anyhow::Result<()> {
+    let stderr_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity).to_string()));
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_filter);
+
+    tracing_subscriber::registry()
+        .with(stderr_layer)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("failed to install tracing subscriber: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

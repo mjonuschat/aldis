@@ -21,17 +21,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         CliCommand::Status(arguments) => {
-            let _guard = match init_logging(cli.verbose) {
-                Ok(guard) => guard,
-                Err(error) => return fail(format!("could not start logging: {error:#}")),
-            };
+            let _guard = init_logging(cli.verbose);
             status::status(arguments)
         }
         CliCommand::Inspect(arguments) => {
-            let _guard = match init_logging(cli.verbose) {
-                Ok(guard) => guard,
-                Err(error) => return fail(format!("could not start logging: {error:#}")),
-            };
+            let _guard = init_logging(cli.verbose);
             match inspect(&arguments) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(format!("{error:#}")),
@@ -46,20 +40,32 @@ fn main() -> ExitCode {
             ui::UpdateUi::new(cli.color, cli.no_progress),
         ),
         CliCommand::Setup(arguments) => {
-            let _guard = match init_logging(cli.verbose) {
-                Ok(guard) => guard,
-                Err(error) => return fail(format!("could not start logging: {error:#}")),
-            };
+            let _guard = init_logging(cli.verbose);
             setup::setup(arguments)
         }
     }
 }
 
 /// `status`/`inspect`/`setup` have no run workspace to anchor a log file to,
-/// so they share a fixed path in the system temp directory.
-fn init_logging(verbose: u8) -> anyhow::Result<WorkerGuard> {
-    let log_path = std::env::temp_dir().join("aldis.log");
-    logging::init(verbose, &log_path)
+/// so each process gets its own path in the system temp directory, keyed by
+/// pid so different users/invocations never collide on the same file.
+///
+/// File logging is best-effort: if the log file cannot be opened (e.g. a
+/// previous run left behind a file owned by another user), this warns on
+/// stderr and returns `None` rather than aborting the command — the
+/// subcommand's actual work must still run.
+fn init_logging(verbose: u8) -> Option<WorkerGuard> {
+    let log_path = std::env::temp_dir().join(format!("aldis-{}.log", std::process::id()));
+    match logging::init(verbose, &log_path) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("warning: could not start file logging: {error:#}");
+            if let Err(error) = logging::init_stderr_only(verbose) {
+                eprintln!("warning: could not start stderr logging: {error:#}");
+            }
+            None
+        }
+    }
 }
 
 fn inspect(arguments: &MoonrakerArgs) -> anyhow::Result<()> {

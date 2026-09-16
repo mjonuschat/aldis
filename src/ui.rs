@@ -39,7 +39,7 @@ impl UpdateUi {
     }
 
     pub(crate) fn action(&self, action: &str) {
-        tracing::info!("{action}");
+        tracing::debug!("{action}");
     }
 
     pub(crate) fn block(&mut self, text: &str) {

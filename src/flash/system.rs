@@ -229,31 +229,12 @@ pub fn serial_route(
     }
 }
 
-/// Flashes one prepared artifact after the coordinator has stopped Klipper.
-pub fn flash_prepared_system(
-    prepared: &PreparedBuild,
-    firmware: &[u8],
-    options: SystemFlashOptions,
-) -> Result<FlashResult, SystemFlashError> {
-    flash_prepared_system_with_progress(prepared, firmware, options, |_| {})
-}
-
-/// Flashes one prepared artifact while reporting native bootloader phases.
+/// Flashes one prepared artifact while reporting native bootloader phases,
+/// logging any external command's (e.g. `bossac`) captured output.
 pub fn flash_prepared_system_with_progress(
     prepared: &PreparedBuild,
     firmware: &[u8],
     options: SystemFlashOptions,
-    progress: impl FnMut(SystemFlashProgress),
-) -> Result<FlashResult, SystemFlashError> {
-    flash_prepared_system_with_progress_and_log(prepared, firmware, options, false, progress)
-}
-
-/// Flashes one prepared artifact, optionally logging external command output.
-pub fn flash_prepared_system_with_progress_and_log(
-    prepared: &PreparedBuild,
-    firmware: &[u8],
-    options: SystemFlashOptions,
-    command_log: bool,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     match prepared
@@ -266,7 +247,6 @@ pub fn flash_prepared_system_with_progress_and_log(
             &prepared.request.kconfig,
             firmware,
             options,
-            command_log,
             &mut progress,
         ),
         McuTransport::Can { interface, uuid } => flash_can_system(
@@ -275,7 +255,6 @@ pub fn flash_prepared_system_with_progress_and_log(
             &prepared.request.kconfig,
             firmware,
             options,
-            command_log,
             &mut progress,
         ),
     }
@@ -286,7 +265,6 @@ fn flash_serial_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
@@ -296,7 +274,7 @@ fn flash_serial_system(
         options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::Bootloader)?;
-    flash_observed_usb(observed, kconfig, firmware, options, command_log, progress)
+    flash_observed_usb(observed, kconfig, firmware, options, progress)
 }
 
 fn flash_observed_usb(
@@ -304,7 +282,6 @@ fn flash_observed_usb(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::BootloaderReady);
@@ -335,23 +312,13 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            if command_log {
-                BossaAdapter::new(
-                    LoggingCommandAdapter::new(SystemCommandAdapter),
-                    &options.bossac_program,
-                    &serial_device,
-                    target,
-                )
-                .flash(firmware)
-            } else {
-                BossaAdapter::new(
-                    SystemCommandAdapter,
-                    &options.bossac_program,
-                    &serial_device,
-                    target,
-                )
-                .flash(firmware)
-            }
+            BossaAdapter::new(
+                LoggingCommandAdapter::new(SystemCommandAdapter),
+                &options.bossac_program,
+                &serial_device,
+                target,
+            )
+            .flash(firmware)
             .map_err(SystemFlashError::Bossa)
         }
         SerialFlashRoute::Stm32Dfu { sysfs_path, target } => {
@@ -452,7 +419,6 @@ fn flash_can_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
-    command_log: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
@@ -478,7 +444,7 @@ fn flash_can_system(
             options.katapult.poll_interval,
         )
         .map_err(SystemFlashError::Bootloader)?;
-        return flash_observed_usb(observed, kconfig, firmware, options, command_log, progress);
+        return flash_observed_usb(observed, kconfig, firmware, options, progress);
     }
     thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;

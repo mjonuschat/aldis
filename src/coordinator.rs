@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, KlipperBuilder};
 use crate::flash::FlashResult;
 use crate::flash::system::{
-    SystemFlashError, SystemFlashOptions, SystemFlashProgress,
-    flash_prepared_system_with_progress_and_log,
+    SystemFlashError, SystemFlashOptions, SystemFlashProgress, flash_prepared_system_with_progress,
 };
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
@@ -223,34 +222,15 @@ where
         Ok(CompletedUpdate { artifact, flash })
     }
 
-    /// Builds an approved target and dispatches it through the native system backends.
+    /// Builds and flashes through native backends while reporting each visible phase.
     ///
     /// This preserves [`Self::execute_and_flash`]'s service boundary: Klipper is
-    /// stopped before the build and is never restarted by this operation.
-    pub fn execute_and_flash_system(
-        &self,
-        approved: ApprovedBuild,
-        options: SystemFlashOptions,
-    ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
-        self.execute_and_flash_system_with_progress(approved, options, |_| {})
-    }
-
-    /// Builds and flashes through native backends while reporting each visible phase.
+    /// stopped before the build and is never restarted by this operation. Any
+    /// external command's (e.g. `bossac`) captured output is always logged.
     pub fn execute_and_flash_system_with_progress(
         &self,
         approved: ApprovedBuild,
         options: SystemFlashOptions,
-        progress: impl FnMut(UpdateProgress),
-    ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
-        self.execute_and_flash_system_with_progress_and_log(approved, options, false, progress)
-    }
-
-    /// Builds and flashes through native backends while logging external command output.
-    pub fn execute_and_flash_system_with_progress_and_log(
-        &self,
-        approved: ApprovedBuild,
-        options: SystemFlashOptions,
-        command_log: bool,
         mut progress: impl FnMut(UpdateProgress),
     ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
         let mut prepared = approved.pending.prepared.clone();
@@ -259,19 +239,13 @@ where
             .map_err(FlashCoordinatorError::Coordinator)?;
         prepared.request.kconfig = artifact.kconfig.clone();
         let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
-        let flash = flash_prepared_system_with_progress_and_log(
-            &prepared,
-            &firmware,
-            options,
-            command_log,
-            |stage| {
-                progress(match stage {
-                    SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
-                    SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
-                    SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
-                });
-            },
-        )
+        let flash = flash_prepared_system_with_progress(&prepared, &firmware, options, |stage| {
+            progress(match stage {
+                SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
+                SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
+                SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+            });
+        })
         .map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
     }

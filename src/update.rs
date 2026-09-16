@@ -160,10 +160,9 @@ fn run_update(
                 ui.action(&format!("error: {}", aldis::error_chain(error)));
             })
             .with_context(|| format!("failed to prepare {name} for flashing"))?;
-        match coordinator.execute_and_flash_system_with_progress_and_log(
+        match coordinator.execute_and_flash_system_with_progress(
             pending.approve(),
             options.clone(),
-            true,
             |progress| ui.progress(progress),
         ) {
             Ok(v) => {
