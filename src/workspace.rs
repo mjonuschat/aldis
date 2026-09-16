@@ -1,5 +1,3 @@
-use std::error::Error as StdError;
-use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,42 +18,23 @@ pub struct WorkspaceBuildPaths {
 }
 
 /// Failure while creating an isolated run workspace.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
     /// The requested run directory already exists.
+    #[error("run workspace {} already exists; choose a new per-run directory", .0.display())]
     AlreadyExists(PathBuf),
     /// The host filesystem operation failed.
+    #[error("could not {action}: {source}")]
     Io {
         /// The operation being attempted.
         action: &'static str,
         /// The underlying failure.
+        #[source]
         source: io::Error,
     },
     /// The selected MCU name cannot identify a workspace target.
+    #[error("MCU target name must not be empty")]
     EmptyTargetName,
-}
-
-impl fmt::Display for WorkspaceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AlreadyExists(path) => write!(
-                formatter,
-                "run workspace {} already exists; choose a new per-run directory",
-                path.display()
-            ),
-            Self::Io { action, source } => write!(formatter, "could not {action}: {source}"),
-            Self::EmptyTargetName => write!(formatter, "MCU target name must not be empty"),
-        }
-    }
-}
-
-impl StdError for WorkspaceError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::AlreadyExists(_) | Self::EmptyTargetName => None,
-        }
-    }
 }
 
 impl RunWorkspace {

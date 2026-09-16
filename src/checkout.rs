@@ -10,17 +10,24 @@ use git2::{
 use crate::eligibility::CheckoutRevision;
 
 /// Failure while examining a selected Klipper checkout.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CheckoutError {
     /// The path is not an accessible Git repository.
-    Repository(git2::Error),
+    #[error("could not open the Klipper checkout: {0}")]
+    Repository(#[source] git2::Error),
     /// The checkout revision could not be described.
-    Describe(git2::Error),
+    #[error("could not describe the Klipper checkout: {0}")]
+    Describe(#[source] git2::Error),
     /// Worktree state could not be checked.
-    Status(git2::Error),
+    #[error("could not inspect the Klipper checkout: {0}")]
+    Status(#[source] git2::Error),
     /// The checked-out branch does not name an upstream to refresh from.
+    #[error("the checked-out Klipper branch has no configured upstream")]
     UpstreamNotConfigured,
     /// The fetched upstream cannot be applied without a merge or rebase.
+    #[error(
+        "cannot fast-forward {branch} from {upstream}; resolve the divergence before updating firmware"
+    )]
     NotFastForward {
         /// The current local branch name.
         branch: String,
@@ -28,53 +35,14 @@ pub enum CheckoutError {
         upstream: String,
     },
     /// Fetching, checking out, or updating the configured upstream failed.
+    #[error("could not {action} the Klipper checkout: {source}")]
     Refresh {
         /// The refresh operation that failed.
         action: &'static str,
         /// The underlying libgit2 error.
+        #[source]
         source: git2::Error,
     },
-}
-
-impl std::fmt::Display for CheckoutError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Repository(error) => {
-                write!(formatter, "could not open the Klipper checkout: {error}")
-            }
-            Self::Describe(error) => write!(
-                formatter,
-                "could not describe the Klipper checkout: {error}"
-            ),
-            Self::Status(error) => {
-                write!(formatter, "could not inspect the Klipper checkout: {error}")
-            }
-            Self::UpstreamNotConfigured => write!(
-                formatter,
-                "the checked-out Klipper branch has no configured upstream"
-            ),
-            Self::NotFastForward { branch, upstream } => write!(
-                formatter,
-                "cannot fast-forward {branch} from {upstream}; resolve the divergence before updating firmware"
-            ),
-            Self::Refresh { action, source } => {
-                write!(
-                    formatter,
-                    "could not {action} the Klipper checkout: {source}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for CheckoutError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Repository(error) | Self::Describe(error) | Self::Status(error) => Some(error),
-            Self::Refresh { source, .. } => Some(source),
-            Self::UpstreamNotConfigured | Self::NotFastForward { .. } => None,
-        }
-    }
 }
 
 /// A source of Klipper checkout state and fast-forward refreshes.
