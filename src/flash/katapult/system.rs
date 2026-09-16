@@ -23,7 +23,12 @@ pub struct SystemKatapultOptions {
     pub bootloader_timeout: Duration,
     /// Poll interval while watching USB topology.
     pub poll_interval: Duration,
-    /// Per-read serial or SocketCAN timeout.
+    /// Per-attempt serial or SocketCAN response timeout.
+    ///
+    /// Katapult's own `flashtool.py` waits up to 5s per `SEND_BLOCK` attempt
+    /// because a block write can trigger a flash sector erase; since aldis
+    /// doesn't vary the timeout per command, it must be at least that long
+    /// for every command, not just the fast ones like `CONNECT`.
     pub read_timeout: Duration,
     /// Delay between a CAN reboot request and temporary-node assignment.
     pub can_bootloader_settle: Duration,
