@@ -21,11 +21,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         CliCommand::Status(arguments) => {
-            let _guard = init_logging(cli.verbose);
+            let _logging = init_logging_with_fallback(cli.verbose);
             status::status(arguments)
         }
         CliCommand::Inspect(arguments) => {
-            let _guard = init_logging(cli.verbose);
+            let _logging = init_logging_with_fallback(cli.verbose);
             match inspect(&arguments) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(format!("{error:#}")),
@@ -40,22 +40,14 @@ fn main() -> ExitCode {
             ui::UpdateUi::new(cli.color, cli.no_progress),
         ),
         CliCommand::Setup(arguments) => {
-            let _guard = init_logging(cli.verbose);
+            let _logging = init_logging_with_fallback(cli.verbose);
             setup::setup(arguments)
         }
     }
 }
 
-/// `status`/`inspect`/`setup` have no run workspace to anchor a log file to,
-/// so each process gets its own path in the system temp directory, keyed by
-/// pid so different users/invocations never collide on the same file.
-///
-/// File logging is best-effort: if the log file cannot be opened (e.g. a
-/// previous run left behind a file owned by another user), this warns on
-/// stderr and returns `None` rather than aborting the command — the
-/// subcommand's actual work must still run.
-fn init_logging(verbose: u8) -> Option<WorkerGuard> {
-    prune_old_logs();
+fn init_logging_with_fallback(verbose: u8) -> Option<WorkerGuard> {
+    sweep_stale_logs_on_next_launch();
     let log_path = std::env::temp_dir().join(format!("aldis-{}.log", std::process::id()));
     match logging::init(verbose, &log_path) {
         Ok(guard) => Some(guard),
@@ -69,11 +61,7 @@ fn init_logging(verbose: u8) -> Option<WorkerGuard> {
     }
 }
 
-/// Removes `aldis-<pid>.log` files older than a day, best-effort. Each
-/// invocation gets its own log file (see `init_logging`), so nothing
-/// accumulates indefinitely as long as some later invocation eventually
-/// runs to sweep the previous ones.
-fn prune_old_logs() {
+fn sweep_stale_logs_on_next_launch() {
     const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
