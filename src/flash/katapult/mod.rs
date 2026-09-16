@@ -35,27 +35,45 @@ pub enum Command {
 }
 
 /// Errors that prevent a valid Katapult frame or response from being decoded.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum FrameError {
     /// The payload cannot be expressed as complete four-byte words.
+    #[error("payload of {length} bytes is not a multiple of the 4-byte Katapult word size")]
     PayloadNotWordAligned { length: usize },
     /// The one-byte word count cannot represent this payload.
+    #[error(
+        "payload of {length} bytes exceeds Katapult's maximum of {MAX_PAYLOAD_BYTES} bytes (one-byte word count)"
+    )]
     PayloadTooLarge { length: usize },
     /// A reply is shorter than the smallest Katapult frame.
+    #[error(
+        "response frame of {length} bytes is shorter than the minimum {MIN_FRAME_LENGTH} bytes"
+    )]
     ResponseTooShort { length: usize },
     /// A reply exceeds Katapult's representable frame size.
+    #[error(
+        "response frame of {length} bytes exceeds the maximum {MAX_RESPONSE_FRAME_BYTES} bytes"
+    )]
     ResponseTooLarge { length: usize },
     /// The reply does not begin with Katapult's header.
+    #[error("response frame does not start with Katapult's header bytes")]
     InvalidResponseHeader,
     /// The reply does not end with Katapult's trailer.
+    #[error("response frame does not end with Katapult's trailer bytes")]
     InvalidResponseTrailer,
     /// The declared payload length and received frame length disagree.
+    #[error(
+        "response frame length {actual} does not match the {expected} bytes implied by its declared payload size"
+    )]
     ResponseLengthMismatch { expected: usize, actual: usize },
     /// The response CRC is invalid.
+    #[error("response CRC {actual:#06x} does not match the expected {expected:#06x}")]
     ResponseCrcMismatch { expected: u16, actual: u16 },
     /// Katapult rejected the request.
+    #[error("Katapult rejected the request with status {status:#04x}")]
     ResponseRejected { status: u8 },
     /// A successful reply omitted the echoed command word.
+    #[error("successful response payload is too short to contain the echoed command word")]
     ResponseMissingCommand,
 }
 

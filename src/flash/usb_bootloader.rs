@@ -70,9 +70,10 @@ pub enum SelectedUsbBootloader {
 }
 
 /// An observed USB bootloader cannot be used by a supported native backend.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UsbBootloaderSelectionError {
     /// No supported backend recognizes the observed bootloader identity.
+    #[error("USB device {usb_id} ({manufacturer}) is not a supported bootloader")]
     Unsupported {
         /// USB vendor and product identifiers observed after re-enumeration.
         usb_id: String,
@@ -80,8 +81,10 @@ pub enum UsbBootloaderSelectionError {
         manufacturer: String,
     },
     /// Katapult appeared without a unique serial device at its topology.
+    #[error("Katapult bootloader at {} has no unique serial device", .0.display())]
     KatapultSerialDeviceMissing(PathBuf),
     /// BOSSA appeared without a unique serial device at its topology.
+    #[error("BOSSA bootloader at {} has no unique serial device", .0.display())]
     BossaSerialDeviceMissing(PathBuf),
 }
 
