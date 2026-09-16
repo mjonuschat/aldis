@@ -1,5 +1,3 @@
-use std::error::Error as StdError;
-use std::fmt;
 use std::path::PathBuf;
 
 use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, KlipperBuilder};
@@ -45,21 +43,28 @@ pub struct ApprovedBuild {
 }
 
 /// Errors while preparing or executing a selected MCU build.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CoordinatorError {
     /// The isolated workspace could not reserve target paths.
-    Workspace(WorkspaceError),
+    #[error("workspace preparation failed: {0}")]
+    Workspace(#[source] WorkspaceError),
     /// The selected plan target could not be matched to Moonraker inventory.
-    Preparation(PreparationError),
+    #[error("build preparation failed: {0}")]
+    Preparation(#[source] PreparationError),
     /// Klipper's service state could not be queried or changed.
-    Service(ServiceError),
+    #[error("Klipper service operation failed: {0}")]
+    Service(#[source] ServiceError),
     /// Klipper is not in a state that permits a controlled build transition.
+    #[error("Klipper must be active or inactive, found {0:?}")]
     UnexpectedKlipperState(ServiceState),
     /// Klipper's build pipeline failed.
-    Build(BuildError),
+    #[error("Klipper build failed: {0}")]
+    Build(#[source] BuildError),
 }
 
 /// Failure while executing an approved build and its caller-supplied flash operation.
+// Not thiserror-derived: no consumer needs Display/Error, and an unconstrained E lets
+// execute_and_flash accept non-Error callback error types (see tests/build_coordinator.rs).
 #[derive(Debug)]
 pub enum FlashCoordinatorError<E> {
     /// The service transition or Klipper build failed.
@@ -94,35 +99,6 @@ pub enum UpdateProgress {
     BootloaderReady,
     /// The firmware transfer is beginning.
     StartingFlash,
-}
-
-impl fmt::Display for CoordinatorError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Workspace(error) => write!(formatter, "workspace preparation failed: {error}"),
-            Self::Preparation(error) => write!(formatter, "build preparation failed: {error}"),
-            Self::Service(error) => write!(formatter, "Klipper service operation failed: {error}"),
-            Self::UnexpectedKlipperState(state) => {
-                write!(
-                    formatter,
-                    "Klipper must be active or inactive, found {state:?}"
-                )
-            }
-            Self::Build(error) => write!(formatter, "Klipper build failed: {error}"),
-        }
-    }
-}
-
-impl StdError for CoordinatorError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Workspace(error) => Some(error),
-            Self::Preparation(error) => Some(error),
-            Self::Service(error) => Some(error),
-            Self::Build(error) => Some(error),
-            Self::UnexpectedKlipperState(_) => None,
-        }
-    }
 }
 
 /// Coordinates the explicit Klipper service boundary and a selected firmware build.

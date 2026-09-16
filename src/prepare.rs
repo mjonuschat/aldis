@@ -1,4 +1,3 @@
-use std::fmt;
 use std::path::PathBuf;
 
 use crate::build::BuildRequest;
@@ -19,13 +18,16 @@ pub struct PreparedBuild {
 }
 
 /// Errors while matching a requested build to the discovered update plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PreparationError {
     /// The requested MCU is absent from the current update plan.
+    #[error("MCU target {0:?} is not in the update plan")]
     TargetNotPlanned(String),
     /// The plan refers to an MCU no longer present in the inventory.
+    #[error("MCU target {0:?} is no longer present in Moonraker inventory")]
     TargetNotDiscovered(String),
     /// The plan and live inventory disagree about the selected MCU type.
+    #[error("MCU target {target_name:?} changed from {planned_mcu:?} to {discovered_mcu:?}")]
     McuMismatch {
         /// Moonraker's MCU object name.
         target_name: String,
@@ -35,6 +37,9 @@ pub enum PreparationError {
         discovered_mcu: String,
     },
     /// The plan and live inventory disagree about the selected transport.
+    #[error(
+        "MCU target {target_name:?} transport changed from {planned_transport:?} to {discovered_transport:?}"
+    )]
     TransportMismatch {
         /// Moonraker's MCU object name.
         target_name: String,
@@ -44,41 +49,6 @@ pub enum PreparationError {
         discovered_transport: Option<McuTransport>,
     },
 }
-
-impl fmt::Display for PreparationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TargetNotPlanned(target_name) => {
-                write!(
-                    formatter,
-                    "MCU target {target_name:?} is not in the update plan"
-                )
-            }
-            Self::TargetNotDiscovered(target_name) => write!(
-                formatter,
-                "MCU target {target_name:?} is no longer present in Moonraker inventory"
-            ),
-            Self::McuMismatch {
-                target_name,
-                planned_mcu,
-                discovered_mcu,
-            } => write!(
-                formatter,
-                "MCU target {target_name:?} changed from {planned_mcu:?} to {discovered_mcu:?}"
-            ),
-            Self::TransportMismatch {
-                target_name,
-                planned_transport,
-                discovered_transport,
-            } => write!(
-                formatter,
-                "MCU target {target_name:?} transport changed from {planned_transport:?} to {discovered_transport:?}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for PreparationError {}
 
 /// Prepares a build request without writing files or invoking Klipper.
 pub fn prepare_build(
