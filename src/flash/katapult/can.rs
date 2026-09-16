@@ -27,19 +27,22 @@ pub struct CanFrame {
 }
 
 /// An invalid classic CAN frame or Katapult CAN address.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CanError {
     /// The identifier does not fit a standard 11-bit CAN frame.
+    #[error("CAN identifier {id:#x} does not fit a standard 11-bit CAN frame")]
     IdentifierOutOfRange {
         /// The rejected identifier.
         id: u16,
     },
     /// The payload exceeds classic CAN's eight-byte data limit.
+    #[error("CAN payload of {length} bytes exceeds the classic CAN limit of 8 bytes")]
     PayloadTooLarge {
         /// The rejected payload length.
         length: usize,
     },
     /// The supplied UUID does not fit Katapult's six-byte CAN UUID field.
+    #[error("CAN UUID {uuid:#x} does not fit Katapult's six-byte CAN UUID field")]
     UuidOutOfRange {
         /// The rejected UUID.
         uuid: u64,
@@ -62,6 +65,9 @@ pub trait CanIo {
 }
 
 /// An error while exchanging Katapult protocol frames over CAN.
+// Not thiserror-derived: bounding E to std::error::Error would require bounding
+// CanIo::Error too, which tests/katapult_can.rs and tests/katapult_bootstrap.rs's
+// ScriptedCanIo (Error = ()) can't satisfy.
 #[derive(Debug)]
 pub enum CanTransportError<E> {
     /// The underlying CAN implementation failed.

@@ -11,6 +11,9 @@ use crate::flash::usb_bootloader::{
 };
 
 /// A failure while transitioning a CAN MCU into a ready Katapult session.
+// Not thiserror-derived: bounding E to std::error::Error would require bounding
+// CanIo::Error too, which tests/katapult_can.rs and tests/katapult_bootstrap.rs's
+// ScriptedCanIo (Error = ()) can't satisfy.
 #[derive(Debug)]
 pub enum CanBootstrapError<E> {
     /// The configured CAN UUID cannot be represented by Katapult.
@@ -20,16 +23,20 @@ pub enum CanBootstrapError<E> {
 }
 
 /// A failure while creating a ready serial Katapult backend.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SerialBootstrapError {
     /// The running USB device did not re-enumerate as Katapult.
+    #[error("running USB device did not re-enumerate as Katapult: {0:?}")]
     Bootloader(UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
-    Selection(UsbBootloaderSelectionError),
+    #[error("observed bootloader is unsupported or cannot be used safely: {0}")]
+    Selection(#[source] UsbBootloaderSelectionError),
     /// A supported but non-Katapult bootloader appeared at the selected topology.
+    #[error("expected a Katapult bootloader, found {0:?} at the selected topology")]
     UnexpectedBootloader(SelectedUsbBootloader),
     /// The detected Katapult serial device could not be opened.
-    Open(serialport::Error),
+    #[error("could not open the detected Katapult serial device: {0}")]
+    Open(#[source] serialport::Error),
 }
 
 /// Enters Katapult on a USB serial target and opens a ready serial backend.
