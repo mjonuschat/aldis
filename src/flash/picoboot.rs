@@ -5,10 +5,6 @@ use std::time::Duration;
 
 use picoboot::{Access, Picoboot};
 
-use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
-use crate::flash::usb_bootloader::{
-    SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
-};
 use crate::flash::{FlashPort, FlashResult};
 
 /// A decoded contiguous UF2 image suitable for PicoBoot flash commands.
@@ -52,47 +48,6 @@ pub enum PicoBootError {
     /// Flash readback differed from the supplied UF2 image.
     #[error("flash readback did not match the written UF2 image")]
     VerificationMismatch,
-}
-
-/// Requests BOOTSEL through a USB serial connection and flashes it.
-///
-/// The caller must stop Klipper before calling this function so the serial device's
-/// exclusive lock is released.
-pub fn bootstrap_system_serial(
-    running_device: &Path,
-    firmware: &[u8],
-    timeout: Duration,
-    poll_interval: Duration,
-) -> Result<FlashResult, PicoBootBootstrapError> {
-    let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
-        running_device,
-        timeout,
-        poll_interval,
-    )
-    .map_err(PicoBootBootstrapError::Bootloader)?;
-    let bootloader_path =
-        match select_usb_bootloader(bootloader).map_err(PicoBootBootstrapError::Selection)? {
-            SelectedUsbBootloader::PicoBoot { sysfs_path } => sysfs_path,
-            bootloader => return Err(PicoBootBootstrapError::UnexpectedBootloader(bootloader)),
-        };
-    flash_system_at_path(&bootloader_path, firmware).map_err(PicoBootBootstrapError::Flash)
-}
-
-/// Failure while transitioning a running serial RP MCU to PicoBoot.
-#[derive(Debug, thiserror::Error)]
-pub enum PicoBootBootstrapError {
-    /// The running device did not re-enumerate as PicoBoot.
-    #[error("device did not re-enumerate as a USB bootloader: {0}")]
-    Bootloader(#[source] UsbBootloaderError),
-    /// The observed bootloader is unsupported or cannot be used safely.
-    #[error("could not select a USB bootloader backend: {0}")]
-    Selection(#[source] UsbBootloaderSelectionError),
-    /// A supported but non-PicoBoot bootloader appeared at the selected topology.
-    #[error("expected a PicoBoot bootloader, found {0:?}")]
-    UnexpectedBootloader(SelectedUsbBootloader),
-    /// The native transfer failed after PicoBoot appeared.
-    #[error(transparent)]
-    Flash(PicoBootError),
 }
 
 /// Decodes one contiguous RP2040 UF2 image.

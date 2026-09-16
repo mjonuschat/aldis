@@ -1,16 +1,11 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-nusb`.
 
 use std::path::Path;
-use std::time::Duration;
 
 use dfu_nusb::DfuNusb;
 use nusb::MaybeFuture;
 use nusb::transfer::TransferError;
 
-use crate::flash::katapult::serial::{SystemSerialIo, UsbBootloaderError};
-use crate::flash::usb_bootloader::{
-    SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
-};
 use crate::flash::{FlashPort, FlashResult};
 
 /// An explicitly selected STM32 DFU USB identity.
@@ -91,51 +86,6 @@ pub enum Stm32DfuError {
     /// Uploaded bytes did not match the firmware artifact.
     #[error("flash readback did not match the written firmware")]
     VerificationMismatch,
-}
-
-/// Failure while transitioning a running STM32 USB serial MCU to ROM DFU.
-#[derive(Debug, thiserror::Error)]
-pub enum Stm32DfuBootstrapError {
-    /// The running USB serial MCU did not re-enumerate as STM32 ROM DFU.
-    #[error(transparent)]
-    Bootloader(UsbBootloaderError),
-    /// The observed bootloader is unsupported or cannot be used safely.
-    #[error(transparent)]
-    Selection(UsbBootloaderSelectionError),
-    /// A supported but non-STM32 bootloader appeared at the selected topology.
-    #[error("expected STM32 ROM DFU but found {0:?}")]
-    UnexpectedBootloader(SelectedUsbBootloader),
-    /// Native DfuSe flashing failed after ROM DFU appeared.
-    #[error(transparent)]
-    Flash(Stm32DfuError),
-}
-
-/// Requests ROM DFU through a running USB serial STM32 MCU and flashes it.
-pub fn bootstrap_system_serial(
-    running_device: &Path,
-    target: Stm32DfuTarget,
-    firmware: &[u8],
-    timeout: Duration,
-    poll_interval: Duration,
-) -> Result<FlashResult, Stm32DfuBootstrapError> {
-    let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
-        running_device,
-        timeout,
-        poll_interval,
-    )
-    .map_err(Stm32DfuBootstrapError::Bootloader)?;
-    let bootloader_path =
-        match select_usb_bootloader(bootloader).map_err(Stm32DfuBootstrapError::Selection)? {
-            SelectedUsbBootloader::Stm32Dfu { sysfs_path } => sysfs_path,
-            bootloader => return Err(Stm32DfuBootstrapError::UnexpectedBootloader(bootloader)),
-        };
-    flash_system_at_path(
-        Stm32DfuDevice::ROM_BOOTLOADER,
-        &bootloader_path,
-        target,
-        firmware,
-    )
-    .map_err(Stm32DfuBootstrapError::Flash)
 }
 
 /// Finds exactly one internal-flash DFU device matching `identity`.
