@@ -1,5 +1,3 @@
-use std::error::Error as StdError;
-use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -72,26 +70,11 @@ impl CommandOutput {
 }
 
 /// Failure to start or wait for a build command.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CommandError {
     /// The operating system could not spawn or collect the process.
-    Spawn(io::Error),
-}
-
-impl fmt::Display for CommandError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Spawn(error) => write!(formatter, "could not run build command: {error}"),
-        }
-    }
-}
-
-impl StdError for CommandError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Spawn(error) => Some(error),
-        }
-    }
+    #[error("could not run build command: {0}")]
+    Spawn(#[source] io::Error),
 }
 
 /// Executes an explicit build command.
@@ -122,59 +105,37 @@ impl CommandPort for SystemCommandAdapter {
 }
 
 /// Errors while preparing or running Klipper's existing build pipeline.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BuildError {
     /// A required path has no parent directory or is not valid UTF-8 for Make.
+    #[error("invalid build request: {0}")]
     InvalidRequest(String),
     /// The host filesystem operation failed.
+    #[error("could not {action}: {source}")]
     Io {
         /// The operation being attempted.
         action: &'static str,
         /// The underlying filesystem failure.
+        #[source]
         source: io::Error,
     },
     /// The command runner could not invoke Make.
+    #[error("could not invoke {}: {source}", command.program)]
     CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
         /// The underlying runner failure.
+        #[source]
         source: CommandError,
     },
     /// Make returned an unsuccessful exit status.
+    #[error("{} failed: {}", command.program, String::from_utf8_lossy(&output.stderr).trim())]
     CommandFailed {
         /// The command that failed.
         command: Box<BuildCommand>,
         /// Captured command output for an actionable report.
         output: Box<CommandOutput>,
     },
-}
-
-impl fmt::Display for BuildError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidRequest(message) => write!(formatter, "invalid build request: {message}"),
-            Self::Io { action, source } => write!(formatter, "could not {action}: {source}"),
-            Self::CommandPort { command, source } => {
-                write!(formatter, "could not invoke {}: {source}", command.program)
-            }
-            Self::CommandFailed { command, output } => write!(
-                formatter,
-                "{} failed: {}",
-                command.program,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        }
-    }
-}
-
-impl StdError for BuildError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::CommandPort { source, .. } => Some(source),
-            Self::InvalidRequest(_) | Self::CommandFailed { .. } => None,
-        }
-    }
 }
 
 /// Invokes Klipper's Kconfig and firmware build commands through a command runner.

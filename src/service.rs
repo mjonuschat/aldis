@@ -1,6 +1,3 @@
-use std::error::Error as StdError;
-use std::fmt;
-
 use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 
 const KLIPPER_UNIT: &str = "klipper";
@@ -21,47 +18,25 @@ pub enum ServiceState {
 }
 
 /// Errors while querying or changing Klipper's systemd service state.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     /// The host could not run a systemctl command.
+    #[error("could not invoke {}: {source}", command.program)]
     CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
         /// The underlying runner failure.
+        #[source]
         source: CommandError,
     },
     /// systemctl rejected a requested state change.
+    #[error("{} failed: {}", command.program, String::from_utf8_lossy(&output.stderr).trim())]
     CommandFailed {
         /// The systemctl command that failed.
         command: Box<BuildCommand>,
         /// Captured command output.
         output: Box<CommandOutput>,
     },
-}
-
-impl fmt::Display for ServiceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CommandPort { command, source } => {
-                write!(formatter, "could not invoke {}: {source}", command.program)
-            }
-            Self::CommandFailed { command, output } => write!(
-                formatter,
-                "{} failed: {}",
-                command.program,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        }
-    }
-}
-
-impl StdError for ServiceError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::CommandPort { source, .. } => Some(source),
-            Self::CommandFailed { .. } => None,
-        }
-    }
 }
 
 /// A testable systemd controller for Klipper's service lifecycle.
