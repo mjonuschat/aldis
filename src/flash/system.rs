@@ -26,10 +26,11 @@ use crate::flash::usb_bootloader::{
     select_usb_bootloader,
 };
 use crate::flash::usb_sysfs::usb_device_ancestor;
+use crate::logging::LoggingCommandAdapter;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
-use crate::run_log::{LoggingCommandAdapter, RunLog};
+use crate::run_log::RunLog;
 
 /// A selected USB transfer route bound to the observed USB topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,8 +337,8 @@ fn flash_observed_usb(
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
             match command_log {
-                Some(log) => BossaAdapter::new(
-                    LoggingCommandAdapter::new(SystemCommandAdapter, log.clone()),
+                Some(_) => BossaAdapter::new(
+                    LoggingCommandAdapter::new(SystemCommandAdapter),
                     &options.bossac_program,
                     &serial_device,
                     target,

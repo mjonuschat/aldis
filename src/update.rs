@@ -15,10 +15,11 @@ use aldis::eligibility::{
 };
 use aldis::flash::katapult::system::SystemKatapultOptions;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
+use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
 use aldis::plan::build_update_plan;
 use aldis::retry::retry_until_available;
-use aldis::run_log::{LoggingCommandAdapter, RunLog};
+use aldis::run_log::RunLog;
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::UpdateArgs;
@@ -113,8 +114,8 @@ fn run_update(
     }
     let coordinator = BuildCoordinator::new(
         &source,
-        LoggingCommandAdapter::new(SystemCommandAdapter, run_log.clone()),
-        LoggingCommandAdapter::new(SystemCommandAdapter, run_log.clone()),
+        LoggingCommandAdapter::new(SystemCommandAdapter),
+        LoggingCommandAdapter::new(SystemCommandAdapter),
     );
     let options = SystemFlashOptions {
         katapult: SystemKatapultOptions {

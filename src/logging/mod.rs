@@ -3,6 +3,10 @@ use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
+pub mod command;
+
+pub use command::LoggingCommandAdapter;
+
 fn stderr_level_for(verbosity: u8) -> tracing::Level {
     match verbosity {
         0 => tracing::Level::WARN,
