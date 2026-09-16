@@ -15,25 +15,31 @@ pub struct BossaTarget {
 }
 
 /// A native BOSSA transfer failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BossaError {
     /// Embedded Kconfig did not select exactly one BOSSA-compatible flash start.
+    #[error("Kconfig does not select exactly one BOSSA flash start offset")]
     InvalidFlashStartConfiguration,
     /// The temporary firmware file could not be written or removed.
+    #[error("could not {action}: {source}")]
     Io {
         /// The operation being attempted.
         action: &'static str,
         /// The underlying filesystem failure.
+        #[source]
         source: std::io::Error,
     },
     /// The command runner could not invoke `bossac`.
+    #[error("could not invoke {}: {source}", command.program)]
     CommandPort {
         /// The command that could not be invoked.
         command: BuildCommand,
         /// The underlying runner failure.
+        #[source]
         source: CommandError,
     },
     /// `bossac` returned an unsuccessful exit status.
+    #[error("{} failed: {}", command.program, String::from_utf8_lossy(&output.stderr).trim())]
     CommandFailed {
         /// The command that failed.
         command: Box<BuildCommand>,

@@ -21,28 +21,36 @@ pub struct Uf2Image {
 }
 
 /// UF2 decoding error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Uf2Error {
     /// The image does not consist of complete UF2 blocks.
+    #[error("UF2 image length is not a multiple of the 512-byte block size")]
     InvalidLength,
     /// A UF2 block is malformed or not a main-flash RP2040 block.
+    #[error("UF2 image contains a malformed or non-RP2040 block")]
     InvalidBlock,
     /// UF2 blocks do not form a contiguous image.
+    #[error("UF2 image blocks do not form a contiguous address range")]
     NonContiguous,
 }
 
 /// PicoBoot transfer failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PicoBootError {
     /// The Klipper artifact was not a supported UF2 image.
-    Uf2(Uf2Error),
+    #[error("firmware is not a supported UF2 image: {0}")]
+    Uf2(#[source] Uf2Error),
     /// No RP2040 or RP2350 ROM bootloader is available.
+    #[error("no RP2040 or RP2350 PicoBoot device found")]
     DeviceNotFound,
     /// More than one PicoBoot target is present, making selection unsafe.
+    #[error("{0} PicoBoot devices found, expected exactly one")]
     AmbiguousDevice(usize),
     /// PicoBoot rejected a USB operation.
-    Transport(picoboot::Error),
+    #[error("PicoBoot transport error: {0}")]
+    Transport(#[source] picoboot::Error),
     /// Flash readback differed from the supplied UF2 image.
+    #[error("flash readback did not match the written UF2 image")]
     VerificationMismatch,
 }
 
@@ -71,16 +79,20 @@ pub fn bootstrap_system_serial(
 }
 
 /// Failure while transitioning a running serial RP MCU to PicoBoot.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PicoBootBootstrapError {
     /// The running device did not re-enumerate as PicoBoot.
+    #[error("device did not re-enumerate as a USB bootloader: {0:?}")]
     Bootloader(UsbBootloaderError),
     /// The observed bootloader is unsupported or cannot be used safely.
+    #[error("could not select a USB bootloader backend: {0:?}")]
     Selection(UsbBootloaderSelectionError),
     /// A supported but non-PicoBoot bootloader appeared at the selected topology.
+    #[error("expected a PicoBoot bootloader, found {0:?}")]
     UnexpectedBootloader(SelectedUsbBootloader),
     /// The native transfer failed after PicoBoot appeared.
-    Flash(PicoBootError),
+    #[error("PicoBoot flash failed: {0}")]
+    Flash(#[source] PicoBootError),
 }
 
 /// Decodes one contiguous RP2040 UF2 image.
