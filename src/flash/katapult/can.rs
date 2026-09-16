@@ -284,13 +284,13 @@ pub struct SocketCanIo {
 impl SocketCanIo {
     /// Opens a SocketCAN interface and configures a bounded receive timeout.
     pub fn open(interface: &str, read_timeout: Duration) -> io::Result<Self> {
-        let socket = CanSocket::open(interface)?;
-        socket.set_read_timeout(read_timeout)?;
         tracing::debug!(
             can_interface = interface,
             read_timeout_ms = read_timeout.as_millis() as u64,
             "opening katapult can session"
         );
+        let socket = CanSocket::open(interface)?;
+        socket.set_read_timeout(read_timeout)?;
         Ok(Self { socket })
     }
 }
