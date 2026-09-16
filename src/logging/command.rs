@@ -34,7 +34,7 @@ impl<R: CommandPort> CommandPort for LoggingCommandAdapter<R> {
                 Ok(output)
             }
             Err(error) => {
-                tracing::info!(error = %crate::error_chain(&error), "command failed to start");
+                tracing::error!(error = %crate::error_chain(&error), "command failed to start");
                 Err(error)
             }
         }
