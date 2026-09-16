@@ -40,10 +40,9 @@ pub trait SerialIo {
 }
 
 /// An error while exchanging Katapult protocol frames over serial.
-///
-/// Not thiserror-derived: bounding `E` to `std::error::Error` would require
-/// bounding `SerialIo::Error` too, which `tests/katapult_serial.rs`'s
-/// `ScriptedSerial` (`Error = ()`) can't satisfy.
+// Not thiserror-derived: bounding E to std::error::Error would require bounding
+// SerialIo::Error too, which tests/katapult_serial.rs's ScriptedSerial
+// (Error = ()) can't satisfy.
 #[derive(Debug)]
 pub enum SerialTransportError<E> {
     /// The underlying serial implementation failed.

@@ -75,6 +75,9 @@ pub enum SystemFlashProgress {
 }
 
 /// A selected update cannot be dispatched to a native backend.
+// Not thiserror-derived: its Display impl pattern-matches into nested variants for
+// friendlier user-facing messages, which a flat per-variant derive can't express — see
+// docs/superpowers/specs/2026-09-16-observability-migration-design.md.
 #[derive(Debug)]
 pub enum SystemFlashError {
     /// The prepared target did not retain a configured transport.
@@ -109,9 +112,6 @@ pub enum SystemFlashError {
     CanFlash(KatapultFlashError),
 }
 
-// Not thiserror-derived: this pattern-matches into nested variants for friendlier
-// user-facing messages, which a flat per-variant derive can't express — see
-// docs/superpowers/specs/2026-09-16-observability-migration-design.md.
 impl fmt::Display for SystemFlashError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::flash::katapult::Command;

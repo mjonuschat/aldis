@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use anyhow::Context;
+
 use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
@@ -67,7 +69,8 @@ fn run_update(
         if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
             ui.action("refreshing configured Klipper upstream");
             let refreshed = refresh_checkout(&source)
-                .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))?;
+                .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))
+                .context("failed to refresh the configured Klipper checkout")?;
             ui.action(&format!("checkout refresh: {}", refresh_label(&refreshed)));
             Some(refreshed)
         } else {
@@ -76,7 +79,8 @@ fn run_update(
     ui.action("discovering MCUs from Moonraker");
     let inventory = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker)
         .discover_mcus()
-        .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))?;
+        .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))
+        .context("failed to discover MCUs from Moonraker")?;
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
     ui.block(&format_status(
@@ -142,7 +146,8 @@ fn run_update(
         }
         let pending = coordinator
             .prepare(&inventory, &plan, workspace, &name, arguments.clean)
-            .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))?;
+            .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))
+            .with_context(|| format!("failed to prepare {name} for flashing"))?;
         match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
             options.clone(),

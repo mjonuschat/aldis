@@ -72,13 +72,13 @@ pub enum Stm32DfuError {
     Discovery(#[source] nusb::Error),
     /// No DFU device matched the explicitly configured USB identity.
     #[error(
-        "no STM32 DFU device found for vendor 0x{:04x} product 0x{:04x}",
+        "no STM32 DFU device found for vendor {:#06x} product {:#06x}",
         .0.vendor_id, .0.product_id
     )]
     DeviceNotFound(Stm32DfuDevice),
     /// More than one DFU device matched the configured USB identity.
     #[error(
-        "{matches} STM32 DFU devices matched vendor 0x{:04x} product 0x{:04x}, expected exactly one",
+        "{matches} STM32 DFU devices matched vendor {:#06x} product {:#06x}, expected exactly one",
         device.vendor_id, device.product_id
     )]
     AmbiguousDevice {
