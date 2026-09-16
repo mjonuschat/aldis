@@ -72,7 +72,10 @@ fn run_update(
         if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
             ui.action("refreshing configured Klipper upstream");
             let refreshed = refresh_checkout(&source)
-                .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))
+                .inspect_err(|error| {
+                    tracing::error!(?error, "checkout refresh failed");
+                    ui.action(&format!("error: {}", aldis::error_chain(error)));
+                })
                 .context("failed to refresh the configured Klipper checkout")?;
             ui.action(&format!("checkout refresh: {}", refresh_label(&refreshed)));
             Some(refreshed)
@@ -82,7 +85,10 @@ fn run_update(
     ui.action("discovering MCUs from Moonraker");
     let inventory = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker)
         .discover_mcus()
-        .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))
+        .inspect_err(|error| {
+            tracing::error!(?error, "Moonraker discovery failed");
+            ui.action(&format!("error: {}", aldis::error_chain(error)));
+        })
         .context("failed to discover MCUs from Moonraker")?;
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
@@ -149,7 +155,10 @@ fn run_update(
         }
         let pending = coordinator
             .prepare(&inventory, &plan, workspace, &name, arguments.clean)
-            .inspect_err(|error| ui.action(&format!("error: {}", aldis::error_chain(error))))
+            .inspect_err(|error| {
+                tracing::error!(?error, "flash preparation failed");
+                ui.action(&format!("error: {}", aldis::error_chain(error)));
+            })
             .with_context(|| format!("failed to prepare {name} for flashing"))?;
         match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
@@ -161,6 +170,7 @@ fn run_update(
                 ui.finish_success(format!("flashed {} bytes", v.flash.padded_bytes));
                 ui.begin("waiting for MCU restart");
                 if let Err(error) = wait_for_application(mcu) {
+                    tracing::error!(?error, "waiting for MCU restart failed");
                     ui.finish_failure();
                     ui.action(&format!("error: {error}"));
                     return Err(anyhow::anyhow!(error));
@@ -170,7 +180,7 @@ fn run_update(
             }
             Err(error) => {
                 ui.finish_failure();
-                tracing::debug!(?error, "flash failed");
+                tracing::error!(?error, "flash failed");
                 let message = update_failure(error);
                 ui.action(&format!("error: {message}"));
                 return Err(anyhow::anyhow!(message));
@@ -185,6 +195,7 @@ fn run_update(
     ui.heading("Finishing update");
     ui.begin("starting Klipper");
     if let Err(error) = coordinator.start_after_batch() {
+        tracing::error!(?error, "starting Klipper after batch failed");
         ui.finish_failure();
         ui.action(&format!("error: {}", aldis::error_chain(&error)));
         return Err(error.into());
@@ -196,6 +207,7 @@ fn run_update(
         &accepted,
         &checkout,
     ) {
+        tracing::error!(?error, "waiting for updated MCUs to reconnect failed");
         ui.finish_failure();
         ui.action(&format!("error: {error}"));
         return Err(anyhow::anyhow!(error));
