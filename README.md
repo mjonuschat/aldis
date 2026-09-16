@@ -1,14 +1,16 @@
 # aldis
 
-A tool for updating MCU firmware, named after the signaling lamp.
+A tool for updating MCU firmware. `aldis` is named after the Aldis lamp,
+the signal lamp ships use to flash messages to each other.
 
 ## What It Does
 
-`aldis` discovers the MCUs configured in a running Klipper/Moonraker
-installation, compares each one's running firmware against the local Klipper
-source checkout, and builds and flashes the ones that are out of date. It
-stops Klipper only when a build or flash is about to happen, and it reports
-its plan before changing anything.
+`aldis` needs no per-MCU configuration: it discovers every supported MCU
+already configured in a running Klipper/Moonraker installation, compares
+each one's running firmware against the local Klipper source checkout, and
+builds and flashes the ones that are out of date. It stops Klipper only
+when a build or flash is about to happen, and it reports its plan before
+changing anything.
 
 ## Requirements
 
