@@ -193,11 +193,11 @@ impl SystemSerialIo {
     ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
         Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, |usb_path| {
             let identity = usb_identity(usb_path);
-            Some(ObservedUsbBootloader {
+            usb_tty(usb_path).map(|serial_device| ObservedUsbBootloader {
                 sysfs_path: usb_path.to_path_buf(),
                 usb_id: identity.usb_id,
                 manufacturer: identity.manufacturer,
-                serial_device: usb_tty(usb_path),
+                serial_device: Some(serial_device),
             })
         })
     }
@@ -231,12 +231,13 @@ impl SystemSerialIo {
             let identity = usb_identity(usb_path);
             if (identity.usb_id != initial_usb_id || identity.manufacturer != initial_manufacturer)
                 && identity.is_complete()
+                && let Some(serial_device) = usb_tty(usb_path)
             {
                 Ok(ObservedUsbBootloader {
                     sysfs_path: usb_path.to_path_buf(),
                     usb_id: identity.usb_id,
                     manufacturer: identity.manufacturer,
-                    serial_device: usb_tty(usb_path),
+                    serial_device: Some(serial_device),
                 })
             } else {
                 tracing::debug!(
@@ -401,7 +402,11 @@ impl SerialIo for SystemSerialIo {
 
 #[cfg(test)]
 mod tests {
-    use super::UsbIdentity;
+    use super::{SystemSerialIo, UsbIdentity};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn rejects_the_transient_empty_usb_identity_during_disconnect() {
@@ -419,5 +424,60 @@ mod tests {
             }
             .is_complete()
         );
+    }
+
+    #[test]
+    fn waits_for_the_tty_to_appear_after_the_usb_identity_re_enumerates() {
+        let usb_path = unique_temporary_path();
+        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
+        write_identity(&usb_path, "1d50:6177", "openmoko, inc.");
+
+        let watched_path = usb_path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            write_tty(&watched_path, "ttyACM0");
+        });
+
+        let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            "2e8a:000c",
+            "raspberry pi",
+            Duration::from_millis(500),
+            Duration::from_millis(5),
+        )
+        .expect("bootloader should eventually be observed");
+
+        writer.join().expect("writer thread should not panic");
+        assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
+
+        fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    fn write_identity(usb_path: &std::path::Path, usb_id: &str, manufacturer: &str) {
+        let (vendor, product) = usb_id.split_once(':').expect("usb id has vendor:product");
+        fs::write(usb_path.join("idVendor"), format!("{vendor}\n")).expect("write idVendor");
+        fs::write(usb_path.join("idProduct"), format!("{product}\n")).expect("write idProduct");
+        fs::write(usb_path.join("manufacturer"), format!("{manufacturer}\n"))
+            .expect("write manufacturer");
+    }
+
+    fn write_tty(usb_path: &std::path::Path, tty: &str) {
+        let interface = usb_path.join(format!(
+            "{}:1.0",
+            usb_path.file_name().unwrap().to_string_lossy()
+        ));
+        let tty_dir = interface.join("tty").join(tty);
+        fs::create_dir_all(tty_dir).expect("create tty fixture");
+    }
+
+    fn unique_temporary_path() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "aldis-katapult-serial-{}-{nonce}",
+            std::process::id()
+        ))
     }
 }
