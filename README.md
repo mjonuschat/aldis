@@ -71,6 +71,16 @@ place without changing anything.
 above). `--pull` and `--force` also work with specific `<mcu>` targets;
 `--auto` already implies both and cannot be combined with them.
 
+### Logging
+
+Every command writes a complete diagnostic log regardless of verbosity.
+`update` prints its log path (`<workspace>/run.log`) at the end of the run;
+`status`/`inspect`/`setup` write to a per-invocation file under the system
+temp directory. Add `-v`/`-vv` to see more detail on the terminal as well
+(the log file always has full detail); `RUST_LOG` (standard
+[`tracing_subscriber`](https://docs.rs/tracing-subscriber) syntax, e.g.
+`RUST_LOG=debug`) overrides `-v`/`-vv` for terminal output.
+
 ## Supported Flash Backends
 
 These bootloaders are entered and flashed unattended, directly from the
