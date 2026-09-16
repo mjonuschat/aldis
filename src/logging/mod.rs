@@ -28,7 +28,7 @@ pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
         .with_filter(stderr_filter);
 
     let file = std::fs::OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .append(true)
         .open(run_log_path)?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
