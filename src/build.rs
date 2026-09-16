@@ -14,6 +14,8 @@ pub struct BuildRequest {
     pub config_path: PathBuf,
     /// Destination for the immutable firmware artifact produced by this build.
     pub artifact_path: PathBuf,
+    /// Discard the checkout's existing build output before configuring.
+    pub clean: bool,
 }
 
 /// The firmware artifact copied from Klipper's build output.
@@ -210,9 +212,6 @@ where
         let artifact_parent = request.artifact_path.parent().ok_or_else(|| {
             BuildError::InvalidRequest("artifact_path must have a parent directory".to_owned())
         })?;
-        let config_path = request.config_path.to_str().ok_or_else(|| {
-            BuildError::InvalidRequest("config_path must be valid UTF-8 for Make".to_owned())
-        })?;
 
         fs::create_dir_all(config_parent).map_err(|source| BuildError::Io {
             action: "create the temporary Kconfig directory",
@@ -223,18 +222,43 @@ where
             source,
         })?;
 
+        // Klipper's Makefile rebuilds board-link/autoconf.h (and drops .d dependency
+        // files) whenever KCONFIG_CONFIG's mtime moves, which turns every build into
+        // a full rebuild if we hand it a fresh path every run. Writing in place, and
+        // only when the content actually changed, keeps `make`'s own incremental
+        // tracking effective across repeated updates of the same MCU.
+        let checkout_config_path = self.source_dir.join(".config");
+        write_if_changed(&checkout_config_path, &request.kconfig).map_err(|source| {
+            BuildError::Io {
+                action: "write Klipper's build Kconfig",
+                source,
+            }
+        })?;
+        let checkout_config_path_str = checkout_config_path.to_str().ok_or_else(|| {
+            BuildError::InvalidRequest(
+                "the Klipper checkout path must be valid UTF-8 for Make".to_owned(),
+            )
+        })?;
+
+        if request.clean {
+            self.run_make(vec!["clean".to_owned()])?;
+        }
+
         progress(BuildProgress::Configuring);
         self.run_make(vec![
             "olddefconfig".to_owned(),
-            kconfig_argument(config_path),
+            kconfig_argument(checkout_config_path_str),
         ])?;
         let expanded_kconfig =
-            fs::read_to_string(&request.config_path).map_err(|source| BuildError::Io {
+            fs::read_to_string(&checkout_config_path).map_err(|source| BuildError::Io {
                 action: "read the expanded Kconfig",
                 source,
             })?;
         progress(BuildProgress::Compiling);
-        self.run_make(vec![kconfig_argument(config_path)])?;
+        self.run_make(vec![
+            kconfig_argument(checkout_config_path_str),
+            format!("-j{}", parallel_jobs()),
+        ])?;
 
         fs::create_dir_all(artifact_parent).map_err(|source| BuildError::Io {
             action: "create the artifact directory",
@@ -302,4 +326,17 @@ fn output_artifact_name(kconfig: &str) -> &'static str {
 
 fn kconfig_argument(config_path: &str) -> String {
     format!("KCONFIG_CONFIG={config_path}")
+}
+
+/// Writes `content` to `path` only if it differs from what is already there, so an
+/// unchanged Kconfig leaves the file's mtime alone and `make` sees nothing to redo.
+fn write_if_changed(path: &std::path::Path, content: &str) -> io::Result<()> {
+    if fs::read_to_string(path).is_ok_and(|existing| existing == content) {
+        return Ok(());
+    }
+    fs::write(path, content)
+}
+
+fn parallel_jobs() -> std::num::NonZeroUsize {
+    std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN)
 }

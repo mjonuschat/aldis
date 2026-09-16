@@ -132,13 +132,14 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
                 continue;
             }
         }
-        let pending = match coordinator.prepare(&inventory, &plan, &workspace, &name) {
-            Ok(v) => v,
-            Err(error) => {
-                ui.action(&format!("error: {error}"));
-                return fail(error.to_string());
-            }
-        };
+        let pending =
+            match coordinator.prepare(&inventory, &plan, &workspace, &name, arguments.clean) {
+                Ok(v) => v,
+                Err(error) => {
+                    ui.action(&format!("error: {error}"));
+                    return fail(error.to_string());
+                }
+            };
         match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
             options.clone(),

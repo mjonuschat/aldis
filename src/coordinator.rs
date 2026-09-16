@@ -151,6 +151,7 @@ where
         plan: &UpdatePlan,
         workspace: &RunWorkspace,
         target_name: &str,
+        clean: bool,
     ) -> Result<PendingBuild, CoordinatorError> {
         let paths = workspace
             .build_paths(target_name)
@@ -161,6 +162,7 @@ where
             target_name,
             paths.config_path,
             paths.artifact_path,
+            clean,
         )
         .map_err(CoordinatorError::Preparation)?;
 

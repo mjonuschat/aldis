@@ -30,7 +30,7 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
         BuildCoordinator::new(&source_dir, make_runner.clone(), service_runner.clone());
 
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead")
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
         .expect("build should prepare");
     assert!(
         pending
@@ -119,7 +119,7 @@ fn reports_build_phases_before_the_flash_callback() {
     ]);
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner);
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead")
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
         .expect("build should prepare");
     let mut phases = Vec::new();
 
@@ -200,7 +200,7 @@ fn does_not_restart_klipper_when_a_later_batch_flash_fails() {
     ]);
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead")
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
         .expect("prepare");
 
     assert!(

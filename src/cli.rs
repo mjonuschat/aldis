@@ -82,6 +82,9 @@ pub(crate) struct UpdateArgs {
     /// Fast-forward the configured Klipper checkout before assessing MCUs.
     #[arg(long)]
     pub(crate) pull: bool,
+    /// Discard Klipper's existing build output before compiling each target.
+    #[arg(long)]
+    pub(crate) clean: bool,
     #[command(flatten)]
     pub(crate) connection: ConnectionArgs,
     /// Directory retained for generated Kconfigs and firmware artifacts.
@@ -136,5 +139,17 @@ mod tests {
         };
         assert!(automatic.auto);
         assert!(Cli::try_parse_from(["aldis", "update", "--auto", "--pull"]).is_err());
+    }
+
+    #[test]
+    fn accepts_a_clean_flag_alongside_other_selectors() {
+        let CliCommand::Update(cleaned) =
+            Cli::try_parse_from(["aldis", "update", "--all", "--clean"])
+                .expect("parse clean update")
+                .command
+        else {
+            panic!("expected update command");
+        };
+        assert!(cleaned.clean);
     }
 }

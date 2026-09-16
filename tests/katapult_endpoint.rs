@@ -13,6 +13,7 @@ fn prepared(transport: Option<McuTransport>) -> PreparedBuild {
             kconfig: String::new(),
             config_path: PathBuf::from("toolhead/.config"),
             artifact_path: PathBuf::from("artifacts/toolhead.bin"),
+            clean: false,
         },
     }
 }

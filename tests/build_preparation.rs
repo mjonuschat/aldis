@@ -20,6 +20,7 @@ fn prepares_a_selected_planned_mcu_without_writing_files() {
         "mcu toolhead",
         config_path.clone(),
         artifact_path.clone(),
+        false,
     )
     .expect("planned toolhead should prepare");
 
@@ -58,6 +59,7 @@ fn rejects_a_transport_changed_since_the_update_was_planned() {
             "mcu toolhead",
             PathBuf::from("toolhead/.config"),
             PathBuf::from("artifacts/toolhead.bin"),
+            false,
         ),
         Err(PreparationError::TransportMismatch {
             target_name: "mcu toolhead".to_owned(),

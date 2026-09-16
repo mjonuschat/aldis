@@ -87,6 +87,7 @@ pub fn prepare_build(
     target_name: &str,
     config_path: PathBuf,
     artifact_path: PathBuf,
+    clean: bool,
 ) -> Result<PreparedBuild, PreparationError> {
     let planned_target = plan
         .targets
@@ -122,6 +123,7 @@ pub fn prepare_build(
             kconfig: discovered_mcu.kconfig.clone(),
             config_path,
             artifact_path,
+            clean,
         },
     })
 }
