@@ -63,6 +63,10 @@ commit_parsers = [
     { message = "^chore", group = "<!-- 7 -->⚙️ Miscellaneous Tasks" },
     { message = "^build", group = "<!-- 8 -->🏗️ Build" },
     { message = "^revert", group = "<!-- 9 -->◀️ Revert" },
+    # Safety net: a commit using a type outside the Conventional Commits set
+    # above (e.g. an invented "debug:") lands here instead of rendering as
+    # its own unstyled heading.
+    { message = ".*", group = "<!-- 7 -->⚙️ Miscellaneous Tasks" },
 ]
 # Give scopeless commits a default scope so they appear under a heading
 # Only matches "type: message" (no parenthesized scope present)
