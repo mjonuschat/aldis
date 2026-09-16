@@ -27,28 +27,27 @@ use crate::status::{checkout_label, format_status, refresh_label};
 use crate::ui::UpdateUi;
 
 pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
-    let workspace = match &arguments.workspace {
-        Some(path) => match RunWorkspace::create(path.clone()) {
-            Ok(workspace) => workspace,
-            Err(error) => return fail(aldis::error_chain(&error)),
-        },
-        None => match default_run_workspace() {
-            Ok(path) => RunWorkspace::adopt(path),
-            Err(error) => return fail(format!("could not create the run workspace: {error}")),
-        },
-    };
-    let run_log = match RunLog::create(workspace.root()) {
-        Ok(log) => log,
-        Err(error) => return fail(aldis::error_chain(&error)),
-    };
-    ui.set_log(run_log.clone());
-    match run_update(arguments, &mut ui, &workspace, &run_log) {
+    match update_and_report_run_log(arguments, &mut ui) {
         Ok(()) => ExitCode::SUCCESS,
-        // The run log is reported exactly once, here, rather than at every
-        // failure site, so it's always the last thing printed regardless of
-        // which step failed.
-        Err(error) => fail(format!("{error:#}\nRun log: {}", run_log.path().display())),
+        Err(error) => fail(format!("{error:#}")),
     }
+}
+
+fn update_and_report_run_log(arguments: UpdateArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
+    let workspace = match &arguments.workspace {
+        Some(path) => RunWorkspace::create(path.clone())?,
+        None => {
+            let path = default_run_workspace().context("could not create the run workspace")?;
+            RunWorkspace::adopt(path)
+        }
+    };
+    let run_log = RunLog::create(workspace.root())?;
+    ui.set_log(run_log.clone());
+    // The run log is reported exactly once, here, rather than at every
+    // failure site, so it's always the last thing printed regardless of
+    // which step failed.
+    run_update(arguments, ui, &workspace, &run_log)
+        .map_err(|error| anyhow::anyhow!("{error:#}\nRun log: {}", run_log.path().display()))
 }
 
 fn run_update(
