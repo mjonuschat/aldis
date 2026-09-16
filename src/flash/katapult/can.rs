@@ -147,6 +147,11 @@ impl KatapultCanAddress {
         if uuid > MAX_CAN_UUID {
             return Err(CanError::UuidOutOfRange { uuid });
         }
+        tracing::debug!(
+            uuid = %format_args!("{uuid:#x}"),
+            node_id = KATAPULT_NODE_ID,
+            "katapult can address resolved"
+        );
         Ok(Self { uuid })
     }
 
@@ -281,6 +286,11 @@ impl SocketCanIo {
     pub fn open(interface: &str, read_timeout: Duration) -> io::Result<Self> {
         let socket = CanSocket::open(interface)?;
         socket.set_read_timeout(read_timeout)?;
+        tracing::debug!(
+            can_interface = interface,
+            read_timeout_ms = read_timeout.as_millis() as u64,
+            "opening katapult can session"
+        );
         Ok(Self { socket })
     }
 }

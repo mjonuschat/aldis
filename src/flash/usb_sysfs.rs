@@ -6,14 +6,24 @@ use std::path::{Path, PathBuf};
 /// exposes a complete USB device identity (`idVendor`, `idProduct`,
 /// `busnum`, `devnum`).
 pub(crate) fn usb_device_ancestor(start: &Path) -> Option<PathBuf> {
-    start.ancestors().find_map(|candidate| {
+    let ancestor = start.ancestors().find_map(|candidate| {
         let has_usb_identity =
             candidate.join("idVendor").is_file() && candidate.join("idProduct").is_file();
         (has_usb_identity
             && candidate.join("busnum").is_file()
             && candidate.join("devnum").is_file())
         .then(|| candidate.to_path_buf())
-    })
+    });
+
+    if let Some(sysfs_path) = &ancestor {
+        tracing::debug!(
+            start = %start.display(),
+            sysfs_path = %sysfs_path.display(),
+            "usb device sysfs ancestor resolved"
+        );
+    }
+
+    ancestor
 }
 
 #[cfg(test)]

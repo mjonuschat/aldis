@@ -92,7 +92,7 @@ pub enum UsbBootloaderSelectionError {
 pub fn select_usb_bootloader(
     observed: ObservedUsbBootloader,
 ) -> Result<SelectedUsbBootloader, UsbBootloaderSelectionError> {
-    match observed.kind() {
+    let result = match observed.kind() {
         Some(UsbBootloaderKind::Katapult) => {
             let sysfs_path = observed.sysfs_path;
             let serial_device = observed.serial_device.ok_or_else(|| {
@@ -123,12 +123,19 @@ pub fn select_usb_bootloader(
             usb_id: observed.usb_id,
             manufacturer: observed.manufacturer,
         }),
+    };
+
+    if let Ok(selected) = &result {
+        tracing::debug!(selected = ?selected, "usb bootloader selected");
     }
+
+    result
 }
 
 /// Classifies one USB bootloader identity without inferring from Kconfig.
 pub fn classify_usb_identity(usb_id: &str, manufacturer: &str) -> Option<UsbBootloaderKind> {
-    if usb_id.eq_ignore_ascii_case(KATAPULT_USB_ID) || manufacturer.eq_ignore_ascii_case("katapult")
+    let kind = if usb_id.eq_ignore_ascii_case(KATAPULT_USB_ID)
+        || manufacturer.eq_ignore_ascii_case("katapult")
     {
         Some(UsbBootloaderKind::Katapult)
     } else if usb_id.eq_ignore_ascii_case(XIAO_SAMD21_BOSSA_USB_ID) {
@@ -142,5 +149,9 @@ pub fn classify_usb_identity(usb_id: &str, manufacturer: &str) -> Option<UsbBoot
         Some(UsbBootloaderKind::PicoBoot)
     } else {
         None
-    }
+    };
+
+    tracing::debug!(usb_id, manufacturer, kind = ?kind, "usb bootloader identity classified");
+
+    kind
 }
