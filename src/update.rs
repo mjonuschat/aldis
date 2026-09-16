@@ -45,7 +45,7 @@ pub(crate) fn update(arguments: UpdateArgs, mut ui: UpdateUi) -> ExitCode {
         // The run log is reported exactly once, here, rather than at every
         // failure site, so it's always the last thing printed regardless of
         // which step failed.
-        Err(message) => fail(format!("{message}\nRun log: {}", run_log.path().display())),
+        Err(error) => fail(format!("{error}\nRun log: {}", run_log.path().display())),
     }
 }
 
@@ -54,7 +54,7 @@ fn run_update(
     ui: &mut UpdateUi,
     workspace: &RunWorkspace,
     run_log: &RunLog,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let source = arguments
         .connection
         .klipper_source
@@ -66,10 +66,8 @@ fn run_update(
     let refreshed =
         if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
             ui.action("refreshing configured Klipper upstream");
-            let refreshed = refresh_checkout(&source).map_err(|error| {
-                ui.action(&format!("error: {error}"));
-                error.to_string()
-            })?;
+            let refreshed = refresh_checkout(&source)
+                .inspect_err(|error| ui.action(&format!("error: {error}")))?;
             ui.action(&format!("checkout refresh: {}", refresh_label(&refreshed)));
             Some(refreshed)
         } else {
@@ -78,10 +76,7 @@ fn run_update(
     ui.action("discovering MCUs from Moonraker");
     let inventory = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker)
         .discover_mcus()
-        .map_err(|error| {
-            ui.action(&format!("error: {error}"));
-            error.to_string()
-        })?;
+        .inspect_err(|error| ui.action(&format!("error: {error}")))?;
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
     ui.block(&format_status(
@@ -147,10 +142,7 @@ fn run_update(
         }
         let pending = coordinator
             .prepare(&inventory, &plan, workspace, &name, arguments.clean)
-            .map_err(|error| {
-                ui.action(&format!("error: {error}"));
-                error.to_string()
-            })?;
+            .inspect_err(|error| ui.action(&format!("error: {error}")))?;
         match coordinator.execute_and_flash_system_with_progress_and_log(
             pending.approve(),
             options.clone(),
@@ -163,7 +155,7 @@ fn run_update(
                 if let Err(error) = wait_for_application(mcu) {
                     ui.finish_failure();
                     ui.action(&format!("error: {error}"));
-                    return Err(error);
+                    return Err(anyhow::anyhow!(error));
                 }
                 ui.finish_success("MCU restart confirmed");
                 accepted.push(name);
@@ -173,7 +165,7 @@ fn run_update(
                 run_log.action(&format!("debug: flash failed: {error:?}"));
                 let message = update_failure(error);
                 ui.action(&format!("error: {message}"));
-                return Err(message);
+                return Err(anyhow::anyhow!(message));
             }
         }
     }
@@ -186,9 +178,8 @@ fn run_update(
     ui.begin("starting Klipper");
     if let Err(error) = coordinator.start_after_batch() {
         ui.finish_failure();
-        let message = error.to_string();
-        ui.action(&format!("error: {message}"));
-        return Err(message);
+        ui.action(&format!("error: {error}"));
+        return Err(error.into());
     }
     ui.finish_success("Klipper ready");
     ui.begin("waiting for updated MCUs to reconnect");
@@ -199,7 +190,7 @@ fn run_update(
     ) {
         ui.finish_failure();
         ui.action(&format!("error: {error}"));
-        return Err(error);
+        return Err(anyhow::anyhow!(error));
     }
     ui.finish_success("all updated MCUs connected");
     ui.heading(&format!(
