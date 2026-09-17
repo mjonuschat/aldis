@@ -1,8 +1,10 @@
+use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use aldis::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderKind, UsbBootloaderSelectionError,
-    classify_usb_identity, select_usb_bootloader,
+    classify_usb_identity, scan_usb_bootloaders, select_usb_bootloader,
 };
 
 #[test]
@@ -90,4 +92,59 @@ fn rejects_katapult_without_a_serial_device_at_its_topology() {
         select_usb_bootloader(observed),
         Err(UsbBootloaderSelectionError::KatapultSerialDeviceMissing(path)) if path == sysfs_path
     ));
+}
+
+#[test]
+fn scans_a_sysfs_root_for_every_classified_bootloader_identity_and_ignores_the_rest() {
+    let root = unique_temporary_path();
+    write_usb_device(&root, "1-1.2", "1d50:6177", "katapult", Some("ttyACM0"));
+    write_usb_device(&root, "1-1.3", "0483:df11", "stmicroelectronics", None);
+    write_usb_device(&root, "1-1.4", "1209:0001", "example", None);
+
+    let mut observed = scan_usb_bootloaders(&root);
+    observed.sort_by(|a, b| a.sysfs_path.cmp(&b.sysfs_path));
+
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0].sysfs_path, root.join("1-1.2"));
+    assert_eq!(observed[0].usb_id, "1d50:6177");
+    assert_eq!(
+        observed[0].serial_device,
+        Some(PathBuf::from("/dev/ttyACM0"))
+    );
+    assert_eq!(observed[1].sysfs_path, root.join("1-1.3"));
+    assert_eq!(observed[1].usb_id, "0483:df11");
+    assert_eq!(observed[1].serial_device, None);
+
+    fs::remove_dir_all(root).expect("remove sysfs fixture");
+}
+
+fn write_usb_device(
+    root: &std::path::Path,
+    name: &str,
+    usb_id: &str,
+    manufacturer: &str,
+    tty: Option<&str>,
+) {
+    let device_dir = root.join(name);
+    fs::create_dir_all(&device_dir).expect("create device fixture");
+    let (vendor, product) = usb_id.split_once(':').expect("usb id has vendor:product");
+    fs::write(device_dir.join("idVendor"), format!("{vendor}\n")).expect("write idVendor");
+    fs::write(device_dir.join("idProduct"), format!("{product}\n")).expect("write idProduct");
+    fs::write(device_dir.join("manufacturer"), format!("{manufacturer}\n"))
+        .expect("write manufacturer");
+    if let Some(tty) = tty {
+        let interface = device_dir.join(format!("{name}:1.0"));
+        fs::create_dir_all(interface.join("tty").join(tty)).expect("create tty fixture");
+    }
+}
+
+fn unique_temporary_path() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "aldis-usb-bootloader-{}-{nonce}",
+        std::process::id()
+    ))
 }

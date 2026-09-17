@@ -2,6 +2,7 @@
 
 pub mod katapult;
 pub mod picoboot;
+pub mod reboot;
 pub mod stm32_dfu;
 pub mod system;
 pub mod usb_bootloader;

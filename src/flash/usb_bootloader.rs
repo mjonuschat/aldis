@@ -1,6 +1,8 @@
 //! USB bootloader identities observed after a topology-scoped serial reset.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::flash::usb_sysfs;
 
 const KATAPULT_USB_ID: &str = "1d50:6177";
 const STM32_DFU_USB_ID: &str = "0483:df11";
@@ -113,6 +115,29 @@ pub fn select_usb_bootloader(
     }
 
     result
+}
+
+/// Scans every USB device directly under `root` and returns the ones whose
+/// identity classifies as a known bootloader.
+///
+/// Unlike [`select_usb_bootloader`], this doesn't require a prior identity to
+/// have changed away from: it inspects whatever is present right now, so it
+/// can find a device that was already sitting in a bootloader before this
+/// process started (e.g. after a failed update left it there).
+pub fn scan_usb_bootloaders(root: &Path) -> Vec<ObservedUsbBootloader> {
+    usb_sysfs::usb_device_dirs(root)
+        .into_iter()
+        .filter_map(|sysfs_path| {
+            let identity = usb_sysfs::usb_identity(&sysfs_path);
+            classify_usb_identity(&identity.usb_id, &identity.manufacturer)?;
+            Some(ObservedUsbBootloader {
+                serial_device: usb_sysfs::usb_tty(&sysfs_path),
+                sysfs_path,
+                usb_id: identity.usb_id,
+                manufacturer: identity.manufacturer,
+            })
+        })
+        .collect()
 }
 
 /// Classifies one USB bootloader identity without inferring from Kconfig.

@@ -8,6 +8,7 @@ use std::time::Duration;
 use super::adapter::KatapultAdapter;
 use super::can::{CanError, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport};
 use super::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
+use super::session::{KatapultSession, SessionError};
 use crate::flash::usb_bootloader::{
     SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
 };
@@ -82,6 +83,37 @@ pub fn bootstrap_system_serial(
     let io = SystemSerialIo::open(&bootloader_device, baud_rate, read_timeout)
         .map_err(SerialBootstrapError::Open)?;
     Ok(KatapultAdapter::new(KatapultSerialTransport::new(io)))
+}
+
+/// A failure while leaving an already-detected Katapult bootloader.
+#[derive(Debug, thiserror::Error)]
+pub enum SerialLeaveError {
+    /// The detected Katapult serial device could not be opened.
+    #[error(transparent)]
+    Open(serialport::Error),
+    /// Katapult rejected the connect or complete exchange.
+    #[error(transparent)]
+    Session(#[from] SessionError),
+}
+
+/// Exits an already-running Katapult bootloader without flashing new firmware.
+///
+/// Unlike [`bootstrap_system_serial`], this does not request bootloader entry
+/// or wait for re-enumeration: it assumes `serial_device` already is a
+/// Katapult bootloader (as found by scanning the USB bus) and asks it to
+/// start its application, the same command sent after a normal update
+/// finishes.
+pub fn leave_serial(
+    serial_device: &Path,
+    baud_rate: u32,
+    read_timeout: Duration,
+) -> Result<(), SerialLeaveError> {
+    let io = SystemSerialIo::open(serial_device, baud_rate, read_timeout)
+        .map_err(SerialLeaveError::Open)?;
+    let mut session = KatapultSession::new(KatapultSerialTransport::new(io));
+    session.connect()?;
+    session.complete()?;
+    Ok(())
 }
 
 /// A CAN target that has been asked to enter Katapult but is not yet connected.

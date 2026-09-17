@@ -136,6 +136,51 @@ impl FlashPort for PicoBootAdapter<'_> {
     }
 }
 
+/// Reboots an already-detected PicoBoot device into its existing application,
+/// without erasing or writing new firmware.
+///
+/// Unlike [`flash_system_at_path`], this assumes `sysfs_path` already is a
+/// PicoBoot bootloader (as found by scanning the USB bus): whatever
+/// application is already in flash is left untouched.
+pub fn reboot_at_path(sysfs_path: &Path) -> Result<(), PicoBootError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("Tokio runtime should initialize")
+        .block_on(async {
+            let mut picoboot = find_device(|device| device.sysfs_path() == sysfs_path).await?;
+            let connection = picoboot.connect().await.map_err(PicoBootError::Transport)?;
+            connection
+                .set_exclusive_access(Access::ExclusiveAndEject)
+                .await
+                .map_err(PicoBootError::Transport)?;
+            connection
+                .reboot(Duration::from_millis(500))
+                .await
+                .map_err(PicoBootError::Transport)?;
+            Ok(())
+        })
+}
+
+async fn find_device(
+    matches: impl Fn(&nusb::DeviceInfo) -> bool,
+) -> Result<Picoboot, PicoBootError> {
+    let mut devices = Picoboot::list_devices(None)
+        .await
+        .map_err(PicoBootError::Transport)?
+        .into_iter()
+        .filter(matches)
+        .collect::<Vec<_>>();
+    let device = match devices.len() {
+        0 => return Err(PicoBootError::DeviceNotFound),
+        1 => devices.remove(0),
+        count => return Err(PicoBootError::AmbiguousDevice(count)),
+    };
+    Picoboot::new(device)
+        .await
+        .map_err(PicoBootError::Transport)
+}
+
 fn flash_system_with_device(
     firmware: &[u8],
     matches: impl Fn(&nusb::DeviceInfo) -> bool,
@@ -146,20 +191,7 @@ fn flash_system_with_device(
         .build()
         .expect("Tokio runtime should initialize")
         .block_on(async {
-            let mut devices = Picoboot::list_devices(None)
-                .await
-                .map_err(PicoBootError::Transport)?
-                .into_iter()
-                .filter(matches)
-                .collect::<Vec<_>>();
-            let device = match devices.len() {
-                0 => return Err(PicoBootError::DeviceNotFound),
-                1 => devices.remove(0),
-                count => return Err(PicoBootError::AmbiguousDevice(count)),
-            };
-            let mut picoboot = Picoboot::new(device)
-                .await
-                .map_err(PicoBootError::Transport)?;
+            let mut picoboot = find_device(matches).await?;
             let connection = picoboot.connect().await.map_err(PicoBootError::Transport)?;
             connection
                 .set_exclusive_access(Access::ExclusiveAndEject)
