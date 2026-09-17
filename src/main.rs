@@ -1,6 +1,7 @@
 //! `aldis` CLI entry point: dispatches to the status, inspect, update, and setup commands.
 
 mod cli;
+mod discovery;
 mod reboot;
 mod setup;
 mod status;
@@ -17,6 +18,7 @@ use clap::Parser;
 use tracing_appender::non_blocking::WorkerGuard;
 
 use cli::{Cli, CliCommand, MoonrakerArgs};
+use discovery::discover_mcus_with_retry;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -90,8 +92,7 @@ fn sweep_stale_logs_on_next_launch() {
 
 fn inspect(arguments: &MoonrakerArgs) -> anyhow::Result<()> {
     tracing::info!("discovering MCUs from Moonraker");
-    let inventory = MoonrakerAdapter::new(&arguments.moonraker)
-        .discover_mcus()
+    let inventory = discover_mcus_with_retry(&MoonrakerAdapter::new(&arguments.moonraker))
         .context("failed to discover MCUs")?;
     print_inventory(&arguments.moonraker, &inventory);
     Ok(())

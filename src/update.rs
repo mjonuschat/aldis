@@ -83,13 +83,14 @@ fn run_update(
             None
         };
     ui.action("discovering MCUs from Moonraker");
-    let inventory = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker)
-        .discover_mcus()
-        .inspect_err(|error| {
-            tracing::debug!(?error, "Moonraker discovery failed");
-            ui.action(&format!("error: {}", aldis::error_chain(error)));
-        })
-        .context("failed to discover MCUs from Moonraker")?;
+    let inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
+        &arguments.connection.moonraker.moonraker,
+    ))
+    .inspect_err(|error| {
+        tracing::debug!(?error, "Moonraker discovery failed");
+        ui.action(&format!("error: {}", aldis::error_chain(error)));
+    })
+    .context("failed to discover MCUs from Moonraker")?;
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
     ui.block(&format_status(

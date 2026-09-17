@@ -30,9 +30,8 @@ fn status_report(
     source: &std::path::Path,
 ) -> anyhow::Result<String> {
     tracing::info!("discovering MCUs from Moonraker");
-    let inventory = moonraker
-        .discover_mcus()
-        .context("failed to discover MCUs")?;
+    let inventory =
+        crate::discovery::discover_mcus_with_retry(moonraker).context("failed to discover MCUs")?;
     let revision = checkout
         .revision(source)
         .unwrap_or(CheckoutRevision::Indeterminate);
