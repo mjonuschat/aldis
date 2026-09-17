@@ -227,9 +227,15 @@ impl SystemSerialIo {
         timeout: Duration,
         poll_interval: Duration,
     ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
+        let initial_identity = UsbIdentity {
+            usb_id: initial_usb_id.to_owned(),
+            manufacturer: initial_manufacturer.to_owned(),
+        };
+        let mut last_identity = initial_identity.clone();
         retry_until_available(timeout, poll_interval, || {
             let identity = usb_identity(usb_path);
-            if (identity.usb_id != initial_usb_id || identity.manufacturer != initial_manufacturer)
+            last_identity = identity.clone();
+            if identity != initial_identity
                 && identity.is_complete()
                 && let Some(serial_device) = usb_tty(usb_path)
             {
@@ -248,10 +254,7 @@ impl SystemSerialIo {
                 Err(())
             }
         })
-        .map_err(|()| UsbBootloaderError::NotDetected {
-            device: usb_path.to_path_buf(),
-            reset_error: None,
-        })
+        .map_err(|()| timeout_outcome(&initial_identity, &last_identity, usb_path, None))
     }
 
     /// Requests USB bootloader entry and waits for a matching USB identity.
@@ -279,8 +282,10 @@ impl SystemSerialIo {
             .err()
             .map(|error| error.to_string());
 
+        let mut last_identity = initial_identity.clone();
         retry_until_available(timeout, poll_interval, || {
             let identity = usb_identity(&usb_path);
+            last_identity = identity.clone();
             if identity != initial_identity
                 && identity.is_complete()
                 && matches(&identity.usb_id, &identity.manufacturer)
@@ -296,10 +301,25 @@ impl SystemSerialIo {
                 Err(())
             }
         })
-        .map_err(|()| UsbBootloaderError::NotDetected {
-            device: path.to_path_buf(),
+        .map_err(|()| timeout_outcome(&initial_identity, &last_identity, path, reset_error))
+    }
+}
+
+fn timeout_outcome(
+    initial: &UsbIdentity,
+    last_observed: &UsbIdentity,
+    device: &Path,
+    reset_error: Option<String>,
+) -> UsbBootloaderError {
+    if last_observed == initial {
+        UsbBootloaderError::NoEffect {
+            device: device.to_path_buf(),
+        }
+    } else {
+        UsbBootloaderError::NotDetected {
+            device: device.to_path_buf(),
             reset_error,
-        })
+        }
     }
 }
 
@@ -323,6 +343,12 @@ pub enum UsbBootloaderError {
         device: PathBuf,
         /// A best-effort reset error, if opening the device failed before it disconnected.
         reset_error: Option<String>,
+    },
+    /// The device never left its pre-reset identity before the timeout.
+    #[error("{} never left application firmware; the reset request had no effect", .device.display())]
+    NoEffect {
+        /// The configured serial device or observed USB topology.
+        device: PathBuf,
     },
 }
 
@@ -402,7 +428,7 @@ impl SerialIo for SystemSerialIo {
 
 #[cfg(test)]
 mod tests {
-    use super::{SystemSerialIo, UsbIdentity};
+    use super::{SystemSerialIo, UsbBootloaderError, UsbIdentity};
     use std::fs;
     use std::path::PathBuf;
     use std::thread;
@@ -449,6 +475,46 @@ mod tests {
 
         writer.join().expect("writer thread should not panic");
         assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
+
+        fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn reports_no_effect_when_the_device_never_leaves_its_pre_reset_identity() {
+        let usb_path = unique_temporary_path();
+        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
+        write_identity(&usb_path, "1d50:6177", "openmoko, inc.");
+
+        let error = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            "1d50:6177",
+            "openmoko, inc.",
+            Duration::from_millis(30),
+            Duration::from_millis(5),
+        )
+        .expect_err("identity never changes, so the wait should time out");
+
+        assert!(matches!(error, UsbBootloaderError::NoEffect { .. }));
+
+        fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn reports_not_detected_when_a_new_identity_never_exposes_a_tty() {
+        let usb_path = unique_temporary_path();
+        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
+        write_identity(&usb_path, "2e8a:000c", "raspberry pi");
+
+        let error = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            "1d50:6177",
+            "openmoko, inc.",
+            Duration::from_millis(30),
+            Duration::from_millis(5),
+        )
+        .expect_err("no tty ever appears, so the wait should time out");
+
+        assert!(matches!(error, UsbBootloaderError::NotDetected { .. }));
 
         fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
     }
