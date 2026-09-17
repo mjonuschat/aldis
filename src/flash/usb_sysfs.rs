@@ -128,6 +128,82 @@ fn read_sysfs_attribute(path: &Path, attribute: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Lowercase USB vendor:product id and manufacturer read directly from sysfs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UsbIdentity {
+    pub(crate) usb_id: String,
+    pub(crate) manufacturer: String,
+}
+
+impl UsbIdentity {
+    /// Returns whether both the vendor and product identifiers are present.
+    ///
+    /// A device mid-re-enumeration briefly reports an empty identity; this
+    /// distinguishes that transient state from a real (if unsupported) one.
+    pub(crate) fn is_complete(&self) -> bool {
+        self.usb_id
+            .split_once(':')
+            .is_some_and(|(vendor, product)| !vendor.is_empty() && !product.is_empty())
+    }
+}
+
+/// Reads one USB device's identity directly from its sysfs attributes.
+pub(crate) fn usb_identity(usb_path: &Path) -> UsbIdentity {
+    UsbIdentity {
+        usb_id: format!(
+            "{}:{}",
+            read_sysfs_value(&usb_path.join("idVendor")),
+            read_sysfs_value(&usb_path.join("idProduct"))
+        ),
+        manufacturer: read_sysfs_value(&usb_path.join("manufacturer")),
+    }
+}
+
+fn read_sysfs_value(path: &Path) -> String {
+    fs::read_to_string(path)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// Finds the bootloader's unique tty device directly under its interface subtree.
+pub(crate) fn usb_tty(usb_path: &Path) -> Option<PathBuf> {
+    let prefix = format!("{}:", usb_path.file_name()?.to_string_lossy());
+    let mut tty_names = fs::read_dir(usb_path)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .flat_map(|interface| {
+            fs::read_dir(interface.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
+        .filter(|entry| entry.file_name() == "tty")
+        .flat_map(|tty_dir| fs::read_dir(tty_dir.path()).into_iter().flatten().flatten())
+        .map(|tty| tty.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("tty"));
+    let tty = tty_names.next()?;
+    tty_names
+        .next()
+        .is_none()
+        .then(|| Path::new("/dev").join(tty))
+}
+
+/// Lists top-level USB device directories directly under `root`.
+///
+/// Filters out USB interface entries (e.g. `1-1.4:1.0`), which share the
+/// same directory but never carry a complete device identity of their own.
+pub(crate) fn usb_device_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join("idVendor").is_file() && path.join("idProduct").is_file())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

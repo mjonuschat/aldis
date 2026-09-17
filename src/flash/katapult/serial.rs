@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
 use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
-use crate::flash::usb_sysfs::usb_device_ancestor;
+use crate::flash::usb_sysfs::{UsbIdentity, usb_device_ancestor, usb_identity, usb_tty};
 use crate::retry::retry_until_available;
 
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
@@ -352,64 +352,10 @@ pub enum UsbBootloaderError {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct UsbIdentity {
-    usb_id: String,
-    manufacturer: String,
-}
-
-impl UsbIdentity {
-    fn is_complete(&self) -> bool {
-        self.usb_id
-            .split_once(':')
-            .is_some_and(|(vendor, product)| !vendor.is_empty() && !product.is_empty())
-    }
-}
-
 fn usb_device_path(device: &Path) -> Option<PathBuf> {
     let tty = fs::canonicalize(device).ok()?.file_name()?.to_owned();
     let tty_path = fs::canonicalize(Path::new("/sys/class/tty").join(tty)).ok()?;
     usb_device_ancestor(&tty_path)
-}
-
-fn usb_identity(usb_path: &Path) -> UsbIdentity {
-    UsbIdentity {
-        usb_id: format!(
-            "{}:{}",
-            read_sysfs_value(&usb_path.join("idVendor")),
-            read_sysfs_value(&usb_path.join("idProduct"))
-        ),
-        manufacturer: read_sysfs_value(&usb_path.join("manufacturer")),
-    }
-}
-
-fn read_sysfs_value(path: &Path) -> String {
-    fs::read_to_string(path)
-        .map(|value| value.trim().to_ascii_lowercase())
-        .unwrap_or_default()
-}
-
-fn usb_tty(usb_path: &Path) -> Option<PathBuf> {
-    let prefix = format!("{}:", usb_path.file_name()?.to_string_lossy());
-    let mut tty_names = fs::read_dir(usb_path)
-        .ok()?
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-        .flat_map(|interface| {
-            fs::read_dir(interface.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-        })
-        .filter(|entry| entry.file_name() == "tty")
-        .flat_map(|tty_dir| fs::read_dir(tty_dir.path()).into_iter().flatten().flatten())
-        .map(|tty| tty.file_name())
-        .filter(|name| name.to_string_lossy().starts_with("tty"));
-    let tty = tty_names.next()?;
-    tty_names
-        .next()
-        .is_none()
-        .then(|| Path::new("/dev").join(tty))
 }
 
 impl SerialIo for SystemSerialIo {
