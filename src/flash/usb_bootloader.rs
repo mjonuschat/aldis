@@ -79,6 +79,7 @@ pub enum UsbBootloaderSelectionError {
 pub fn select_usb_bootloader(
     observed: ObservedUsbBootloader,
 ) -> Result<SelectedUsbBootloader, UsbBootloaderSelectionError> {
+    let sysfs_path = observed.sysfs_path.clone();
     let result = match observed.kind() {
         Some(UsbBootloaderKind::Katapult) => {
             let sysfs_path = observed.sysfs_path;
@@ -104,6 +105,10 @@ pub fn select_usb_bootloader(
 
     match &result {
         Ok(selected) => tracing::debug!(selected = ?selected, "usb bootloader selected"),
+        Err(error @ UsbBootloaderSelectionError::Unsupported { .. }) => {
+            let snapshot = usb_sysfs::usb_topology_snapshot(&sysfs_path);
+            tracing::debug!(%error, ?snapshot, "usb bootloader identity unsupported");
+        }
         Err(error) => tracing::debug!(%error, "usb bootloader identity unsupported"),
     }
 
