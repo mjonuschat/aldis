@@ -4,7 +4,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
@@ -163,10 +163,21 @@ impl std::error::Error for SystemFlashError {
     }
 }
 
+/// Context for diagnosing an unsupported bootloader identity. Attached only
+/// to the debug log; it never affects backend selection.
+#[derive(Clone, Debug, Default)]
+pub struct UnsupportedBootloaderContext {
+    /// The MCU transport that was asked to enter its bootloader.
+    pub transport: String,
+    /// Wall-clock time between the reset request and the final observation.
+    pub reset_elapsed: Option<Duration>,
+}
+
 /// Derives exactly one native USB route from one observed bootloader.
 pub fn serial_route(
     observed: ObservedUsbBootloader,
     kconfig: &str,
+    context: &UnsupportedBootloaderContext,
 ) -> Result<SerialFlashRoute, SystemFlashError> {
     match select_usb_bootloader(observed) {
         Ok(SelectedUsbBootloader::Katapult { serial_device, .. }) => {
@@ -179,8 +190,36 @@ pub fn serial_route(
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
         }
+        Err(error @ UsbBootloaderSelectionError::Unsupported { .. }) => {
+            tracing::debug!(
+                transport = %context.transport,
+                machine = %kconfig_machine(kconfig),
+                flash_offset_symbols = ?kconfig_flash_start_symbols(kconfig),
+                reset_elapsed = ?context.reset_elapsed,
+                "unsupported bootloader context"
+            );
+            Err(SystemFlashError::Selection(error))
+        }
         Err(error) => Err(SystemFlashError::Selection(error)),
     }
+}
+
+fn kconfig_machine(kconfig: &str) -> String {
+    kconfig
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("CONFIG_MACH_") && line.ends_with("=y"))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn kconfig_flash_start_symbols(kconfig: &str) -> Vec<String> {
+    kconfig
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("_FLASH_START_") && line.ends_with("=y"))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Flashes one prepared artifact while reporting native bootloader phases.
@@ -221,13 +260,18 @@ fn flash_serial_system(
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
+    let started = Instant::now();
     let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
         std::path::Path::new(running_device),
         options.katapult.bootloader_timeout,
         options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::Bootloader)?;
-    flash_observed_usb(observed, kconfig, firmware, options, progress)
+    let context = UnsupportedBootloaderContext {
+        transport: running_device.to_owned(),
+        reset_elapsed: Some(started.elapsed()),
+    };
+    flash_observed_usb(observed, kconfig, firmware, options, progress, &context)
 }
 
 fn flash_observed_usb(
@@ -236,9 +280,10 @@ fn flash_observed_usb(
     firmware: &[u8],
     options: SystemFlashOptions,
     progress: &mut impl FnMut(SystemFlashProgress),
+    context: &UnsupportedBootloaderContext,
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::BootloaderReady);
-    match serial_route(observed, kconfig)? {
+    match serial_route(observed, kconfig, context)? {
         SerialFlashRoute::Katapult { serial_device } => {
             progress(SystemFlashProgress::Flashing);
             let io = open_katapult_serial_when_ready(
@@ -369,6 +414,7 @@ fn flash_can_system(
         .map_err(SystemFlashError::CanSocket)?;
     let bootstrap = request_can_bootloader(io, uuid).map_err(SystemFlashError::Can)?;
     if let (Some(usb_path), Some((usb_id, manufacturer))) = (usb_path, initial_usb_identity) {
+        let started = Instant::now();
         let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
             &usb_path,
             &usb_id,
@@ -377,7 +423,11 @@ fn flash_can_system(
             options.katapult.poll_interval,
         )
         .map_err(SystemFlashError::Bootloader)?;
-        return flash_observed_usb(observed, kconfig, firmware, options, progress);
+        let context = UnsupportedBootloaderContext {
+            transport: format!("CAN {interface} (uuid {uuid:016x})"),
+            reset_elapsed: Some(started.elapsed()),
+        };
+        return flash_observed_usb(observed, kconfig, firmware, options, progress, &context);
     }
     thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;
@@ -420,7 +470,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{SystemFlashError, usb_can_bridge, usb_device_node};
+    use super::{
+        SystemFlashError, kconfig_flash_start_symbols, kconfig_machine, usb_can_bridge,
+        usb_device_node,
+    };
     use crate::flash::katapult::Command;
     use crate::flash::katapult::adapter::KatapultFlashError;
     use crate::flash::katapult::session::SessionError;
@@ -446,6 +499,26 @@ mod tests {
             "the CAN bootloader did not respond to a connection request"
         );
         assert!(!detail.contains("RetriesExhausted"));
+    }
+
+    #[test]
+    fn finds_the_selected_machine_symbol_in_the_embedded_kconfig() {
+        assert_eq!(
+            kconfig_machine("# comment\nCONFIG_MACH_STM32H723=y\nCONFIG_OTHER=y\n"),
+            "CONFIG_MACH_STM32H723=y"
+        );
+        assert_eq!(kconfig_machine("CONFIG_OTHER=y\n"), "");
+    }
+
+    #[test]
+    fn finds_every_enabled_flash_start_symbol_in_the_embedded_kconfig() {
+        assert_eq!(
+            kconfig_flash_start_symbols(
+                "CONFIG_STM32_FLASH_START_2000=y\n# CONFIG_SAMD_FLASH_START_2000 is not set\n"
+            ),
+            vec!["CONFIG_STM32_FLASH_START_2000=y".to_owned()]
+        );
+        assert!(kconfig_flash_start_symbols("CONFIG_OTHER=y\n").is_empty());
     }
 
     #[test]
