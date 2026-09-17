@@ -68,15 +68,15 @@ pub(crate) struct ConnectionArgs {
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("selection")
-        .required(true)
         .args(["targets", "all", "auto"])
 ))]
 pub(crate) struct UpdateArgs {
     /// One or more MCU names reported by Moonraker.
     #[arg(value_name = "MCU", num_args = 1.., conflicts_with_all = ["all", "auto"])]
     pub(crate) targets: Vec<String>,
-    /// Update every eligible MCU.
-    #[arg(long, conflicts_with_all = ["targets", "auto"])]
+    /// Update every eligible MCU. This is now the default; kept only for
+    /// backwards compatibility.
+    #[arg(long, hide = true, conflicts_with_all = ["targets", "auto"])]
     pub(crate) all: bool,
     /// Fast-forward, then update every outdated supported MCU without prompts.
     #[arg(long, conflicts_with_all = ["targets", "all", "force", "pull"])]
@@ -138,10 +138,29 @@ mod tests {
     }
 
     #[test]
-    fn requires_exactly_one_update_target_selector() {
-        assert!(Cli::try_parse_from(["aldis", "update"]).is_err());
+    fn allows_at_most_one_update_target_selector() {
+        assert!(Cli::try_parse_from(["aldis", "update"]).is_ok());
         assert!(Cli::try_parse_from(["aldis", "update", "mcu", "--all"]).is_err());
         assert!(Cli::try_parse_from(["aldis", "update", "--all"]).is_ok());
+    }
+
+    #[test]
+    fn hides_the_now_redundant_all_flag_from_help_but_still_accepts_it() {
+        let help = Cli::command()
+            .find_subcommand("update")
+            .expect("update subcommand")
+            .clone()
+            .render_help()
+            .to_string();
+
+        assert!(!help.contains("--all"));
+        let CliCommand::Update(arguments) = Cli::try_parse_from(["aldis", "update", "--all"])
+            .expect("parse update --all")
+            .command
+        else {
+            panic!("expected update command");
+        };
+        assert!(arguments.all);
     }
 
     #[test]

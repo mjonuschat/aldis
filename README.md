@@ -61,15 +61,17 @@ place without changing anything.
 ```
 ~/aldis/aldis status                    # discovered MCUs and whether firmware is current
 ~/aldis/aldis inspect                   # MCU configuration reported by Moonraker
-~/aldis/aldis update --all              # build and flash every eligible MCU
+~/aldis/aldis update                    # build and flash every eligible MCU (the default)
 ~/aldis/aldis update <mcu> [<mcu> ...]  # build and flash specific MCUs
 ~/aldis/aldis update --auto             # download Klipper/Kalico updates, then build and flash everything outdated, no prompts
-~/aldis/aldis update --all --force      # update even MCUs already on the checkout revision
+~/aldis/aldis update --force            # update even MCUs already on the checkout revision
 ```
 
 `update` requires host permissions installed by `~/aldis/aldis setup` (see
 above). `--pull` and `--force` also work with specific `<mcu>` targets;
-`--auto` already implies both and cannot be combined with them.
+`--auto` already implies both and cannot be combined with them. `--all` is
+still accepted for backwards compatibility, but is now the default and no
+longer needs to be passed.
 
 ### Logging
 

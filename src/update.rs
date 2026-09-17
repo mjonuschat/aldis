@@ -60,6 +60,7 @@ fn run_update(
     workspace: &RunWorkspace,
     run_log_path: &Path,
 ) -> anyhow::Result<()> {
+    let select_all = selects_all(&arguments);
     let source = arguments
         .connection
         .klipper_source
@@ -99,7 +100,7 @@ fn run_update(
         &inventory,
         refreshed.as_ref(),
     ));
-    let selection = if arguments.all {
+    let selection = if select_all {
         UpdateSelection::All
     } else {
         UpdateSelection::Required
@@ -333,6 +334,13 @@ fn pending_mcus(
         .collect()
 }
 
+/// Whether the update selection should offer every eligible MCU, not just
+/// outdated ones. `--all` remains accepted for backwards compatibility, but
+/// this is now also the default when no target/`--all`/`--auto` was given.
+fn selects_all(arguments: &UpdateArgs) -> bool {
+    arguments.all || (!arguments.auto && arguments.targets.is_empty())
+}
+
 fn confirm_pull() -> bool {
     eprint!("Pull the configured Klipper upstream before updating? [Y/n] ");
     let _ = io::stderr().flush();
@@ -347,8 +355,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        mcu_count_label, pending_mcus, update_failure, wait_for_application_with_timeout,
-        wait_for_mcus,
+        UpdateArgs, mcu_count_label, pending_mcus, selects_all, update_failure,
+        wait_for_application_with_timeout, wait_for_mcus,
     };
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
     use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
@@ -360,6 +368,36 @@ mod tests {
     fn reports_mcu_counts_with_correct_pluralization() {
         assert_eq!(mcu_count_label(1), "MCU");
         assert_eq!(mcu_count_label(2), "MCUs");
+    }
+
+    #[test]
+    fn defaults_to_all_when_no_selector_is_given_but_not_with_targets_or_auto() {
+        assert!(selects_all(&update_args(Vec::new(), false, false)));
+        assert!(selects_all(&update_args(Vec::new(), true, false)));
+        assert!(!selects_all(&update_args(Vec::new(), false, true)));
+        assert!(!selects_all(&update_args(
+            vec!["mcu".to_owned()],
+            false,
+            false
+        )));
+    }
+
+    fn update_args(targets: Vec<String>, all: bool, auto: bool) -> UpdateArgs {
+        UpdateArgs {
+            targets,
+            all,
+            auto,
+            force: false,
+            pull: false,
+            clean: false,
+            connection: crate::cli::ConnectionArgs {
+                moonraker: crate::cli::MoonrakerArgs {
+                    moonraker: "http://127.0.0.1:7125".to_owned(),
+                },
+                klipper_source: None,
+            },
+            workspace: None,
+        }
     }
 
     #[test]
