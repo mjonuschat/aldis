@@ -42,6 +42,8 @@ pub enum McuTransport {
 pub enum MoonrakerError {
     #[error("Moonraker request failed")]
     Http(#[from] ureq::Error),
+    #[error("Moonraker is running but Klipper isn't connected")]
+    KlippyNotConnected,
     #[error("Moonraker returned invalid JSON")]
     Json(#[from] serde_json::Error),
     #[error("Moonraker response is invalid: {0}")]
@@ -92,7 +94,8 @@ impl MoonrakerAdapter {
             .agent
             .post(&self.endpoint("/printer/objects/query"))
             .header("Content-Type", "application/json")
-            .send(body)?
+            .send(body)
+            .map_err(map_http_error)?
             .body_mut()
             .read_to_string()?;
 
@@ -103,7 +106,8 @@ impl MoonrakerAdapter {
         let response = self
             .agent
             .get(&self.endpoint("/printer/objects/list"))
-            .call()?
+            .call()
+            .map_err(map_http_error)?
             .body_mut()
             .read_to_string()?;
         let objects: ObjectListResponse = serde_json::from_str(&response)?;
@@ -125,6 +129,37 @@ impl MoonrakerAdapter {
 
     fn endpoint(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
+    }
+}
+
+/// Maps a transport failure to a `MoonrakerError`, special-casing the status
+/// Moonraker returns on its `/printer/*` endpoints when Moonraker itself is
+/// reachable but Klippy is not connected.
+fn map_http_error(error: ureq::Error) -> MoonrakerError {
+    match error {
+        ureq::Error::StatusCode(503) => MoonrakerError::KlippyNotConnected,
+        error => MoonrakerError::Http(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MoonrakerError, map_http_error};
+
+    #[test]
+    fn reports_klippy_not_connected_for_a_503_status() {
+        assert!(matches!(
+            map_http_error(ureq::Error::StatusCode(503)),
+            MoonrakerError::KlippyNotConnected
+        ));
+    }
+
+    #[test]
+    fn passes_other_http_errors_through_unchanged() {
+        assert!(matches!(
+            map_http_error(ureq::Error::StatusCode(404)),
+            MoonrakerError::Http(ureq::Error::StatusCode(404))
+        ));
     }
 }
 
