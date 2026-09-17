@@ -189,10 +189,14 @@ pub(crate) fn usb_tty(usb_path: &Path) -> Option<PathBuf> {
         .then(|| Path::new("/dev").join(tty))
 }
 
-/// Lists top-level USB device directories directly under `root`.
+/// Lists top-level USB device directories directly under `root`, canonicalized.
 ///
 /// Filters out USB interface entries (e.g. `1-1.4:1.0`), which share the
 /// same directory but never carry a complete device identity of their own.
+/// `/sys/bus/usb/devices/*` entries are symlinks; callers elsewhere in this
+/// codebase (and `nusb::DeviceInfo::sysfs_path`) work in canonical
+/// `/sys/devices/...` paths, so results are canonicalized here too — a
+/// symlink path would never compare equal to either.
 pub(crate) fn usb_device_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
@@ -201,6 +205,7 @@ pub(crate) fn usb_device_dirs(root: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.join("idVendor").is_file() && path.join("idProduct").is_file())
+        .filter_map(|path| fs::canonicalize(&path).ok())
         .collect()
 }
 
