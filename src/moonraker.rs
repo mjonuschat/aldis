@@ -44,6 +44,8 @@ pub enum MoonrakerError {
     Http(#[from] ureq::Error),
     #[error("Moonraker is running but Klipper isn't connected")]
     KlippyNotConnected,
+    #[error("Klipper is still starting up: {0}")]
+    KlippyStarting(String),
     #[error("Moonraker returned invalid JSON")]
     Json(#[from] serde_json::Error),
     #[error("Moonraker response is invalid: {0}")]
@@ -83,6 +85,7 @@ impl MoonrakerAdapter {
     }
 
     pub fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
+        self.ensure_klippy_ready()?;
         let object_names = self.mcu_object_names()?;
         let mut objects = object_names
             .iter()
@@ -100,6 +103,18 @@ impl MoonrakerAdapter {
             .read_to_string()?;
 
         parse_inventory(&response)
+    }
+
+    fn ensure_klippy_ready(&self) -> Result<(), MoonrakerError> {
+        let response = self
+            .agent
+            .get(&self.endpoint("/printer/info"))
+            .call()
+            .map_err(map_http_error)?
+            .body_mut()
+            .read_to_string()?;
+        let info: PrinterInfoResponse = serde_json::from_str(&response)?;
+        check_ready(&info.result.state, &info.result.state_message)
     }
 
     fn mcu_object_names(&self) -> Result<Vec<String>, MoonrakerError> {
@@ -142,9 +157,24 @@ fn map_http_error(error: ureq::Error) -> MoonrakerError {
     }
 }
 
+/// Rejects a Klippy state other than `ready` before MCU discovery proceeds.
+///
+/// Moonraker can report the `mcu` object as registered (via
+/// `/printer/objects/list`) before Klippy has finished populating that
+/// object's `mcu_constants` identify data, which otherwise surfaces as a
+/// confusing "does not expose mcu_constants.MCU" parse failure during
+/// startup rather than the real cause.
+fn check_ready(state: &str, state_message: &str) -> Result<(), MoonrakerError> {
+    if state == "ready" {
+        Ok(())
+    } else {
+        Err(MoonrakerError::KlippyStarting(state_message.to_owned()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MoonrakerError, map_http_error};
+    use super::{MoonrakerError, check_ready, map_http_error};
 
     #[test]
     fn reports_klippy_not_connected_for_a_503_status() {
@@ -159,6 +189,20 @@ mod tests {
         assert!(matches!(
             map_http_error(ureq::Error::StatusCode(404)),
             MoonrakerError::Http(ureq::Error::StatusCode(404))
+        ));
+    }
+
+    #[test]
+    fn accepts_a_ready_printer() {
+        assert!(check_ready("ready", "Printer is ready").is_ok());
+    }
+
+    #[test]
+    fn reports_klipper_still_starting_with_moonrakers_own_state_message() {
+        let error = check_ready("startup", "Loading configuration...").unwrap_err();
+        assert!(matches!(
+            error,
+            MoonrakerError::KlippyStarting(message) if message == "Loading configuration..."
         ));
     }
 }
@@ -258,6 +302,17 @@ fn parse_transport(
         interface: interface.to_owned(),
         uuid,
     }))
+}
+
+#[derive(Deserialize)]
+struct PrinterInfoResponse {
+    result: PrinterInfo,
+}
+
+#[derive(Deserialize)]
+struct PrinterInfo {
+    state: String,
+    state_message: String,
 }
 
 #[derive(Deserialize)]
