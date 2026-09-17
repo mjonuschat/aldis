@@ -1,9 +1,10 @@
 //! Local Klipper checkout revision discovery.
 
 use std::path::Path;
+use std::process::Command;
 
 use git2::{
-    BranchType, DescribeFormatOptions, DescribeOptions, FetchOptions, Repository, StatusOptions,
+    BranchType, DescribeFormatOptions, DescribeOptions, Repository, StatusOptions,
     build::CheckoutBuilder,
 };
 
@@ -43,6 +44,14 @@ pub enum CheckoutError {
         #[source]
         source: git2::Error,
     },
+    /// The system `git` binary could not fetch the configured upstream.
+    ///
+    /// Fetching uses `git` rather than libgit2: libgit2 has a long-standing
+    /// limitation fetching new commits into an already-shallow checkout
+    /// (observed as a "missing delta bases" indexer error), which `git`'s
+    /// own fetch negotiation does not have.
+    #[error("could not fetch the configured upstream: {0}")]
+    Fetch(String),
 }
 
 /// A source of Klipper checkout state and fast-forward refreshes.
@@ -162,20 +171,7 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
         .config()
         .and_then(|config| config.get_string(&format!("branch.{branch_name}.remote")))
         .map_err(|_| CheckoutError::UpstreamNotConfigured)?;
-    let mut remote =
-        repository
-            .find_remote(&remote_name)
-            .map_err(|source| CheckoutError::Refresh {
-                action: "open the configured upstream remote",
-                source,
-            })?;
-    let mut fetch_options = FetchOptions::new();
-    remote
-        .fetch(&[] as &[&str], Some(&mut fetch_options), None)
-        .map_err(|source| CheckoutError::Refresh {
-            action: "fetch the configured upstream",
-            source,
-        })?;
+    fetch(path, &remote_name)?;
 
     let upstream_reference = repository
         .find_reference(&upstream_reference_name)
@@ -249,4 +245,20 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
         advanced: true,
         commits_advanced,
     })
+}
+
+fn fetch(path: &Path, remote_name: &str) -> Result<(), CheckoutError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("fetch")
+        .arg(remote_name)
+        .output()
+        .map_err(|error| CheckoutError::Fetch(error.to_string()))?;
+    if !output.status.success() {
+        return Err(CheckoutError::Fetch(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    Ok(())
 }

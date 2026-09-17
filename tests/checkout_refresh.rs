@@ -91,6 +91,48 @@ fn preserves_non_conflicting_local_modifications_during_fast_forward() {
 }
 
 #[test]
+fn fast_forwards_a_shallow_checkout() {
+    // libgit2's local transport refuses to even create a shallow clone
+    // ("shallow fetch is not supported by the local transport"), so the
+    // shallow checkout here is made with the system `git` binary, matching
+    // how a real Klipper checkout ends up shallow in practice.
+    let root = temporary_directory("shallow");
+    let remote_path = root.join("remote.git");
+    let source_path = root.join("source");
+    let checkout_path = root.join("checkout");
+    Repository::init_bare(&remote_path).expect("remote repository");
+    let source = Repository::init(&source_path).expect("source repository");
+    commit_file(&source, "README", "first", "initial");
+    push_master(&source, &remote_path);
+
+    let status = std::process::Command::new("git")
+        .args(["clone", "--depth", "1"])
+        .arg(format!("file://{}", remote_path.display()))
+        .arg(&checkout_path)
+        .status()
+        .expect("run git clone");
+    assert!(status.success());
+    assert!(
+        Repository::open(&checkout_path)
+            .expect("reopen checkout")
+            .is_shallow()
+    );
+
+    commit_file(&source, "remote-file", "remote", "remote update");
+    push_master(&source, &remote_path);
+
+    let result = refresh(&checkout_path).expect("fast-forward a shallow checkout");
+
+    assert!(result.advanced);
+    assert_eq!(result.commits_advanced, 1);
+    assert_eq!(
+        fs::read_to_string(checkout_path.join("remote-file")).expect("remote file"),
+        "remote"
+    );
+    fs::remove_dir_all(root).expect("test directory cleanup");
+}
+
+#[test]
 fn aborts_before_changing_head_when_the_checkout_has_diverged() {
     let root = temporary_directory("diverged");
     let remote_path = root.join("remote.git");
