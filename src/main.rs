@@ -1,6 +1,7 @@
 //! `aldis` CLI entry point: dispatches to the status, inspect, update, and setup commands.
 
 mod cli;
+mod reboot;
 mod setup;
 mod status;
 mod ui;
@@ -42,6 +43,10 @@ fn main() -> ExitCode {
         CliCommand::Setup(arguments) => {
             let _logging = init_logging_with_fallback(cli.verbose);
             setup::setup(arguments)
+        }
+        CliCommand::Reboot(arguments) => {
+            let _logging = init_logging_with_fallback(cli.verbose);
+            reboot::reboot(arguments, ui::UpdateUi::new(cli.color, cli.no_progress))
         }
     }
 }

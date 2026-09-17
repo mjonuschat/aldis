@@ -45,6 +45,8 @@ pub(crate) enum CliCommand {
     Update(UpdateArgs),
     /// Install or verify the host permissions required for unprivileged updates.
     Setup(SetupArgs),
+    /// Exit any MCU already sitting in a bootloader, without reflashing it.
+    Reboot(RebootArgs),
 }
 
 #[derive(Debug, Args)]
@@ -96,6 +98,13 @@ pub(crate) struct UpdateArgs {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct RebootArgs {
+    /// Reboot every detected bootloader without prompting.
+    #[arg(long)]
+    pub(crate) yes: bool,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct SetupArgs {
     /// Verify installed host permissions without modifying them.
     #[arg(long)]
@@ -114,6 +123,18 @@ mod tests {
         assert!(help.contains("Usage:"));
         assert!(help.contains("setup"));
         assert!(help.contains("update"));
+    }
+
+    #[test]
+    fn accepts_reboot_with_or_without_yes() {
+        assert!(Cli::try_parse_from(["aldis", "reboot"]).is_ok());
+        let CliCommand::Reboot(arguments) = Cli::try_parse_from(["aldis", "reboot", "--yes"])
+            .expect("parse reboot --yes")
+            .command
+        else {
+            panic!("expected reboot command");
+        };
+        assert!(arguments.yes);
     }
 
     #[test]

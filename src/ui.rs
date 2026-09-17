@@ -211,6 +211,13 @@ pub(crate) fn plain_success_line(message: &str) -> String {
     format!("  [ok] {message}")
 }
 
+/// Reads one line from stdin, trimmed and lowercased.
+pub(crate) fn read_confirmation() -> Result<String, io::Error> {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{colors_enabled, plain_success_line};

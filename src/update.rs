@@ -148,7 +148,10 @@ fn run_update(
             ui.heading(&format!("Update {name} from {current} to {next}"));
         } else {
             ui.prompt(&format!("Update {name} from {current} to {next}?"));
-            if !matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes")) {
+            if !matches!(
+                crate::ui::read_confirmation().as_deref(),
+                Ok("y") | Ok("yes")
+            ) {
                 continue;
             }
         }
@@ -332,13 +335,10 @@ fn pending_mcus(
 fn confirm_pull() -> bool {
     eprint!("Pull the configured Klipper upstream before updating? [Y/n] ");
     let _ = io::stderr().flush();
-    matches!(read_confirmation().as_deref(), Ok("") | Ok("y") | Ok("yes"))
-}
-
-fn read_confirmation() -> Result<String, io::Error> {
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_ascii_lowercase())
+    matches!(
+        crate::ui::read_confirmation().as_deref(),
+        Ok("") | Ok("y") | Ok("yes")
+    )
 }
 
 #[cfg(test)]
