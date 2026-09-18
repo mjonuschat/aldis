@@ -106,9 +106,31 @@ pub fn revisions_match(running: &str, selected: &str) -> bool {
 }
 
 fn split_dirty_suffix(revision: &str) -> (&str, bool) {
+    if let Some(base) = strip_dirty_build_suffix(revision) {
+        return (base, true);
+    }
     revision
         .strip_suffix("-dirty")
         .map_or((revision, false), |base| (base, true))
+}
+
+/// Strips Klipper's full dirty-build suffix as `buildcommands.py` embeds it
+/// in an MCU's reported version: `"%s-%s-%s" % (version, btime, hostname)`,
+/// where `version` already ends `-dirty` and `btime` is
+/// `time.strftime("%Y%m%d_%H%M%S")`. The hostname may itself contain
+/// hyphens, so only the fixed-shape `-dirty-<15-char timestamp>-` prefix is
+/// matched; everything after it is accepted as the hostname.
+fn strip_dirty_build_suffix(revision: &str) -> Option<&str> {
+    let (base, rest) = revision.split_once("-dirty-")?;
+    let (timestamp, hostname) = rest.split_once('-')?;
+    (is_klipper_build_timestamp(timestamp) && !hostname.is_empty()).then_some(base)
+}
+
+fn is_klipper_build_timestamp(candidate: &str) -> bool {
+    candidate.len() == 15
+        && candidate.as_bytes()[8] == b'_'
+        && candidate[..8].bytes().all(|byte| byte.is_ascii_digit())
+        && candidate[9..].bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Classifies eligibility without inferring from MCU family or transport.

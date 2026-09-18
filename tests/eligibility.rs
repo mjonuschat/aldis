@@ -103,6 +103,34 @@ fn requires_matching_dirty_state() {
 }
 
 #[test]
+fn tolerates_klippers_full_dirty_build_suffix_on_the_running_mcu() {
+    assert!(revisions_match(
+        "v0.13.0-762-g9871eeef-dirty-20260918_104500-myhost",
+        "v0.13.0-762-g9871eeef-dirty"
+    ));
+    assert!(revisions_match(
+        "v0.13.0-762-g9871eeef-dirty-20260918_104500-my-host-1",
+        "v0.13.0-762-g9871eeef1-dirty"
+    ));
+}
+
+#[test]
+fn still_rejects_a_mismatched_hash_under_the_full_dirty_build_suffix() {
+    assert!(!revisions_match(
+        "v0.13.0-762-gdeadbeef-dirty-20260918_104500-myhost",
+        "v0.13.0-762-g9871eeef-dirty"
+    ));
+}
+
+#[test]
+fn still_requires_matching_dirty_state_against_the_full_build_suffix() {
+    assert!(!revisions_match(
+        "v0.13.0-762-g9871eeef-dirty-20260918_104500-myhost",
+        "v0.13.0-762-g9871eeef"
+    ));
+}
+
+#[test]
 fn treats_a_flashed_mcu_at_the_firmwares_own_abbreviation_length_as_current() {
     let status = assess_mcu(
         &mcu(
