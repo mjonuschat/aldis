@@ -54,7 +54,6 @@ fn main() -> ExitCode {
 }
 
 fn init_logging_with_fallback(verbose: u8) -> Option<WorkerGuard> {
-    sweep_stale_logs_on_next_launch();
     let log_path = std::env::temp_dir().join(format!("aldis-{}.log", std::process::id()));
     match logging::init(verbose, &log_path) {
         Ok(guard) => Some(guard),
@@ -64,28 +63,6 @@ fn init_logging_with_fallback(verbose: u8) -> Option<WorkerGuard> {
                 eprintln!("warning: could not start stderr logging: {error:#}");
             }
             None
-        }
-    }
-}
-
-fn sweep_stale_logs_on_next_launch() {
-    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("aldis-") || !name.ends_with(".log") {
-            continue;
-        }
-        let is_stale = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
-            .is_ok_and(|age| age > MAX_AGE);
-        if is_stale {
-            let _ = std::fs::remove_file(entry.path());
         }
     }
 }
