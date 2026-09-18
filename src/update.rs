@@ -92,6 +92,14 @@ fn run_update(
         ui.action(&format!("error: {}", aldis::error_chain(error)));
     })
     .context("failed to discover MCUs from Moonraker")?;
+    let unknown = unknown_targets(&inventory, &arguments.targets);
+    if !unknown.is_empty() {
+        anyhow::bail!(
+            "unknown target MCU{}: {}",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", ")
+        );
+    }
     let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
     ui.block(&format_status(
@@ -303,6 +311,17 @@ fn wait_for_mcus(
     })
 }
 
+fn unknown_targets<'a>(inventory: &McuInventory, targets: &'a [String]) -> Vec<&'a str> {
+    let mut unknown = Vec::new();
+    for name in targets {
+        if !inventory.mcus.iter().any(|mcu| mcu.name == *name) && !unknown.contains(&name.as_str())
+        {
+            unknown.push(name.as_str());
+        }
+    }
+    unknown
+}
+
 /// Selected MCU names not yet reporting `checkout`'s revision, each annotated with its
 /// current state so a timeout explains what was actually observed.
 fn pending_mcus(
@@ -355,7 +374,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        UpdateArgs, mcu_count_label, pending_mcus, selects_all, update_failure,
+        UpdateArgs, mcu_count_label, pending_mcus, selects_all, unknown_targets, update_failure,
         wait_for_application_with_timeout, wait_for_mcus,
     };
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
@@ -463,6 +482,30 @@ mod tests {
         }));
 
         assert!(wait_for_mcus(&moonraker, &selected, &checkout).is_ok());
+    }
+
+    #[test]
+    fn reports_every_target_name_with_no_matching_inventory_mcu() {
+        let inventory = McuInventory {
+            mcus: vec![mcu("mcu h723", "v2", None)],
+        };
+
+        assert_eq!(
+            unknown_targets(&inventory, &["mcu h723".to_owned()]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            unknown_targets(&inventory, &["mcu typo".to_owned()]),
+            vec!["mcu typo"]
+        );
+        assert_eq!(
+            unknown_targets(&inventory, &["mcu h723".to_owned(), "mcu typo".to_owned()]),
+            vec!["mcu typo"]
+        );
+        assert_eq!(
+            unknown_targets(&inventory, &["mcu typo".to_owned(), "mcu typo".to_owned()]),
+            vec!["mcu typo"]
+        );
     }
 
     struct FakeMoonraker(Result<McuInventory, String>);
