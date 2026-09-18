@@ -61,17 +61,19 @@ place without changing anything.
 ```
 ~/aldis/aldis status                    # discovered MCUs and whether firmware is current
 ~/aldis/aldis inspect                   # MCU configuration reported by Moonraker
-~/aldis/aldis update                    # build and flash every eligible MCU (the default)
+~/aldis/aldis update                    # build and flash outdated, supported MCUs (prompted per MCU)
 ~/aldis/aldis update <mcu> [<mcu> ...]  # build and flash specific MCUs
+~/aldis/aldis update --all              # build and flash every supported MCU, even ones already current
 ~/aldis/aldis update --auto             # download Klipper/Kalico updates, then build and flash everything outdated, no prompts
-~/aldis/aldis update --force            # update even MCUs already on the checkout revision
+~/aldis/aldis update --force            # update every eligible MCU, same as --all, but also works with specific <mcu> targets
 ```
 
 `update` requires host permissions installed by `~/aldis/aldis setup` (see
-above). `--pull` and `--force` also work with specific `<mcu>` targets;
-`--auto` already implies both and cannot be combined with them. `--all` is
-still accepted for backwards compatibility, but is now the default and no
-longer needs to be passed.
+above). With no `<mcu>` targets, `--force` selects the same MCUs as `--all`;
+unlike `--all`, `--force` can also be combined with explicit `<mcu>` targets
+to update them even when already current. `--pull` also works with specific
+`<mcu>` targets. `--auto` already implies `--pull` and cannot be combined
+with `--pull`, `--force`, `--all`, or explicit MCU names.
 
 ### Logging
 

@@ -60,7 +60,6 @@ fn run_update(
     workspace: &RunWorkspace,
     run_log_path: &Path,
 ) -> anyhow::Result<()> {
-    let select_all = selects_all(&arguments);
     let source = arguments
         .connection
         .klipper_source
@@ -108,11 +107,7 @@ fn run_update(
         &inventory,
         refreshed.as_ref(),
     ));
-    let selection = if select_all {
-        UpdateSelection::All
-    } else {
-        UpdateSelection::Required
-    };
+    let selection = selection_for(arguments.all);
     let offered = inventory
         .mcus
         .iter()
@@ -353,11 +348,12 @@ fn pending_mcus(
         .collect()
 }
 
-/// Whether the update selection should offer every eligible MCU, not just
-/// outdated ones. `--all` remains accepted for backwards compatibility, but
-/// this is now also the default when no target/`--all`/`--auto` was given.
-fn selects_all(arguments: &UpdateArgs) -> bool {
-    arguments.all || (!arguments.auto && arguments.targets.is_empty())
+fn selection_for(all: bool) -> UpdateSelection {
+    if all {
+        UpdateSelection::All
+    } else {
+        UpdateSelection::Required
+    }
 }
 
 fn confirm_pull() -> bool {
@@ -374,7 +370,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        UpdateArgs, mcu_count_label, pending_mcus, selects_all, unknown_targets, update_failure,
+        mcu_count_label, pending_mcus, selection_for, unknown_targets, update_failure,
         wait_for_application_with_timeout, wait_for_mcus,
     };
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
@@ -390,33 +386,11 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_all_when_no_selector_is_given_but_not_with_targets_or_auto() {
-        assert!(selects_all(&update_args(Vec::new(), false, false)));
-        assert!(selects_all(&update_args(Vec::new(), true, false)));
-        assert!(!selects_all(&update_args(Vec::new(), false, true)));
-        assert!(!selects_all(&update_args(
-            vec!["mcu".to_owned()],
-            false,
-            false
-        )));
-    }
+    fn selects_required_by_default_and_all_with_the_all_flag() {
+        use aldis::eligibility::UpdateSelection;
 
-    fn update_args(targets: Vec<String>, all: bool, auto: bool) -> UpdateArgs {
-        UpdateArgs {
-            targets,
-            all,
-            auto,
-            force: false,
-            pull: false,
-            clean: false,
-            connection: crate::cli::ConnectionArgs {
-                moonraker: crate::cli::MoonrakerArgs {
-                    moonraker: "http://127.0.0.1:7125".to_owned(),
-                },
-                klipper_source: None,
-            },
-            workspace: None,
-        }
+        assert_eq!(selection_for(false), UpdateSelection::Required);
+        assert_eq!(selection_for(true), UpdateSelection::All);
     }
 
     #[test]

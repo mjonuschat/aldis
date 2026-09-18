@@ -74,9 +74,9 @@ pub(crate) struct UpdateArgs {
     /// One or more MCU names reported by Moonraker.
     #[arg(value_name = "MCU", num_args = 1.., conflicts_with_all = ["all", "auto"])]
     pub(crate) targets: Vec<String>,
-    /// Update every eligible MCU. This is now the default; kept only for
-    /// backwards compatibility.
-    #[arg(long, hide = true, conflicts_with_all = ["targets", "auto"])]
+    /// Update every supported MCU, including ones already on the checkout
+    /// revision. Without this, only outdated MCUs are offered.
+    #[arg(long, conflicts_with_all = ["targets", "auto"])]
     pub(crate) all: bool,
     /// Fast-forward, then update every outdated supported MCU without prompts.
     #[arg(long, conflicts_with_all = ["targets", "all", "force", "pull"])]
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn hides_the_now_redundant_all_flag_from_help_but_still_accepts_it() {
+    fn documents_the_all_flag_and_still_accepts_it() {
         let help = Cli::command()
             .find_subcommand("update")
             .expect("update subcommand")
@@ -153,7 +153,7 @@ mod tests {
             .render_help()
             .to_string();
 
-        assert!(!help.contains("--all"));
+        assert!(help.contains("--all"));
         let CliCommand::Update(arguments) = Cli::try_parse_from(["aldis", "update", "--all"])
             .expect("parse update --all")
             .command
