@@ -1,9 +1,38 @@
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use aldis::flash::katapult::can::{
     CanFrame, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport,
 };
 use aldis::flash::katapult::session::Transport;
+
+#[test]
+fn times_out_an_exchange_flooded_with_unrelated_can_traffic() {
+    let address = KatapultCanAddress::new(0xe781_9ed8_e7d3).unwrap();
+    let io = UnrelatedTrafficCanIo { other_id: 0x3f1 };
+    let mut transport = KatapultCanTransport::new(io, address, Duration::from_millis(50));
+
+    assert!(matches!(
+        transport.exchange(&[0x01]),
+        Err(CanTransportError::Timeout)
+    ));
+}
+
+struct UnrelatedTrafficCanIo {
+    other_id: u16,
+}
+
+impl CanIo for UnrelatedTrafficCanIo {
+    type Error = ();
+
+    fn write(&mut self, _frame: CanFrame) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn read(&mut self) -> Result<CanFrame, Self::Error> {
+        Ok(CanFrame::new(self.other_id, &[0; 8]).unwrap())
+    }
+}
 
 #[test]
 fn assigns_the_explicit_uuid_and_fragments_protocol_frames() {
@@ -40,7 +69,7 @@ fn rejects_response_assembly_larger_than_katapult_can_represent() {
         received,
         ..Default::default()
     };
-    let mut transport = KatapultCanTransport::new(io, address);
+    let mut transport = KatapultCanTransport::new(io, address, Duration::from_secs(1));
 
     assert!(matches!(
         transport.exchange(&[]),
@@ -79,7 +108,7 @@ fn assigns_a_node_then_reassembles_only_its_response_frames() {
         ]),
         ..Default::default()
     };
-    let mut transport = KatapultCanTransport::new(io, address);
+    let mut transport = KatapultCanTransport::new(io, address, Duration::from_secs(1));
 
     transport.assign_node().unwrap();
     assert_eq!(
@@ -98,7 +127,8 @@ fn assigns_a_node_then_reassembles_only_its_response_frames() {
 #[test]
 fn requests_bootloader_entry_without_assigning_a_katapult_node() {
     let address = KatapultCanAddress::new(0xe781_9ed8_e7d3).unwrap();
-    let mut transport = KatapultCanTransport::new(ScriptedCanIo::default(), address);
+    let mut transport =
+        KatapultCanTransport::new(ScriptedCanIo::default(), address, Duration::from_secs(1));
 
     transport.request_bootloader_entry().unwrap();
 

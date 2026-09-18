@@ -75,7 +75,8 @@ pub fn flash_system(
         KatapultEndpoint::Can { interface, uuid } => {
             let io = SocketCanIo::open(&interface, options.read_timeout)
                 .map_err(SystemKatapultError::CanSocket)?;
-            let bootstrap = request_can_bootloader(io, uuid).map_err(SystemKatapultError::Can)?;
+            let bootstrap = request_can_bootloader(io, uuid, options.read_timeout)
+                .map_err(SystemKatapultError::Can)?;
             thread::sleep(options.can_bootloader_settle);
             let mut backend = bootstrap.connect().map_err(SystemKatapultError::Can)?;
             backend.flash(firmware).map_err(SystemKatapultError::Flash)

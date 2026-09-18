@@ -5,7 +5,7 @@
 
 use std::fmt;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
@@ -82,6 +82,8 @@ pub enum CanTransportError<E> {
         /// Number of bytes actually received.
         actual: usize,
     },
+    /// No matching response arrived before the configured deadline.
+    Timeout,
 }
 
 impl fmt::Display for CanTransportError<io::Error> {
@@ -96,6 +98,10 @@ impl fmt::Display for CanTransportError<io::Error> {
                 f,
                 "CAN response of {actual} bytes exceeds the {expected} bytes declared by its header"
             ),
+            Self::Timeout => write!(
+                f,
+                "CAN exchange did not complete within the configured timeout"
+            ),
         }
     }
 }
@@ -105,6 +111,7 @@ impl std::error::Error for CanTransportError<io::Error> {
         match self {
             Self::Io(error) => Some(error),
             Self::ResponseTooLarge { .. } | Self::ResponseLengthExceeded { .. } => None,
+            Self::Timeout => None,
         }
     }
 }
@@ -198,12 +205,25 @@ impl KatapultCanAddress {
 pub struct KatapultCanTransport<T> {
     io: T,
     address: KatapultCanAddress,
+    exchange_timeout: Duration,
 }
 
 impl<T> KatapultCanTransport<T> {
     /// Creates a transport without sending a CAN-admin assignment command.
-    pub fn new(io: T, address: KatapultCanAddress) -> Self {
-        Self { io, address }
+    ///
+    /// `exchange_timeout` bounds one whole `exchange` call, not one `read`:
+    /// a steady stream of unrelated CAN traffic keeps individual reads
+    /// succeeding, so only a deadline spanning the loop can guarantee this
+    /// returns. The deadline is checked before each `read()`, not around
+    /// it, so actual worst-case wall time is `exchange_timeout` plus one
+    /// `CanIo::read()` call's own blocking duration — this guarantees
+    /// termination, not termination within exactly `exchange_timeout`.
+    pub fn new(io: T, address: KatapultCanAddress, exchange_timeout: Duration) -> Self {
+        Self {
+            io,
+            address,
+            exchange_timeout,
+        }
     }
 
     /// Returns the underlying CAN I/O implementation.
@@ -239,9 +259,13 @@ impl<T: CanIo> Transport for KatapultCanTransport<T> {
             self.io.write(frame).map_err(CanTransportError::Io)?;
         }
 
+        let deadline = Instant::now() + self.exchange_timeout;
         let mut response = Vec::new();
         let mut expected_length = None;
         loop {
+            if Instant::now() >= deadline {
+                return Err(CanTransportError::Timeout);
+            }
             let frame = self.io.read().map_err(CanTransportError::Io)?;
             if frame.id() != self.address.response_id() {
                 continue;

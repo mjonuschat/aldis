@@ -149,9 +149,10 @@ impl<T: CanIo> CanKatapultBootstrap<T> {
 pub fn request_can_bootloader<T: CanIo>(
     io: T,
     uuid: u64,
+    exchange_timeout: Duration,
 ) -> Result<CanKatapultBootstrap<T>, CanBootstrapError<T::Error>> {
     let address = KatapultCanAddress::new(uuid).map_err(CanBootstrapError::Address)?;
-    let mut transport = KatapultCanTransport::new(io, address);
+    let mut transport = KatapultCanTransport::new(io, address, exchange_timeout);
     transport
         .request_bootloader_entry()
         .map_err(CanBootstrapError::Transport)?;

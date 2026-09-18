@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use aldis::flash::katapult::bootstrap::request_can_bootloader;
 use aldis::flash::katapult::can::{CanFrame, CanIo};
 
@@ -21,17 +23,26 @@ impl CanIo for ScriptedCanIo {
 
 #[test]
 fn separates_can_reboot_from_katapult_node_assignment() {
-    let bootstrap = request_can_bootloader(ScriptedCanIo::default(), 0xe781_9ed8_e7d3).unwrap();
+    let bootstrap = request_can_bootloader(
+        ScriptedCanIo::default(),
+        0xe781_9ed8_e7d3,
+        Duration::from_secs(1),
+    )
+    .unwrap();
 
     assert_eq!(
         bootstrap.into_transport().into_io().written,
         vec![CanFrame::new(0x3f0, &[0x02, 0xe7, 0x81, 0x9e, 0xd8, 0xe7, 0xd3]).unwrap(),]
     );
 
-    let backend = request_can_bootloader(ScriptedCanIo::default(), 0xe781_9ed8_e7d3)
-        .unwrap()
-        .connect()
-        .unwrap();
+    let backend = request_can_bootloader(
+        ScriptedCanIo::default(),
+        0xe781_9ed8_e7d3,
+        Duration::from_secs(1),
+    )
+    .unwrap()
+    .connect()
+    .unwrap();
     assert_eq!(
         backend.into_transport().into_io().written,
         vec![

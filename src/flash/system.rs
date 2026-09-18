@@ -412,7 +412,8 @@ fn flash_can_system(
         .map_err(SystemFlashError::CanUsbTopology)?;
     let io = SocketCanIo::open(interface, options.katapult.read_timeout)
         .map_err(SystemFlashError::CanSocket)?;
-    let bootstrap = request_can_bootloader(io, uuid).map_err(SystemFlashError::Can)?;
+    let bootstrap = request_can_bootloader(io, uuid, options.katapult.read_timeout)
+        .map_err(SystemFlashError::Can)?;
     if let (Some(usb_path), Some((usb_id, manufacturer))) = (usb_path, initial_usb_identity) {
         let started = Instant::now();
         let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
