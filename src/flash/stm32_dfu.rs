@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use dfu_nusb::DfuNusb;
+use dfu_nusb::{DfuNusb, DfuSync};
 use nusb::MaybeFuture;
 use nusb::transfer::TransferError;
 
@@ -255,21 +255,40 @@ pub fn probe_application_start_at_path(
                 .detach_and_claim_interface(interface_number)
                 .await
                 .map_err(Stm32DfuError::Discovery)?;
-            let mut dfu = DfuNusb::open(device, interface, 0)
-                .await
-                .map_err(Stm32DfuError::Transport)?
-                .into_sync_dfu();
             let mut readings: Vec<(u32, [u8; 8])> = Vec::new();
+            let mut session: Option<DfuSync> = None;
             for offset_hex in FLASH_START_OFFSETS_HEX {
                 let offset = u32::from_str_radix(offset_hex, 16)
                     .expect("FLASH_START_OFFSETS_HEX is valid hex");
                 let address = FLASH_START + offset;
-                let (next_dfu, bytes) = dfu
-                    .upload_from_address(address, 8)
-                    .map_err(Stm32DfuError::Transport)?;
-                dfu = next_dfu;
-                if let Ok(bytes) = <[u8; 8]>::try_from(bytes.as_slice()) {
-                    readings.push((address, bytes));
+                let dfu = match session.take() {
+                    Some(dfu) => dfu,
+                    None => match DfuNusb::open(device.clone(), interface.clone(), 0).await {
+                        Ok(dfu) => dfu.into_sync_dfu(),
+                        Err(error) => {
+                            tracing::debug!(
+                                address = %format_args!("{address:#x}"),
+                                error = %Stm32DfuError::Transport(error),
+                                "could not open a dfu session for candidate offset, skipping"
+                            );
+                            continue;
+                        }
+                    },
+                };
+                match dfu.upload_from_address(address, 8) {
+                    Ok((next, bytes)) => {
+                        session = Some(next);
+                        if let Ok(bytes) = <[u8; 8]>::try_from(bytes.as_slice()) {
+                            readings.push((address, bytes));
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            address = %format_args!("{address:#x}"),
+                            error = %Stm32DfuError::Transport(error),
+                            "could not read candidate application offset, skipping"
+                        );
+                    }
                 }
             }
             Ok(probe_application_start(|address| {
