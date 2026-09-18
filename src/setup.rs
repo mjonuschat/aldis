@@ -51,7 +51,14 @@ fn install_setup() -> anyhow::Result<()> {
     if !status.success() {
         bail!("could not reload udev rules: udevadm exited with {status}");
     }
-    tracing::info!("udev rules reloaded");
+    let status = Command::new("udevadm")
+        .args(["trigger", "--subsystem-match=usb", "--settle"])
+        .status()
+        .context("could not trigger udev rules")?;
+    if !status.success() {
+        bail!("could not trigger udev rules: udevadm exited with {status}");
+    }
+    tracing::info!("udev rules reloaded and triggered");
     println!("{}", setup_install_report(rules_action, service_action));
     Ok(())
 }
@@ -66,7 +73,7 @@ fn install_file(path: &str, contents: &str, description: &str) -> anyhow::Result
 
 fn setup_install_report(rules_action: &str, service_action: &str) -> String {
     format!(
-        "aldis setup:\n  udev rules: {rules_action}\n  service policy: {service_action}\n  service policy permissions: set to 0440\n  udev rules: reloaded"
+        "aldis setup:\n  udev rules: {rules_action}\n  service policy: {service_action}\n  service policy permissions: set to 0440\n  udev rules: reloaded and triggered"
     )
 }
 
@@ -146,7 +153,7 @@ mod tests {
     fn reports_setup_install_actions() {
         assert_eq!(
             setup_install_report("already current", "installed"),
-            "aldis setup:\n  udev rules: already current\n  service policy: installed\n  service policy permissions: set to 0440\n  udev rules: reloaded"
+            "aldis setup:\n  udev rules: already current\n  service policy: installed\n  service policy permissions: set to 0440\n  udev rules: reloaded and triggered"
         );
     }
 }
