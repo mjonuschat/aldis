@@ -28,6 +28,33 @@ pub fn is_katapult_usb(usb_id: &str, manufacturer: &str) -> bool {
     )
 }
 
+/// Returns whether a re-enumerated Katapult USB identity is still missing its tty.
+///
+/// Katapult's CDC-ACM interface enumerates after its USB identity, so callers
+/// must keep waiting rather than treat the bootloader as observed yet.
+fn awaiting_katapult_serial(
+    usb_id: &str,
+    manufacturer: &str,
+    serial_device: &Option<PathBuf>,
+) -> bool {
+    is_katapult_usb(usb_id, manufacturer) && serial_device.is_none()
+}
+
+/// Builds the observed bootloader at `usb_path`, unless it's a Katapult
+/// identity still waiting on its CDC-ACM tty to enumerate.
+fn observed_if_ready(usb_path: &Path, identity: &UsbIdentity) -> Option<ObservedUsbBootloader> {
+    let serial_device = usb_tty(usb_path);
+    if awaiting_katapult_serial(&identity.usb_id, &identity.manufacturer, &serial_device) {
+        return None;
+    }
+    Some(ObservedUsbBootloader {
+        sysfs_path: usb_path.to_path_buf(),
+        usb_id: identity.usb_id.clone(),
+        manufacturer: identity.manufacturer.clone(),
+        serial_device,
+    })
+}
+
 /// Sends and receives bounded byte chunks from a serial device.
 pub trait SerialIo {
     /// The serial implementation's error type.
@@ -181,7 +208,13 @@ impl SystemSerialIo {
         poll_interval: Duration,
         matches: impl Fn(&str, &str) -> bool,
     ) -> Result<PathBuf, UsbBootloaderError> {
-        Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, usb_tty)
+        Self::request_usb_bootloader_and_wait(
+            path,
+            timeout,
+            poll_interval,
+            matches,
+            |usb_path, _| usb_tty(usb_path),
+        )
     }
 
     /// Requests USB bootloader entry and returns the observed bootloader at the same topology.
@@ -191,15 +224,13 @@ impl SystemSerialIo {
         poll_interval: Duration,
         matches: impl Fn(&str, &str) -> bool,
     ) -> Result<ObservedUsbBootloader, UsbBootloaderError> {
-        Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, |usb_path| {
-            let identity = usb_identity(usb_path);
-            usb_tty(usb_path).map(|serial_device| ObservedUsbBootloader {
-                sysfs_path: usb_path.to_path_buf(),
-                usb_id: identity.usb_id,
-                manufacturer: identity.manufacturer,
-                serial_device: Some(serial_device),
-            })
-        })
+        Self::request_usb_bootloader_and_wait(
+            path,
+            timeout,
+            poll_interval,
+            matches,
+            observed_if_ready,
+        )
     }
 
     /// Requests USB bootloader entry and observes any re-enumerated identity.
@@ -235,16 +266,18 @@ impl SystemSerialIo {
         retry_until_available(timeout, poll_interval, || {
             let identity = usb_identity(usb_path);
             last_identity = identity.clone();
-            if identity != initial_identity
-                && identity.is_complete()
-                && let Some(serial_device) = usb_tty(usb_path)
-            {
-                Ok(ObservedUsbBootloader {
-                    sysfs_path: usb_path.to_path_buf(),
-                    usb_id: identity.usb_id,
-                    manufacturer: identity.manufacturer,
-                    serial_device: Some(serial_device),
-                })
+            if identity != initial_identity && identity.is_complete() {
+                match observed_if_ready(usb_path, &identity) {
+                    Some(observed) => Ok(observed),
+                    None => {
+                        tracing::debug!(
+                            usb_id = %identity.usb_id,
+                            manufacturer = %identity.manufacturer,
+                            "katapult usb bootloader observed without a serial device yet, still waiting"
+                        );
+                        Err(())
+                    }
+                }
             } else {
                 tracing::debug!(
                     usb_id = %identity.usb_id,
@@ -264,7 +297,13 @@ impl SystemSerialIo {
         poll_interval: Duration,
         matches: impl Fn(&str, &str) -> bool,
     ) -> Result<(), UsbBootloaderError> {
-        Self::request_usb_bootloader_and_wait(path, timeout, poll_interval, matches, |_| Some(()))
+        Self::request_usb_bootloader_and_wait(
+            path,
+            timeout,
+            poll_interval,
+            matches,
+            |_, _| Some(()),
+        )
     }
 
     fn request_usb_bootloader_and_wait<T>(
@@ -272,7 +311,7 @@ impl SystemSerialIo {
         timeout: Duration,
         poll_interval: Duration,
         matches: impl Fn(&str, &str) -> bool,
-        ready: impl Fn(&Path) -> Option<T>,
+        ready: impl Fn(&Path, &UsbIdentity) -> Option<T>,
     ) -> Result<T, UsbBootloaderError> {
         let usb_path = usb_device_path(path).ok_or_else(|| UsbBootloaderError::NotUsbDevice {
             device: path.to_path_buf(),
@@ -289,7 +328,7 @@ impl SystemSerialIo {
             if identity != initial_identity
                 && identity.is_complete()
                 && matches(&identity.usb_id, &identity.manufacturer)
-                && let Some(result) = ready(&usb_path)
+                && let Some(result) = ready(&usb_path, &identity)
             {
                 Ok(result)
             } else {
@@ -446,21 +485,42 @@ mod tests {
     }
 
     #[test]
-    fn reports_not_detected_when_a_new_identity_never_exposes_a_tty() {
+    fn reports_not_detected_when_a_new_katapult_identity_never_exposes_a_tty() {
         let usb_path = unique_temporary_path();
         fs::create_dir_all(&usb_path).expect("create sysfs fixture");
-        write_identity(&usb_path, "2e8a:000c", "raspberry pi");
+        write_identity(&usb_path, "1d50:6177", "katapult");
 
         let error = SystemSerialIo::observe_any_usb_bootloader_at_path(
             &usb_path,
-            "1d50:6177",
-            "openmoko, inc.",
+            "2e8a:000c",
+            "raspberry pi",
             Duration::from_millis(30),
             Duration::from_millis(5),
         )
-        .expect_err("no tty ever appears, so the wait should time out");
+        .expect_err("katapult never exposes a tty, so the wait should time out");
 
         assert!(matches!(error, UsbBootloaderError::NotDetected { .. }));
+
+        fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn observes_a_non_katapult_bootloader_immediately_without_waiting_for_a_tty() {
+        let usb_path = unique_temporary_path();
+        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
+        write_identity(&usb_path, "0483:df11", "stmicroelectronics");
+
+        let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            "1d50:6177",
+            "openmoko, inc.",
+            Duration::from_millis(500),
+            Duration::from_millis(5),
+        )
+        .expect("stm32 dfu should be observed without a serial device");
+
+        assert_eq!(observed.usb_id, "0483:df11");
+        assert_eq!(observed.serial_device, None);
 
         fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
     }
