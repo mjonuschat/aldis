@@ -14,7 +14,7 @@ use aldis::flash::stm32_dfu::{
 use aldis::flash::usb_bootloader::UsbBootloaderKind;
 
 use crate::cli::RebootArgs;
-use crate::ui::{UpdateUi, read_confirmation};
+use crate::ui::UpdateUi;
 
 const USB_SYSFS_ROOT: &str = "/sys/bus/usb/devices";
 const KATAPULT_BAUD_RATE: u32 = 250_000;
@@ -138,5 +138,5 @@ fn confirm(ui: &mut UpdateUi, text: &str, skip_prompt: bool) -> bool {
         return true;
     }
     ui.prompt(text);
-    matches!(read_confirmation().as_deref(), Ok("y") | Ok("yes"))
+    crate::ui::confirmed()
 }

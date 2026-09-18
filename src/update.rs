@@ -153,10 +153,7 @@ fn run_update(
             ui.heading(&format!("Update {name} from {current} to {next}"));
         } else {
             ui.prompt(&format!("Update {name} from {current} to {next}?"));
-            if !matches!(
-                crate::ui::read_confirmation().as_deref(),
-                Ok("y") | Ok("yes")
-            ) {
+            if !crate::ui::confirmed() {
                 continue;
             }
         }
@@ -359,10 +356,7 @@ fn selection_for(all: bool) -> UpdateSelection {
 fn confirm_pull() -> bool {
     eprint!("Pull the configured Klipper upstream before updating? [Y/n] ");
     let _ = io::stderr().flush();
-    matches!(
-        crate::ui::read_confirmation().as_deref(),
-        Ok("") | Ok("y") | Ok("yes")
-    )
+    crate::ui::confirmed()
 }
 
 #[cfg(test)]

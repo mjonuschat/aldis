@@ -58,7 +58,7 @@ impl UpdateUi {
     pub(crate) fn prompt(&mut self, text: &str) {
         self.clear_active();
         self.action(&format!("prompt: {text}"));
-        eprint!("\n{} [y/N] ", self.style("1", text));
+        eprint!("\n{} [Y/n] ", self.style("1", text));
         let _ = io::stderr().flush();
     }
 
@@ -218,9 +218,18 @@ pub(crate) fn read_confirmation() -> Result<String, io::Error> {
     Ok(input.trim().to_ascii_lowercase())
 }
 
+pub(crate) fn confirmed_by_default(response: &str) -> bool {
+    matches!(response, "" | "y" | "yes")
+}
+
+/// Reads a `[Y/n]`-style confirmation from stdin, defaulting to yes.
+pub(crate) fn confirmed() -> bool {
+    read_confirmation().is_ok_and(|response| confirmed_by_default(&response))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{colors_enabled, plain_success_line};
+    use super::{colors_enabled, confirmed_by_default, plain_success_line};
     use crate::cli::ColorMode;
 
     #[test]
@@ -233,5 +242,14 @@ mod tests {
             plain_success_line("compiled firmware"),
             "  [ok] compiled firmware"
         );
+    }
+
+    #[test]
+    fn treats_a_bare_enter_as_yes() {
+        assert!(confirmed_by_default(""));
+        assert!(confirmed_by_default("y"));
+        assert!(confirmed_by_default("yes"));
+        assert!(!confirmed_by_default("n"));
+        assert!(!confirmed_by_default("no"));
     }
 }
