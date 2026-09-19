@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aldis::checkout::{CheckoutError, refresh, revision};
 use aldis::eligibility::CheckoutRevision;
-use git2::{Commit, Repository, Signature};
 
 #[test]
 fn fast_forwards_the_configured_upstream_branch() {
@@ -12,41 +12,24 @@ fn fast_forwards_the_configured_upstream_branch() {
     let remote_path = root.join("remote.git");
     let source_path = root.join("source");
     let checkout_path = root.join("checkout");
-    let remote = Repository::init_bare(&remote_path).expect("remote repository");
-    let source = Repository::init(&source_path).expect("source repository");
-    commit_file(&source, "README", "first", "initial");
-    push_master(&source, &remote_path);
-    drop(remote);
+    init_bare(&remote_path);
+    init(&source_path);
+    commit_file(&source_path, "README", "first", "initial");
+    push_master(&source_path, &remote_path);
 
-    let checkout = Repository::clone(remote_path.to_str().expect("UTF-8 path"), &checkout_path)
-        .expect("checkout clone");
-    let before = checkout
-        .head()
-        .expect("checkout head")
-        .target()
-        .expect("head target");
-    let writer = Repository::clone(
-        remote_path.to_str().expect("UTF-8 path"),
-        root.join("writer"),
-    )
-    .expect("writer clone");
-    commit_file(&writer, "new-file", "new", "remote update");
-    push_master(&writer, &remote_path);
+    clone(&remote_path, &checkout_path);
+    let before = head_commit(&checkout_path);
+    let writer_path = root.join("writer");
+    clone(&remote_path, &writer_path);
+    commit_file(&writer_path, "new-file", "new", "remote update");
+    push_master(&writer_path, &remote_path);
 
     let result = refresh(&checkout_path).expect("fast-forward refresh");
 
     assert!(result.advanced);
     assert_eq!(result.commits_advanced, 1);
     assert_ne!(result.before, result.after);
-    assert_ne!(
-        Repository::open(&checkout_path)
-            .expect("reopen checkout")
-            .head()
-            .expect("head")
-            .target()
-            .expect("target"),
-        before
-    );
+    assert_ne!(head_commit(&checkout_path), before);
     assert_eq!(
         fs::read_to_string(checkout_path.join("new-file")).expect("new file"),
         "new"
@@ -60,21 +43,17 @@ fn preserves_non_conflicting_local_modifications_during_fast_forward() {
     let remote_path = root.join("remote.git");
     let source_path = root.join("source");
     let checkout_path = root.join("checkout");
-    Repository::init_bare(&remote_path).expect("remote repository");
-    let source = Repository::init(&source_path).expect("source repository");
-    commit_file(&source, "README", "first", "initial");
-    push_master(&source, &remote_path);
+    init_bare(&remote_path);
+    init(&source_path);
+    commit_file(&source_path, "README", "first", "initial");
+    push_master(&source_path, &remote_path);
 
-    Repository::clone(remote_path.to_str().expect("UTF-8 path"), &checkout_path)
-        .expect("checkout clone");
+    clone(&remote_path, &checkout_path);
     fs::write(checkout_path.join("local-plugin.py"), "local plugin").expect("local plugin");
-    let writer = Repository::clone(
-        remote_path.to_str().expect("UTF-8 path"),
-        root.join("writer"),
-    )
-    .expect("writer clone");
-    commit_file(&writer, "remote-file", "remote", "remote update");
-    push_master(&writer, &remote_path);
+    let writer_path = root.join("writer");
+    clone(&remote_path, &writer_path);
+    commit_file(&writer_path, "remote-file", "remote", "remote update");
+    push_master(&writer_path, &remote_path);
 
     let result = refresh(&checkout_path).expect("fast-forward refresh");
 
@@ -92,34 +71,27 @@ fn preserves_non_conflicting_local_modifications_during_fast_forward() {
 
 #[test]
 fn fast_forwards_a_shallow_checkout() {
-    // libgit2's local transport refuses to even create a shallow clone
-    // ("shallow fetch is not supported by the local transport"), so the
-    // shallow checkout here is made with the system `git` binary, matching
-    // how a real Klipper checkout ends up shallow in practice.
     let root = temporary_directory("shallow");
     let remote_path = root.join("remote.git");
     let source_path = root.join("source");
     let checkout_path = root.join("checkout");
-    Repository::init_bare(&remote_path).expect("remote repository");
-    let source = Repository::init(&source_path).expect("source repository");
-    commit_file(&source, "README", "first", "initial");
-    push_master(&source, &remote_path);
+    init_bare(&remote_path);
+    init(&source_path);
+    commit_file(&source_path, "README", "first", "initial");
+    push_master(&source_path, &remote_path);
 
-    let status = std::process::Command::new("git")
-        .args(["clone", "--depth", "1"])
-        .arg(format!("file://{}", remote_path.display()))
-        .arg(&checkout_path)
-        .status()
-        .expect("run git clone");
-    assert!(status.success());
-    assert!(
-        Repository::open(&checkout_path)
-            .expect("reopen checkout")
-            .is_shallow()
+    clone_with(
+        &format!("file://{}", remote_path.display()),
+        &checkout_path,
+        &["--depth", "1"],
+    );
+    assert_eq!(
+        run(&checkout_path, &["rev-parse", "--is-shallow-repository"]),
+        "true"
     );
 
-    commit_file(&source, "remote-file", "remote", "remote update");
-    push_master(&source, &remote_path);
+    commit_file(&source_path, "remote-file", "remote", "remote update");
+    push_master(&source_path, &remote_path);
 
     let result = refresh(&checkout_path).expect("fast-forward a shallow checkout");
 
@@ -138,36 +110,24 @@ fn aborts_before_changing_head_when_the_checkout_has_diverged() {
     let remote_path = root.join("remote.git");
     let source_path = root.join("source");
     let checkout_path = root.join("checkout");
-    Repository::init_bare(&remote_path).expect("remote repository");
-    let source = Repository::init(&source_path).expect("source repository");
-    commit_file(&source, "README", "first", "initial");
-    push_master(&source, &remote_path);
+    init_bare(&remote_path);
+    init(&source_path);
+    commit_file(&source_path, "README", "first", "initial");
+    push_master(&source_path, &remote_path);
 
-    let checkout = Repository::clone(remote_path.to_str().expect("UTF-8 path"), &checkout_path)
-        .expect("checkout clone");
-    commit_file(&checkout, "local-file", "local", "local update");
-    let before = checkout.head().expect("head").target().expect("target");
-    let writer = Repository::clone(
-        remote_path.to_str().expect("UTF-8 path"),
-        root.join("writer"),
-    )
-    .expect("writer clone");
-    commit_file(&writer, "remote-file", "remote", "remote update");
-    push_master(&writer, &remote_path);
+    clone(&remote_path, &checkout_path);
+    commit_file(&checkout_path, "local-file", "local", "local update");
+    let before = head_commit(&checkout_path);
+    let writer_path = root.join("writer");
+    clone(&remote_path, &writer_path);
+    commit_file(&writer_path, "remote-file", "remote", "remote update");
+    push_master(&writer_path, &remote_path);
 
     assert!(matches!(
         refresh(&checkout_path),
         Err(CheckoutError::NotFastForward { .. })
     ));
-    assert_eq!(
-        Repository::open(&checkout_path)
-            .expect("reopen checkout")
-            .head()
-            .expect("head")
-            .target()
-            .expect("target"),
-        before
-    );
+    assert_eq!(head_commit(&checkout_path), before);
     assert!(!checkout_path.join("remote-file").exists());
     fs::remove_dir_all(root).expect("test directory cleanup");
 }
@@ -175,8 +135,8 @@ fn aborts_before_changing_head_when_the_checkout_has_diverged() {
 #[test]
 fn reports_tracked_changes_without_treating_untracked_plugins_as_dirty() {
     let root = temporary_directory("revision");
-    let repository = Repository::init(&root).expect("repository");
-    commit_file(&repository, "README", "first", "initial");
+    init(&root);
+    commit_file(&root, "README", "first", "initial");
     fs::write(root.join("local-plugin.py"), "local plugin").expect("local plugin");
 
     assert!(
@@ -191,48 +151,81 @@ fn reports_tracked_changes_without_treating_untracked_plugins_as_dirty() {
     fs::remove_dir_all(root).expect("test directory cleanup");
 }
 
-fn commit_file(repository: &Repository, file_name: &str, contents: &str, message: &str) {
-    fs::write(
-        repository
-            .workdir()
-            .expect("non-bare repository")
-            .join(file_name),
-        contents,
-    )
-    .expect("fixture file");
-    let mut index = repository.index().expect("index");
-    index.add_path(Path::new(file_name)).expect("index path");
-    index.write().expect("write index");
-    let tree_id = index.write_tree().expect("write tree");
-    let tree = repository.find_tree(tree_id).expect("tree");
-    let signature = Signature::now("aldis test", "test@example.com").expect("signature");
-    let parents = repository
-        .head()
-        .ok()
-        .and_then(|head| head.peel_to_commit().ok())
-        .into_iter()
-        .collect::<Vec<Commit<'_>>>();
-    let parent_references = parents.iter().collect::<Vec<_>>();
-    repository
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &parent_references,
-        )
-        .expect("commit");
+fn run(path: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-fn push_master(repository: &Repository, remote_path: &Path) {
-    let mut remote = repository
-        .find_remote("origin")
-        .or_else(|_| repository.remote("origin", remote_path.to_str().expect("UTF-8 path")))
-        .expect("origin remote");
-    remote
-        .push(&["refs/heads/master:refs/heads/master"], None)
-        .expect("push master");
+fn init(path: &Path) {
+    fs::create_dir_all(path).expect("fixture directory");
+    run(path, &["init", "--initial-branch=master"]);
+    run(path, &["config", "user.name", "aldis test"]);
+    run(path, &["config", "user.email", "test@example.com"]);
+}
+
+fn init_bare(path: &Path) {
+    fs::create_dir_all(path).expect("fixture directory");
+    run(path, &["init", "--bare", "--initial-branch=master"]);
+}
+
+fn clone(remote_path: &Path, checkout_path: &Path) {
+    clone_with(
+        remote_path.to_str().expect("UTF-8 path"),
+        checkout_path,
+        &[],
+    );
+}
+
+// A local `git clone` silently ignores `--depth`; only a `file://` remote
+// honors it, so the shallow-checkout test passes one explicitly.
+fn clone_with(remote: &str, checkout_path: &Path, extra_args: &[&str]) {
+    let status = Command::new("git")
+        .arg("clone")
+        .args(extra_args)
+        .arg(remote)
+        .arg(checkout_path)
+        .status()
+        .expect("run git clone");
+    assert!(status.success());
+    run(checkout_path, &["config", "user.name", "aldis test"]);
+    run(checkout_path, &["config", "user.email", "test@example.com"]);
+}
+
+fn commit_file(repository_path: &Path, file_name: &str, contents: &str, message: &str) {
+    fs::write(repository_path.join(file_name), contents).expect("fixture file");
+    run(repository_path, &["add", file_name]);
+    run(repository_path, &["commit", "-m", message]);
+}
+
+fn push_master(repository_path: &Path, remote_path: &Path) {
+    let remotes = run(repository_path, &["remote"]);
+    if !remotes.lines().any(|remote| remote == "origin") {
+        run(
+            repository_path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote_path.to_str().expect("UTF-8 path"),
+            ],
+        );
+    }
+    run(repository_path, &["push", "origin", "master:master"]);
+}
+
+fn head_commit(repository_path: &Path) -> String {
+    run(repository_path, &["rev-parse", "HEAD"])
 }
 
 fn temporary_directory(name: &str) -> PathBuf {

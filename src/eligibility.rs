@@ -87,11 +87,11 @@ pub fn assess_mcu(mcu: &Mcu, checkout: &CheckoutRevision) -> McuStatus {
 /// Compares a running firmware version against a selected checkout revision.
 ///
 /// The two sides may embed the commit hash at different abbreviation lengths:
-/// libgit2 (used to compute `selected`) has no equivalent to real git's size-based
-/// "auto" abbreviation heuristic (used by Klipper's own build to compute `running`),
-/// so an exact string match would spuriously report an up-to-date MCU as needing an
-/// update. Any abbreviation of the same commit hash is a prefix of any longer one,
-/// so tolerate a length difference in the hash by comparing prefixes instead.
+/// `selected` and `running` (Klipper's own build) are computed by separate `git
+/// describe` invocations, possibly with different git versions, so an exact
+/// string match would spuriously report an up-to-date MCU as needing an update.
+/// Any abbreviation of the same commit hash is a prefix of any longer one, so
+/// tolerate a length difference in the hash by comparing prefixes instead.
 pub fn revisions_match(running: &str, selected: &str) -> bool {
     let (running_base, running_dirty) = split_dirty_suffix(running);
     let (selected_base, selected_dirty) = split_dirty_suffix(selected);

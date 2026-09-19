@@ -1,27 +1,24 @@
 //! Local Klipper checkout revision discovery.
 
 use std::path::Path;
-use std::process::Command;
-
-use git2::{
-    BranchType, DescribeFormatOptions, DescribeOptions, Repository, StatusOptions,
-    build::CheckoutBuilder,
-};
+use std::process::{Command, Output};
 
 use crate::eligibility::CheckoutRevision;
 
 /// Failure while examining a selected Klipper checkout.
 #[derive(Debug, thiserror::Error)]
 pub enum CheckoutError {
-    /// The path is not an accessible Git repository.
-    #[error("could not open the Klipper checkout")]
-    Repository(#[source] git2::Error),
-    /// The checkout revision could not be described.
-    #[error("could not describe the Klipper checkout")]
-    Describe(#[source] git2::Error),
-    /// Worktree state could not be checked.
-    #[error("could not inspect the Klipper checkout")]
-    Status(#[source] git2::Error),
+    /// The `git` binary could not be executed.
+    #[error("could not run git")]
+    Spawn(#[source] std::io::Error),
+    /// A `git` invocation against the checkout failed.
+    #[error("could not {action} the Klipper checkout: {stderr}")]
+    Command {
+        /// The operation that failed.
+        action: &'static str,
+        /// `git`'s own error output.
+        stderr: String,
+    },
     /// The checked-out branch does not name an upstream to refresh from.
     #[error("the checked-out Klipper branch has no configured upstream")]
     UpstreamNotConfigured,
@@ -35,29 +32,12 @@ pub enum CheckoutError {
         /// The configured upstream branch name.
         upstream: String,
     },
-    /// Fetching, checking out, or updating the configured upstream failed.
-    #[error("could not {action} the Klipper checkout")]
-    Refresh {
-        /// The refresh operation that failed.
-        action: &'static str,
-        /// The underlying libgit2 error.
-        #[source]
-        source: git2::Error,
-    },
-    /// The system `git` binary could not fetch the configured upstream.
-    ///
-    /// Fetching uses `git` rather than libgit2: libgit2 has a long-standing
-    /// limitation fetching new commits into an already-shallow checkout
-    /// (observed as a "missing delta bases" indexer error), which `git`'s
-    /// own fetch negotiation does not have.
-    #[error("could not fetch the configured upstream: {0}")]
-    Fetch(String),
 }
 
 /// A source of Klipper checkout state and fast-forward refreshes.
 ///
 /// Isolates callers that only need checkout revisions and refreshes from the
-/// concrete `git2`-backed implementation, so they can be tested against a fake.
+/// concrete `git`-backed implementation, so they can be tested against a fake.
 pub trait CheckoutPort {
     /// Returns the checkout revision, including a dirty suffix for tracked changes.
     fn revision(&self, path: &Path) -> Result<CheckoutRevision, CheckoutError>;
@@ -66,7 +46,7 @@ pub trait CheckoutPort {
     fn refresh(&self, path: &Path) -> Result<RefreshResult, CheckoutError>;
 }
 
-/// A [`CheckoutPort`] backed by the local Git checkout through `libgit2`.
+/// A [`CheckoutPort`] backed by the local Git checkout through the system `git` binary.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitCheckoutAdapter;
 
@@ -93,39 +73,31 @@ pub struct RefreshResult {
     pub commits_advanced: usize,
 }
 
+fn git(path: &Path, action: &'static str, args: &[&str]) -> Result<String, CheckoutError> {
+    let output: Output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(CheckoutError::Spawn)?;
+    if !output.status.success() {
+        return Err(CheckoutError::Command {
+            action,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 /// Returns the checkout revision, including a dirty suffix for tracked changes.
 pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
-    let repository = Repository::open(path).map_err(CheckoutError::Repository)?;
-    let mut statuses = StatusOptions::new();
-    statuses
-        .include_untracked(false)
-        .recurse_untracked_dirs(false);
-    let dirty = !repository
-        .statuses(Some(&mut statuses))
-        .map_err(CheckoutError::Status)?
-        .is_empty();
-    let mut describe = DescribeOptions::new();
-    describe.describe_tags().show_commit_oid_as_fallback(true);
-    let description = repository
-        .describe(&describe)
-        .map_err(CheckoutError::Describe)?;
-    // This abbreviation length need not match the one Klipper's own `git describe`
-    // (no --abbrev override) picks when it embeds a version in firmware: libgit2 has
-    // no equivalent to git's size-based "auto" abbreviation heuristic, so any fixed
-    // length can differ. Comparisons against a running MCU's reported version use
-    // `eligibility::revisions_match`, which tolerates that by prefix rather than
-    // requiring the hash abbreviations to be the same length.
-    let mut format = DescribeFormatOptions::new();
-    format.always_use_long_format(true).abbreviated_size(8);
-    let revision = description
-        .format(Some(&format))
-        .map_err(CheckoutError::Describe)?;
-    let revision = if dirty {
-        format!("{revision}-dirty")
-    } else {
-        revision
-    };
-    Ok(CheckoutRevision::Known(revision))
+    let description = git(
+        path,
+        "describe",
+        &["describe", "--tags", "--long", "--always", "--dirty"],
+    )?;
+    Ok(CheckoutRevision::Known(description))
 }
 
 /// Fetches the checked-out branch's configured upstream and applies only a fast-forward.
@@ -134,64 +106,53 @@ pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
 /// divergent branch is left unchanged so the operator can resolve it with their normal Git
 /// workflow before any firmware operation begins.
 pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
-    let repository = Repository::open(path).map_err(CheckoutError::Repository)?;
     let before = revision(path)?;
-    let head = repository.head().map_err(|source| CheckoutError::Refresh {
-        action: "read the checked-out branch",
-        source,
-    })?;
-    let head_id = head.target().ok_or_else(|| CheckoutError::Refresh {
-        action: "resolve the checked-out commit",
-        source: git2::Error::from_str("HEAD does not point to a commit"),
-    })?;
-    let branch_name = head
-        .shorthand()
-        .map_err(|_| CheckoutError::UpstreamNotConfigured)?
-        .to_owned();
-    let branch = repository
-        .find_branch(&branch_name, BranchType::Local)
-        .map_err(|source| CheckoutError::Refresh {
-            action: "read the checked-out branch",
-            source,
-        })?;
-    let upstream = branch
-        .upstream()
-        .map_err(|_| CheckoutError::UpstreamNotConfigured)?;
-    let upstream_name = upstream
-        .name()
-        .map_err(|_| CheckoutError::UpstreamNotConfigured)?
-        .ok_or(CheckoutError::UpstreamNotConfigured)?
-        .to_owned();
-    let upstream_reference_name = upstream
-        .get()
-        .name()
-        .map_err(|_| CheckoutError::UpstreamNotConfigured)?
-        .to_owned();
-    let remote_name = repository
-        .config()
-        .and_then(|config| config.get_string(&format!("branch.{branch_name}.remote")))
-        .map_err(|_| CheckoutError::UpstreamNotConfigured)?;
-    fetch(path, &remote_name)?;
 
-    let upstream_reference = repository
-        .find_reference(&upstream_reference_name)
-        .map_err(|source| CheckoutError::Refresh {
-            action: "read the fetched upstream revision",
-            source,
+    let branch = git(
+        path,
+        "read the checked-out branch",
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )?;
+    let upstream = git(
+        path,
+        "read the configured upstream",
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .map_err(|_| CheckoutError::UpstreamNotConfigured)?;
+    let remote = upstream.split('/').next().unwrap_or_default().to_owned();
+
+    git(path, "fetch the configured upstream", &["fetch", &remote])?;
+
+    let is_ancestor = git(
+        path,
+        "check whether the checkout can fast-forward",
+        &["merge-base", "--is-ancestor", "HEAD", &upstream],
+    )
+    .is_ok();
+    if !is_ancestor {
+        return Err(CheckoutError::NotFastForward { branch, upstream });
+    }
+
+    let ahead_behind = git(
+        path,
+        "count fetched commits",
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{upstream}"),
+        ],
+    )?;
+    let commits_advanced: usize = ahead_behind
+        .split_whitespace()
+        .nth(1)
+        .and_then(|behind| behind.parse().ok())
+        .ok_or(CheckoutError::Command {
+            action: "count fetched commits",
+            stderr: format!("unexpected `git rev-list` output: {ahead_behind}"),
         })?;
-    let upstream_commit = repository
-        .reference_to_annotated_commit(&upstream_reference)
-        .map_err(|source| CheckoutError::Refresh {
-            action: "resolve the fetched upstream revision",
-            source,
-        })?;
-    let (analysis, _) = repository
-        .merge_analysis(&[&upstream_commit])
-        .map_err(|source| CheckoutError::Refresh {
-            action: "check whether the upstream can fast-forward",
-            source,
-        })?;
-    if analysis.is_up_to_date() {
+
+    if commits_advanced == 0 {
         return Ok(RefreshResult {
             before: before.clone(),
             after: before,
@@ -199,45 +160,12 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
             commits_advanced: 0,
         });
     }
-    if !analysis.is_fast_forward() {
-        return Err(CheckoutError::NotFastForward {
-            branch: branch_name,
-            upstream: upstream_name,
-        });
-    }
 
-    let commit = repository
-        .find_commit(upstream_commit.id())
-        .map_err(|source| CheckoutError::Refresh {
-            action: "read the fetched upstream commit",
-            source,
-        })?;
-    let (_, commits_advanced) = repository
-        .graph_ahead_behind(head_id, commit.id())
-        .map_err(|source| CheckoutError::Refresh {
-            action: "count fetched commits",
-            source,
-        })?;
-    repository
-        .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
-        .map_err(|source| CheckoutError::Refresh {
-            action: "apply the fast-forward without overwriting local changes",
-            source,
-        })?;
-    let branch_reference = format!("refs/heads/{branch_name}");
-    repository
-        .find_reference(&branch_reference)
-        .and_then(|mut reference| reference.set_target(commit.id(), "aldis fast-forward"))
-        .map_err(|source| CheckoutError::Refresh {
-            action: "advance the local Klipper branch",
-            source,
-        })?;
-    repository
-        .set_head(&branch_reference)
-        .map_err(|source| CheckoutError::Refresh {
-            action: "update the checked-out Klipper branch",
-            source,
-        })?;
+    git(
+        path,
+        "apply the fast-forward without overwriting local changes",
+        &["merge", "--ff-only", &upstream],
+    )?;
     let after = revision(path)?;
     Ok(RefreshResult {
         before,
@@ -245,20 +173,4 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
         advanced: true,
         commits_advanced,
     })
-}
-
-fn fetch(path: &Path, remote_name: &str) -> Result<(), CheckoutError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("fetch")
-        .arg(remote_name)
-        .output()
-        .map_err(|error| CheckoutError::Fetch(error.to_string()))?;
-    if !output.status.success() {
-        return Err(CheckoutError::Fetch(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    Ok(())
 }
