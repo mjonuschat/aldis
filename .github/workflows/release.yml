@@ -21,9 +21,9 @@ jobs:
         build: [x86_64-linux, aarch64-linux]
         include:
         - build: x86_64-linux
-          target: x86_64-unknown-linux-gnu
+          target: x86_64-unknown-linux-musl
         - build: aarch64-linux
-          target: aarch64-unknown-linux-gnu
+          target: aarch64-unknown-linux-musl
 
     steps:
       - name: Checkout sources
@@ -34,19 +34,32 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
+      - name: Install cross-compilation tool
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Install ARM binary tools
         if: matrix.build == 'aarch64-linux'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
 
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo test
         if: matrix.build != 'aarch64-linux'
-        run: cargo test --locked
+        run: cross test --target ${{ matrix.target }} --locked
 
       - name: Build release binary
-        run: cargo build --target ${{ matrix.target }} --release --locked
+        run: cross build --target ${{ matrix.target }} --release --locked
+
+      - name: Verify static binary
+        run: |
+          BINARY="target/${{ matrix.target }}/release/$BIN_NAME"
+          if readelf --dynamic "$BINARY" | grep --quiet '(NEEDED)'; then
+            echo "$BINARY has dynamic library dependencies."
+            exit 1
+          fi
 
       - name: Strip binary
         run: |
@@ -54,7 +67,7 @@ jobs:
           if [ "${{ matrix.build }}" = "aarch64-linux" ]; then
             STRIP_CMD="aarch64-linux-gnu-strip"
           fi
-          $STRIP_CMD "target/${{ matrix.target }}/release/aldis"
+          "$STRIP_CMD" --strip-unneeded "target/${{ matrix.target }}/release/$BIN_NAME"
 
       - name: Package as archive
         shell: bash
