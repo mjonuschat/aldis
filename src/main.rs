@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         }
         CliCommand::Inspect(arguments) => {
             let _logging = init_logging_with_fallback(cli.verbose);
-            match inspect(&arguments) {
+            match inspect(&arguments, cli.verbose) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(format!("{error:#}")),
             }
@@ -67,11 +67,11 @@ fn init_logging_with_fallback(verbose: u8) -> Option<WorkerGuard> {
     }
 }
 
-fn inspect(arguments: &MoonrakerArgs) -> anyhow::Result<()> {
+fn inspect(arguments: &MoonrakerArgs, verbose: u8) -> anyhow::Result<()> {
     tracing::info!("discovering MCUs from Moonraker");
     let inventory = discover_mcus_with_retry(&MoonrakerAdapter::new(&arguments.moonraker))
         .context("failed to discover MCUs")?;
-    print_inventory(&arguments.moonraker, &inventory);
+    print_inventory(&arguments.moonraker, &inventory, verbose > 0);
     Ok(())
 }
 
@@ -87,17 +87,76 @@ pub(crate) fn fail(message: String) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn print_inventory(url: &str, inventory: &McuInventory) {
-    println!(
+fn print_inventory(url: &str, inventory: &McuInventory, verbose: bool) {
+    print!("{}", format_inventory(url, inventory, verbose));
+}
+
+fn format_inventory(url: &str, inventory: &McuInventory, verbose: bool) -> String {
+    let mut output = format!(
         "phase: discover\nMoonraker: {url}\nMCUs: {}",
         inventory.mcus.len()
     );
     for mcu in &inventory.mcus {
-        println!(
-            "\n{}\n  chip: {}\n  Kconfig settings: {}",
+        output.push_str(&format!(
+            "\n\n{}\n  chip: {}\n  Kconfig settings: {}",
             mcu.name,
             mcu.mcu,
             mcu.kconfig.lines().count()
+        ));
+        if verbose {
+            for setting in mcu.kconfig.lines() {
+                output.push_str(&format!("\n    - {setting}"));
+            }
+        }
+    }
+    output.push('\n');
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_inventory;
+    use aldis::moonraker::{Mcu, McuInventory};
+
+    fn inventory() -> McuInventory {
+        McuInventory {
+            mcus: vec![Mcu {
+                name: "mcu".to_owned(),
+                app: None,
+                version: None,
+                mcu: "stm32h723xx".to_owned(),
+                canbus_frequency_hz: None,
+                transport: None,
+                kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\n".to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn lists_kconfig_settings_only_when_verbose() {
+        assert_eq!(
+            format_inventory("http://127.0.0.1:7125", &inventory(), false),
+            concat!(
+                "phase: discover\n",
+                "Moonraker: http://127.0.0.1:7125\n",
+                "MCUs: 1\n\n",
+                "mcu\n",
+                "  chip: stm32h723xx\n",
+                "  Kconfig settings: 2\n",
+            )
+        );
+        assert_eq!(
+            format_inventory("http://127.0.0.1:7125", &inventory(), true),
+            concat!(
+                "phase: discover\n",
+                "Moonraker: http://127.0.0.1:7125\n",
+                "MCUs: 1\n\n",
+                "mcu\n",
+                "  chip: stm32h723xx\n",
+                "  Kconfig settings: 2\n",
+                "    - CONFIG_LOW_LEVEL_OPTIONS=y\n",
+                "    - CONFIG_MACH_STM32=y\n",
+            )
         );
     }
 }
