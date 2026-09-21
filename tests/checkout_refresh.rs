@@ -169,14 +169,16 @@ fn run(path: &Path, args: &[&str]) -> String {
 
 fn init(path: &Path) {
     fs::create_dir_all(path).expect("fixture directory");
-    run(path, &["init", "--initial-branch=master"]);
+    run(path, &["init"]);
+    run(path, &["symbolic-ref", "HEAD", "refs/heads/master"]);
     run(path, &["config", "user.name", "aldis test"]);
     run(path, &["config", "user.email", "test@example.com"]);
 }
 
 fn init_bare(path: &Path) {
     fs::create_dir_all(path).expect("fixture directory");
-    run(path, &["init", "--bare", "--initial-branch=master"]);
+    run(path, &["init", "--bare"]);
+    run(path, &["symbolic-ref", "HEAD", "refs/heads/master"]);
 }
 
 fn clone(remote_path: &Path, checkout_path: &Path) {
