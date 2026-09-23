@@ -85,6 +85,18 @@ temp directory. Add `-v`/`-vv` to see more detail on the terminal as well
 [`tracing_subscriber`](https://docs.rs/tracing-subscriber) syntax, e.g.
 `RUST_LOG=debug`) overrides `-v`/`-vv` for terminal output.
 
+## Self-Update
+
+```
+~/aldis/aldis self-update          # check for and install a newer release
+~/aldis/aldis self-update --check  # report whether a newer release is available, without installing it
+```
+
+`self-update` compares the running binary's version against the latest
+GitHub release and, unless already current, downloads and installs the
+matching platform archive over the current binary. No `sudo` is required as
+long as `~/aldis` is writable by the current user.
+
 ## Supported Flash Backends
 
 These bootloaders are entered and flashed unattended, directly from the
