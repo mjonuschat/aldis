@@ -58,6 +58,24 @@ fn clear_waiting_line(interactive: bool, waited: bool) {
     }
 }
 
+/// Resolves a user-supplied target against discovered MCU names, accepting
+/// both the full Moonraker name ("mcu expander") and, case-insensitively,
+/// just the label after "mcu " ("expander"). An exact match always wins;
+/// an unresolved name is returned unchanged so callers report it verbatim
+/// in their existing "unknown target" error paths.
+pub(crate) fn resolve_target_name(inventory: &McuInventory, requested: &str) -> String {
+    if inventory.mcus.iter().any(|mcu| mcu.name == requested) {
+        return requested.to_owned();
+    }
+    let abbreviated = format!("mcu {requested}");
+    inventory
+        .mcus
+        .iter()
+        .find(|mcu| mcu.name.eq_ignore_ascii_case(&abbreviated))
+        .map(|mcu| mcu.name.clone())
+        .unwrap_or_else(|| requested.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -139,5 +157,65 @@ mod tests {
         );
 
         assert!(matches!(result, Err(MoonrakerError::KlippyStarting(_))));
+    }
+
+    fn mcu(name: &str) -> aldis::moonraker::Mcu {
+        aldis::moonraker::Mcu {
+            name: name.to_owned(),
+            app: None,
+            version: None,
+            mcu: "test".to_owned(),
+            canbus_frequency_hz: None,
+            transport: None,
+            kconfig: String::new(),
+        }
+    }
+
+    #[test]
+    fn resolves_an_exact_name_unchanged() {
+        let inventory = McuInventory {
+            mcus: vec![mcu("mcu"), mcu("mcu expander")],
+        };
+
+        assert_eq!(
+            super::resolve_target_name(&inventory, "mcu expander"),
+            "mcu expander"
+        );
+    }
+
+    #[test]
+    fn resolves_an_abbreviated_label_to_its_full_name() {
+        let inventory = McuInventory {
+            mcus: vec![mcu("mcu"), mcu("mcu expander")],
+        };
+
+        assert_eq!(
+            super::resolve_target_name(&inventory, "expander"),
+            "mcu expander"
+        );
+    }
+
+    #[test]
+    fn resolves_an_abbreviated_label_case_insensitively() {
+        let inventory = McuInventory {
+            mcus: vec![mcu("mcu"), mcu("mcu RP2040")],
+        };
+
+        assert_eq!(
+            super::resolve_target_name(&inventory, "rp2040"),
+            "mcu RP2040"
+        );
+    }
+
+    #[test]
+    fn leaves_an_unresolvable_name_unchanged() {
+        let inventory = McuInventory {
+            mcus: vec![mcu("mcu"), mcu("mcu expander")],
+        };
+
+        assert_eq!(
+            super::resolve_target_name(&inventory, "nonexistent"),
+            "nonexistent"
+        );
     }
 }

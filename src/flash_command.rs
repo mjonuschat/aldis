@@ -24,7 +24,7 @@ pub(crate) fn flash(arguments: FlashArgs, mut ui: UpdateUi) -> ExitCode {
     }
 }
 
-fn run_flash(arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
+fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
     let firmware = std::fs::read(&arguments.firmware).with_context(|| {
         format!(
             "could not read firmware file {}",
@@ -41,6 +41,7 @@ fn run_flash(arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
         &arguments.connection.moonraker.moonraker,
     ))
     .context("failed to discover MCUs from Moonraker")?;
+    arguments.target = crate::discovery::resolve_target_name(&inventory, &arguments.target);
     let plan = build_update_plan(&inventory);
 
     let workspace_root =

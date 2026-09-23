@@ -56,7 +56,7 @@ fn update_and_report_run_log(
 }
 
 fn run_update(
-    arguments: UpdateArgs,
+    mut arguments: UpdateArgs,
     ui: &mut UpdateUi,
     workspace: &RunWorkspace,
     run_log_path: &Path,
@@ -92,6 +92,9 @@ fn run_update(
         ui.action(&format!("error: {}", aldis::error_chain(error)));
     })
     .context("failed to discover MCUs from Moonraker")?;
+    for target in &mut arguments.targets {
+        *target = crate::discovery::resolve_target_name(&inventory, target);
+    }
     let unknown = unknown_targets(&inventory, &arguments.targets);
     if !unknown.is_empty() {
         anyhow::bail!(
