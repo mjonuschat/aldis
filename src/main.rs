@@ -4,6 +4,7 @@ mod cli;
 mod discovery;
 mod flash_command;
 mod reboot;
+mod self_update_command;
 mod setup;
 mod status;
 mod ui;
@@ -54,6 +55,13 @@ fn main() -> ExitCode {
         CliCommand::Flash(arguments) => {
             let _logging = init_logging_with_fallback(cli.verbose);
             flash_command::flash(arguments, ui::UpdateUi::new(cli.color, cli.no_progress))
+        }
+        CliCommand::SelfUpdate(arguments) => {
+            let _logging = init_logging_with_fallback(cli.verbose);
+            self_update_command::self_update(
+                arguments,
+                ui::UpdateUi::new(cli.color, cli.no_progress),
+            )
         }
     }
 }

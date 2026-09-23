@@ -50,6 +50,9 @@ pub(crate) enum CliCommand {
     /// Flash an explicit firmware file to one MCU, bypassing Klipper's build pipeline.
     #[command(hide = true)]
     Flash(FlashArgs),
+    /// Check for and install a newer released aldis binary.
+    #[command(name = "self-update")]
+    SelfUpdate(SelfUpdateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -125,6 +128,13 @@ pub(crate) struct RebootArgs {
 #[derive(Debug, Args)]
 pub(crate) struct SetupArgs {
     /// Verify installed host permissions without modifying them.
+    #[arg(long)]
+    pub(crate) check: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SelfUpdateArgs {
+    /// Report whether a newer release is available without installing it.
     #[arg(long)]
     pub(crate) check: bool,
 }
@@ -260,5 +270,28 @@ mod tests {
             panic!("expected flash command");
         };
         assert!(arguments.force);
+    }
+
+    #[test]
+    fn lists_self_update_in_help_and_accepts_a_check_flag() {
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("self-update"));
+
+        let CliCommand::SelfUpdate(arguments) =
+            Cli::try_parse_from(["aldis", "self-update", "--check"])
+                .expect("parse self-update --check")
+                .command
+        else {
+            panic!("expected self-update command");
+        };
+        assert!(arguments.check);
+
+        let CliCommand::SelfUpdate(arguments) = Cli::try_parse_from(["aldis", "self-update"])
+            .expect("parse self-update")
+            .command
+        else {
+            panic!("expected self-update command");
+        };
+        assert!(!arguments.check);
     }
 }
