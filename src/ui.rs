@@ -163,6 +163,21 @@ impl UpdateUi {
             UpdateProgress::StartingFlash => self.begin("flashing firmware"),
         }
     }
+
+    pub(crate) fn progress_without_build(&mut self, progress: UpdateProgress) {
+        match progress {
+            UpdateProgress::StoppingKlipper => self.begin("stopping Klipper"),
+            UpdateProgress::EnteringBootloader => {
+                self.finish_success("stopped Klipper");
+                self.begin("entering bootloader");
+            }
+            UpdateProgress::BootloaderReady => self.finish_success("bootloader ready"),
+            UpdateProgress::StartingFlash => self.begin("flashing firmware"),
+            UpdateProgress::ConfiguringFirmware | UpdateProgress::CompilingFirmware => {
+                unreachable!("flashing without a build never reports build phases")
+            }
+        }
+    }
 }
 
 impl Drop for UpdateUi {

@@ -47,6 +47,9 @@ pub(crate) enum CliCommand {
     Setup(SetupArgs),
     /// Exit any MCU already sitting in a bootloader, without reflashing it.
     Reboot(RebootArgs),
+    /// Flash an explicit firmware file to one MCU, bypassing Klipper's build pipeline.
+    #[command(hide = true)]
+    Flash(FlashArgs),
 }
 
 #[derive(Debug, Args)]
@@ -98,6 +101,21 @@ pub(crate) struct UpdateArgs {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct FlashArgs {
+    /// MCU name reported by Moonraker.
+    #[arg(value_name = "MCU")]
+    pub(crate) target: String,
+    /// Firmware file to flash instead of building one.
+    #[arg(value_name = "FIRMWARE")]
+    pub(crate) firmware: PathBuf,
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    pub(crate) force: bool,
+    #[command(flatten)]
+    pub(crate) connection: ConnectionArgs,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct RebootArgs {
     /// Reboot every detected bootloader without prompting.
     #[arg(long)]
@@ -123,6 +141,20 @@ mod tests {
         assert!(help.contains("Usage:"));
         assert!(help.contains("setup"));
         assert!(help.contains("update"));
+    }
+
+    #[test]
+    fn keeps_flash_hidden_from_help_while_still_accepting_it() {
+        let command = Cli::command();
+        let flash = command
+            .find_subcommand("flash")
+            .expect("flash subcommand should still exist");
+
+        assert!(flash.is_hide_set());
+        assert!(
+            Cli::try_parse_from(["aldis", "flash", "mcu", "firmware.bin"]).is_ok(),
+            "hidden commands must still parse"
+        );
     }
 
     #[test]
@@ -200,5 +232,33 @@ mod tests {
     fn accepts_repeated_verbose_flags() {
         let cli = Cli::try_parse_from(["aldis", "-vv", "update", "--all"]).expect("parse verbose");
         assert_eq!(cli.verbose, 2);
+    }
+
+    #[test]
+    fn requires_both_an_mcu_and_a_firmware_path_to_flash() {
+        assert!(Cli::try_parse_from(["aldis", "flash"]).is_err());
+        assert!(Cli::try_parse_from(["aldis", "flash", "mcu"]).is_err());
+        let CliCommand::Flash(arguments) =
+            Cli::try_parse_from(["aldis", "flash", "mcu", "firmware.bin"])
+                .expect("parse flash")
+                .command
+        else {
+            panic!("expected flash command");
+        };
+        assert_eq!(arguments.target, "mcu");
+        assert_eq!(arguments.firmware, std::path::PathBuf::from("firmware.bin"));
+        assert!(!arguments.force);
+    }
+
+    #[test]
+    fn accepts_a_force_flag_to_skip_the_flash_confirmation() {
+        let CliCommand::Flash(arguments) =
+            Cli::try_parse_from(["aldis", "flash", "mcu", "firmware.bin", "--force"])
+                .expect("parse flash --force")
+                .command
+        else {
+            panic!("expected flash command");
+        };
+        assert!(arguments.force);
     }
 }

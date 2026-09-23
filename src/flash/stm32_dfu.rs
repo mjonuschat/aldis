@@ -300,6 +300,31 @@ pub fn probe_application_start_at_path(
         })
 }
 
+/// Determines the flash-start offset a firmware image expects to run at, by
+/// decoding its embedded vector table — always at byte 0 of a flashable
+/// image — and finding the candidate region its reset-vector address falls
+/// within (the largest known candidate base at or below it).
+///
+/// Returns `None` when the image is too short, its first 8 bytes don't look
+/// like a plausible Cortex-M vector table, or the reset vector precedes
+/// every known candidate base.
+pub fn expected_application_start(firmware: &[u8]) -> Option<u32> {
+    let header: [u8; 8] = firmware.get(0..8)?.try_into().ok()?;
+    let stack_pointer = u32::from_le_bytes(header[0..4].try_into().expect("4 bytes"));
+    let reset_vector = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
+    if !is_plausible_vector_table(stack_pointer, reset_vector) {
+        return None;
+    }
+    FLASH_START_OFFSETS_HEX
+        .iter()
+        .map(|offset| {
+            FLASH_START
+                + u32::from_str_radix(offset, 16).expect("FLASH_START_OFFSETS_HEX is valid hex")
+        })
+        .filter(|&candidate| candidate <= reset_vector)
+        .max()
+}
+
 fn is_plausible_vector_table(stack_pointer: u32, reset_vector: u32) -> bool {
     (SRAM_START..SRAM_END).contains(&stack_pointer)
         && stack_pointer.is_multiple_of(4)

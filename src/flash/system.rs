@@ -15,7 +15,9 @@ use crate::flash::katapult::serial::{KatapultSerialTransport, SystemSerialIo, Us
 use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
 use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
 use crate::flash::stm32_dfu::{
-    Stm32DfuAdapter, Stm32DfuError, Stm32DfuTarget, target_from_kconfig,
+    ApplicationProbeResult, Stm32DfuAdapter, Stm32DfuDevice, Stm32DfuError, Stm32DfuTarget,
+    expected_application_start, leave_system_at_path, probe_application_start_at_path,
+    target_from_kconfig,
 };
 use crate::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderSelectionError,
@@ -73,6 +75,22 @@ pub enum SystemFlashError {
     Selection(UsbBootloaderSelectionError),
     /// The observed STM32 route has no valid Kconfig application address.
     Stm32Target(Stm32DfuError),
+    /// A firmware file's vector table did not resolve to a known STM32
+    /// flash-start offset.
+    UnrecognizedFirmwareTarget,
+    /// Probing the device's currently flashed STM32 application failed.
+    Stm32Probe(Stm32DfuError),
+    /// A firmware file's expected flash offset disagreed with the address
+    /// the device is currently running from, and no `--force` override was given.
+    Stm32TargetMismatch {
+        /// The offset the firmware file's own vector table expects.
+        firmware_offset: u32,
+        /// The offset the device is currently running its application from.
+        device_offset: u32,
+    },
+    /// Rebooting the device back to its existing application, after refusing
+    /// a mismatched firmware file, itself failed.
+    Stm32MismatchRecovery(Stm32DfuError),
     /// The Katapult USB serial device could not be opened.
     KatapultOpen(serialport::Error),
     /// Katapult rejected or could not verify its USB serial transfer.
@@ -137,6 +155,27 @@ impl fmt::Display for SystemFlashError {
                 f,
                 "the STM32 firmware configuration has no valid flash address"
             ),
+            Self::UnrecognizedFirmwareTarget => write!(
+                f,
+                "the firmware file's vector table does not resolve to a known STM32 flash address"
+            ),
+            Self::Stm32Probe(error) => write!(
+                f,
+                "could not probe the device's currently flashed application: {error}"
+            ),
+            Self::Stm32TargetMismatch {
+                firmware_offset,
+                device_offset,
+            } => write!(
+                f,
+                "firmware expects flash offset {firmware_offset:#x} but the device is \
+                 currently running from {device_offset:#x}; pass --force to flash anyway"
+            ),
+            Self::Stm32MismatchRecovery(error) => write!(
+                f,
+                "flash refused due to a target mismatch, and rebooting the device back to \
+                 its existing application failed: {error}"
+            ),
             Self::Selection(_) => write!(
                 f,
                 "the re-enumerated bootloader is not supported for automatic flashing"
@@ -149,11 +188,17 @@ impl fmt::Display for SystemFlashError {
 impl std::error::Error for SystemFlashError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::MissingTransport | Self::Can(_) => None,
+            Self::MissingTransport
+            | Self::Can(_)
+            | Self::UnrecognizedFirmwareTarget
+            | Self::Stm32TargetMismatch { .. } => None,
             Self::Bootloader(error) => Some(error),
             Self::UsbAccess(error) => Some(error),
             Self::Selection(error) => Some(error),
-            Self::Stm32Target(error) | Self::Stm32Dfu(error) => Some(error),
+            Self::Stm32Target(error)
+            | Self::Stm32Dfu(error)
+            | Self::Stm32Probe(error)
+            | Self::Stm32MismatchRecovery(error) => Some(error),
             Self::KatapultOpen(error) => Some(error),
             Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
             Self::PicoBoot(error) => Some(error),
@@ -173,20 +218,65 @@ pub struct UnsupportedBootloaderContext {
     pub reset_elapsed: Option<Duration>,
 }
 
+/// Where an STM32 DFU route's application address comes from.
+enum Stm32TargetSource<'a> {
+    /// Trust the exact Kconfig the artifact was built with.
+    Kconfig(&'a str),
+    /// Resolve it from an explicit firmware file instead (see
+    /// [`resolve_stm32_firmware_file_target`]).
+    FirmwareFile { firmware: &'a [u8], force: bool },
+}
+
 /// Derives exactly one native USB route from one observed bootloader.
 pub fn serial_route(
     observed: ObservedUsbBootloader,
     kconfig: &str,
     context: &UnsupportedBootloaderContext,
 ) -> Result<SerialFlashRoute, SystemFlashError> {
+    resolve_serial_route(
+        observed,
+        kconfig,
+        Stm32TargetSource::Kconfig(kconfig),
+        context,
+    )
+}
+
+fn serial_route_for_firmware_file(
+    observed: ObservedUsbBootloader,
+    kconfig: &str,
+    firmware: &[u8],
+    force: bool,
+    context: &UnsupportedBootloaderContext,
+) -> Result<SerialFlashRoute, SystemFlashError> {
+    resolve_serial_route(
+        observed,
+        kconfig,
+        Stm32TargetSource::FirmwareFile { firmware, force },
+        context,
+    )
+}
+
+fn resolve_serial_route(
+    observed: ObservedUsbBootloader,
+    kconfig: &str,
+    stm32_target: Stm32TargetSource,
+    context: &UnsupportedBootloaderContext,
+) -> Result<SerialFlashRoute, SystemFlashError> {
     match select_usb_bootloader(observed) {
         Ok(SelectedUsbBootloader::Katapult { serial_device, .. }) => {
             Ok(SerialFlashRoute::Katapult { serial_device })
         }
-        Ok(SelectedUsbBootloader::Stm32Dfu { sysfs_path }) => Ok(SerialFlashRoute::Stm32Dfu {
-            sysfs_path,
-            target: target_from_kconfig(kconfig).map_err(SystemFlashError::Stm32Target)?,
-        }),
+        Ok(SelectedUsbBootloader::Stm32Dfu { sysfs_path }) => {
+            let target = match stm32_target {
+                Stm32TargetSource::Kconfig(kconfig) => {
+                    target_from_kconfig(kconfig).map_err(SystemFlashError::Stm32Target)?
+                }
+                Stm32TargetSource::FirmwareFile { firmware, force } => {
+                    resolve_stm32_firmware_file_target(&sysfs_path, firmware, force)?
+                }
+            };
+            Ok(SerialFlashRoute::Stm32Dfu { sysfs_path, target })
+        }
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
         }
@@ -274,6 +364,65 @@ fn flash_serial_system(
     flash_observed_usb(observed, kconfig, firmware, options, progress, &context)
 }
 
+/// Flashes an explicit firmware file, skipping the Kconfig-derived STM32
+/// addressing [`flash_prepared_system_with_progress`] trusts (see
+/// [`resolve_stm32_firmware_file_target`]). Other routes behave identically.
+pub fn flash_prepared_firmware_file_with_progress(
+    prepared: &PreparedBuild,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    force: bool,
+    mut progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    match prepared
+        .transport
+        .as_ref()
+        .ok_or(SystemFlashError::MissingTransport)?
+    {
+        McuTransport::Serial { device } => flash_serial_firmware_file(
+            device,
+            &prepared.request.kconfig,
+            firmware,
+            options,
+            force,
+            &mut progress,
+        ),
+        McuTransport::Can { interface, uuid } => flash_can_system(
+            interface,
+            *uuid,
+            &prepared.request.kconfig,
+            firmware,
+            options,
+            &mut progress,
+        ),
+    }
+}
+
+fn flash_serial_firmware_file(
+    running_device: &str,
+    kconfig: &str,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    force: bool,
+    progress: &mut impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    progress(SystemFlashProgress::EnteringBootloader);
+    let started = Instant::now();
+    let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
+        std::path::Path::new(running_device),
+        options.katapult.bootloader_timeout,
+        options.katapult.poll_interval,
+    )
+    .map_err(SystemFlashError::Bootloader)?;
+    let context = UnsupportedBootloaderContext {
+        transport: running_device.to_owned(),
+        reset_elapsed: Some(started.elapsed()),
+    };
+    flash_observed_usb_for_firmware_file(
+        observed, kconfig, firmware, options, force, progress, &context,
+    )
+}
+
 fn flash_observed_usb(
     observed: ObservedUsbBootloader,
     kconfig: &str,
@@ -283,7 +432,39 @@ fn flash_observed_usb(
     context: &UnsupportedBootloaderContext,
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::BootloaderReady);
-    match serial_route(observed, kconfig, context)? {
+    dispatch_serial_route(
+        serial_route(observed, kconfig, context)?,
+        firmware,
+        options,
+        progress,
+    )
+}
+
+fn flash_observed_usb_for_firmware_file(
+    observed: ObservedUsbBootloader,
+    kconfig: &str,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    force: bool,
+    progress: &mut impl FnMut(SystemFlashProgress),
+    context: &UnsupportedBootloaderContext,
+) -> Result<FlashResult, SystemFlashError> {
+    progress(SystemFlashProgress::BootloaderReady);
+    dispatch_serial_route(
+        serial_route_for_firmware_file(observed, kconfig, firmware, force, context)?,
+        firmware,
+        options,
+        progress,
+    )
+}
+
+fn dispatch_serial_route(
+    route: SerialFlashRoute,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    progress: &mut impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    match route {
         SerialFlashRoute::Katapult { serial_device } => {
             progress(SystemFlashProgress::Flashing);
             let io = open_katapult_serial_when_ready(
@@ -307,13 +488,9 @@ fn flash_observed_usb(
             )
             .map_err(SystemFlashError::UsbAccess)?;
             progress(SystemFlashProgress::Flashing);
-            Stm32DfuAdapter::new(
-                crate::flash::stm32_dfu::Stm32DfuDevice::ROM_BOOTLOADER,
-                &sysfs_path,
-                target,
-            )
-            .flash(firmware)
-            .map_err(SystemFlashError::Stm32Dfu)
+            Stm32DfuAdapter::new(Stm32DfuDevice::ROM_BOOTLOADER, &sysfs_path, target)
+                .flash(firmware)
+                .map_err(SystemFlashError::Stm32Dfu)
         }
         SerialFlashRoute::PicoBoot { sysfs_path } => {
             wait_for_usb_access(
@@ -328,6 +505,31 @@ fn flash_observed_usb(
                 .map_err(SystemFlashError::PicoBoot)
         }
     }
+}
+
+fn resolve_stm32_firmware_file_target(
+    sysfs_path: &Path,
+    firmware: &[u8],
+    force: bool,
+) -> Result<Stm32DfuTarget, SystemFlashError> {
+    let firmware_offset =
+        expected_application_start(firmware).ok_or(SystemFlashError::UnrecognizedFirmwareTarget)?;
+    if let ApplicationProbeResult::Found(device_offset) =
+        probe_application_start_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path)
+            .map_err(SystemFlashError::Stm32Probe)?
+        && device_offset != firmware_offset
+        && !force
+    {
+        leave_system_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path, device_offset)
+            .map_err(SystemFlashError::Stm32MismatchRecovery)?;
+        return Err(SystemFlashError::Stm32TargetMismatch {
+            firmware_offset,
+            device_offset,
+        });
+    }
+    Ok(Stm32DfuTarget {
+        application_start: firmware_offset,
+    })
 }
 
 fn open_katapult_serial_when_ready(

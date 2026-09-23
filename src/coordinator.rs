@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, KlipperBuilder};
 use crate::flash::FlashResult;
 use crate::flash::system::{
-    SystemFlashError, SystemFlashOptions, SystemFlashProgress, flash_prepared_system_with_progress,
+    SystemFlashError, SystemFlashOptions, SystemFlashProgress,
+    flash_prepared_firmware_file_with_progress, flash_prepared_system_with_progress,
 };
 use crate::moonraker::McuInventory;
 use crate::plan::UpdatePlan;
@@ -175,18 +176,7 @@ where
         approved: ApprovedBuild,
         mut progress: impl FnMut(UpdateProgress),
     ) -> Result<BuildArtifact, CoordinatorError> {
-        match self.service.state().map_err(CoordinatorError::Service)? {
-            ServiceState::Active => {
-                progress(UpdateProgress::StoppingKlipper);
-                self.service.stop().map_err(CoordinatorError::Service)?;
-                match self.service.state().map_err(CoordinatorError::Service)? {
-                    ServiceState::Inactive => {}
-                    state => return Err(CoordinatorError::UnexpectedKlipperState(state)),
-                }
-            }
-            ServiceState::Inactive => {}
-            state => return Err(CoordinatorError::UnexpectedKlipperState(state)),
-        }
+        self.ensure_klipper_stopped(&mut progress)?;
 
         self.builder
             .build_with_progress(&approved.pending.prepared.request, |stage| match stage {
@@ -194,6 +184,62 @@ where
                 BuildProgress::Compiling => progress(UpdateProgress::CompilingFirmware),
             })
             .map_err(CoordinatorError::Build)
+    }
+
+    fn ensure_klipper_stopped(
+        &self,
+        progress: &mut impl FnMut(UpdateProgress),
+    ) -> Result<(), CoordinatorError> {
+        match self.service.state().map_err(CoordinatorError::Service)? {
+            ServiceState::Active => {
+                progress(UpdateProgress::StoppingKlipper);
+                self.service.stop().map_err(CoordinatorError::Service)?;
+                match self.service.state().map_err(CoordinatorError::Service)? {
+                    ServiceState::Inactive => Ok(()),
+                    state => Err(CoordinatorError::UnexpectedKlipperState(state)),
+                }
+            }
+            ServiceState::Inactive => Ok(()),
+            state => Err(CoordinatorError::UnexpectedKlipperState(state)),
+        }
+    }
+
+    /// Stops Klipper if necessary, then flashes caller-supplied firmware bytes directly,
+    /// skipping Klipper's build pipeline and its Kconfig validation entirely.
+    ///
+    /// For an STM32 DFU target, the flash offset is derived from the firmware
+    /// file's own vector table and cross-checked against the device's
+    /// currently flashed application; a mismatch is refused (and the device
+    /// rebooted back into that application) unless `force` overrides it. See
+    /// [`crate::flash::system::flash_prepared_firmware_file_with_progress`].
+    ///
+    /// This preserves the same service boundary as
+    /// [`Self::execute_and_flash_system_with_progress`]: Klipper is stopped before the
+    /// flash and is never restarted by this operation.
+    pub fn flash_firmware_system_with_progress(
+        &self,
+        approved: ApprovedBuild,
+        firmware: &[u8],
+        options: SystemFlashOptions,
+        force: bool,
+        mut progress: impl FnMut(UpdateProgress),
+    ) -> Result<FlashResult, FlashCoordinatorError<SystemFlashError>> {
+        self.ensure_klipper_stopped(&mut progress)
+            .map_err(FlashCoordinatorError::Coordinator)?;
+        flash_prepared_firmware_file_with_progress(
+            &approved.pending.prepared,
+            firmware,
+            options,
+            force,
+            |stage| {
+                progress(match stage {
+                    SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
+                    SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
+                    SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+                });
+            },
+        )
+        .map_err(FlashCoordinatorError::Flash)
     }
 
     /// Builds an approved target, then invokes `flash` only after Klipper is stopped.
@@ -256,5 +302,128 @@ where
             ServiceState::Active => Ok(()),
             state => Err(CoordinatorError::UnexpectedKlipperState(state)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::{BuildCoordinator, FlashCoordinatorError, PendingBuild, UpdateProgress};
+    use crate::build::{BuildCommand, BuildRequest, CommandError, CommandOutput, CommandPort};
+    use crate::flash::katapult::system::SystemKatapultOptions;
+    use crate::flash::system::{SystemFlashError, SystemFlashOptions};
+    use crate::prepare::PreparedBuild;
+
+    #[derive(Clone)]
+    struct FakeRunner {
+        commands: Arc<Mutex<Vec<BuildCommand>>>,
+        outputs: Arc<Mutex<VecDeque<CommandOutput>>>,
+    }
+
+    impl FakeRunner {
+        fn new(outputs: impl IntoIterator<Item = CommandOutput>) -> Self {
+            Self {
+                commands: Arc::new(Mutex::new(Vec::new())),
+                outputs: Arc::new(Mutex::new(outputs.into_iter().collect())),
+            }
+        }
+    }
+
+    impl CommandPort for FakeRunner {
+        fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
+            self.commands
+                .lock()
+                .expect("runner lock")
+                .push(command.clone());
+            self.outputs
+                .lock()
+                .expect("runner lock")
+                .pop_front()
+                .ok_or_else(|| CommandError::Spawn(std::io::Error::other("missing fake output")))
+        }
+    }
+
+    fn success_output() -> CommandOutput {
+        CommandOutput::success()
+    }
+
+    fn state_output(success: bool, stdout: &[u8]) -> CommandOutput {
+        CommandOutput {
+            success,
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    fn pending_without_transport() -> PendingBuild {
+        PendingBuild {
+            prepared: PreparedBuild {
+                target_name: "mcu".to_owned(),
+                mcu: "stm32f429xx".to_owned(),
+                transport: None,
+                request: BuildRequest {
+                    kconfig: String::new(),
+                    config_path: PathBuf::new(),
+                    artifact_path: PathBuf::new(),
+                    clean: false,
+                },
+            },
+        }
+    }
+
+    fn flash_options() -> SystemFlashOptions {
+        SystemFlashOptions {
+            katapult: SystemKatapultOptions {
+                baud_rate: 250_000,
+                bootloader_timeout: Duration::from_secs(10),
+                poll_interval: Duration::from_millis(50),
+                read_timeout: Duration::from_secs(5),
+                can_bootloader_settle: Duration::from_millis(100),
+            },
+        }
+    }
+
+    #[test]
+    fn flash_firmware_stops_klipper_then_dispatches_without_building() {
+        let build_runner = FakeRunner::new([]);
+        let service_runner = FakeRunner::new([
+            state_output(true, b"active\n"),
+            success_output(),
+            state_output(false, b"inactive\n"),
+        ]);
+        let coordinator =
+            BuildCoordinator::new("/nonexistent", build_runner.clone(), service_runner.clone());
+        let mut phases = Vec::new();
+
+        let result = coordinator.flash_firmware_system_with_progress(
+            pending_without_transport().approve(),
+            b"firmware",
+            flash_options(),
+            false,
+            |phase| phases.push(phase),
+        );
+
+        assert!(matches!(
+            result,
+            Err(FlashCoordinatorError::Flash(
+                SystemFlashError::MissingTransport
+            ))
+        ));
+        assert_eq!(phases, [UpdateProgress::StoppingKlipper]);
+        assert!(
+            build_runner
+                .commands
+                .lock()
+                .expect("runner lock")
+                .is_empty()
+        );
+        assert_eq!(
+            service_runner.commands.lock().expect("runner lock").len(),
+            3
+        );
     }
 }

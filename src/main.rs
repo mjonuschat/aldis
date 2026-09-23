@@ -2,6 +2,7 @@
 
 mod cli;
 mod discovery;
+mod flash_command;
 mod reboot;
 mod setup;
 mod status;
@@ -50,6 +51,10 @@ fn main() -> ExitCode {
             let _logging = init_logging_with_fallback(cli.verbose);
             reboot::reboot(arguments, ui::UpdateUi::new(cli.color, cli.no_progress))
         }
+        CliCommand::Flash(arguments) => {
+            let _logging = init_logging_with_fallback(cli.verbose);
+            flash_command::flash(arguments, ui::UpdateUi::new(cli.color, cli.no_progress))
+        }
     }
 }
 
@@ -73,6 +78,20 @@ fn inspect(arguments: &MoonrakerArgs, verbose: u8) -> anyhow::Result<()> {
         .context("failed to discover MCUs")?;
     print_inventory(&arguments.moonraker, &inventory, verbose > 0);
     Ok(())
+}
+
+/// Reserves a fresh, uniquely named run directory under the system temp
+/// directory (honoring `$TMPDIR`, `/tmp` otherwise) via `mkdtemp`, so a run's
+/// build artifacts and log don't outlive the reboot that clears it.
+///
+/// The directory is deliberately kept alive past `TempDir`'s scope: deleting
+/// it on drop would defeat the point of a run log the user can inspect
+/// after aldis exits.
+pub(crate) fn default_run_workspace() -> std::io::Result<PathBuf> {
+    Ok(tempfile::Builder::new()
+        .prefix("aldis-")
+        .tempdir_in(std::env::temp_dir())?
+        .keep())
 }
 
 pub(crate) fn default_klipper_source() -> PathBuf {

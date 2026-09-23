@@ -1,7 +1,7 @@
 //! The interactive build-and-flash update command.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -41,7 +41,8 @@ fn update_and_report_run_log(
     let workspace = match &arguments.workspace {
         Some(path) => RunWorkspace::create(path.clone())?,
         None => {
-            let path = default_run_workspace().context("could not create the run workspace")?;
+            let path =
+                crate::default_run_workspace().context("could not create the run workspace")?;
             RunWorkspace::adopt(path)
         }
     };
@@ -224,20 +225,6 @@ fn run_update(
     ));
     ui.action("run completed successfully");
     Ok(())
-}
-
-/// Reserves a fresh, uniquely named run directory under the system temp
-/// directory (honoring `$TMPDIR`, `/tmp` otherwise) via `mkdtemp`, so a run's
-/// build artifacts and log don't outlive the reboot that clears it.
-///
-/// The directory is deliberately kept alive past `TempDir`'s scope: deleting
-/// it on drop would defeat the point of a run log the user can inspect
-/// after aldis exits.
-fn default_run_workspace() -> io::Result<PathBuf> {
-    Ok(tempfile::Builder::new()
-        .prefix("aldis-")
-        .tempdir_in(std::env::temp_dir())?
-        .keep())
 }
 
 fn mcu_count_label(count: usize) -> &'static str {
