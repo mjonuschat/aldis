@@ -55,14 +55,14 @@ pub(crate) fn format_status(
         let status = assess_mcu(mcu, checkout);
         output.push_str(&format!("\n{}\n", mcu.name));
         for (label, value) in [
-            ("firmware:", firmware_label(mcu)),
+            ("firmware:", firmware_label(mcu, &status.eligibility)),
             (
                 "version:",
                 mcu.version.as_deref().unwrap_or("unknown").to_owned(),
             ),
             ("model:", mcu.mcu.clone()),
             ("connection:", connection_label(mcu.transport.as_ref())),
-            ("supported:", supported_label(status.eligibility)),
+            ("supported:", supported_label(&status.eligibility)),
             ("needs update:", update_label(status.revision)),
         ] {
             output.push_str(&format!("  {label:<13} {value}\n"));
@@ -78,7 +78,10 @@ pub(crate) fn checkout_label(checkout: &CheckoutRevision) -> &str {
     }
 }
 
-fn firmware_label(mcu: &aldis::moonraker::Mcu) -> String {
+fn firmware_label(mcu: &aldis::moonraker::Mcu, eligibility: &Eligibility) -> String {
+    if let Eligibility::ExternallyManaged(name) = eligibility {
+        return name.clone();
+    }
     if let Some(app) = mcu.app.as_deref().filter(|app| !app.trim().is_empty()) {
         app.to_owned()
     } else if !mcu.kconfig.trim().is_empty() {
@@ -96,10 +99,11 @@ fn connection_label(transport: Option<&McuTransport>) -> String {
     }
 }
 
-fn supported_label(eligibility: Eligibility) -> String {
+fn supported_label(eligibility: &Eligibility) -> String {
     match eligibility {
         Eligibility::Eligible => "yes".to_owned(),
-        Eligibility::ExternallyManaged | Eligibility::Unsupported => "no".to_owned(),
+        Eligibility::ExternallyManaged(app) => format!("no (third-party firmware: {app})"),
+        Eligibility::Unsupported(reason) => format!("no ({reason})"),
     }
 }
 
@@ -162,6 +166,47 @@ mod tests {
                 "  needs update: yes\n",
             )
         );
+    }
+
+    #[test]
+    fn folds_the_unsupported_reason_into_the_supported_line() {
+        let inventory = McuInventory {
+            mcus: vec![
+                // Beacon reports `app` as an empty string rather than omitting it, and
+                // names itself in `mcu_version` instead.
+                Mcu {
+                    name: "beacon".to_owned(),
+                    app: Some(String::new()),
+                    version: Some("Beacon 2.1.0".to_owned()),
+                    mcu: "beacon".to_owned(),
+                    canbus_frequency_hz: None,
+                    transport: None,
+                    kconfig: String::new(),
+                },
+                Mcu {
+                    name: "old-mcu".to_owned(),
+                    app: Some("Klipper".to_owned()),
+                    version: Some("v0.12.0-500-gdeadbeef".to_owned()),
+                    mcu: "rp2040".to_owned(),
+                    canbus_frequency_hz: None,
+                    transport: None,
+                    kconfig: String::new(),
+                },
+            ],
+        };
+
+        let output = format_status(
+            std::path::Path::new("/home/pi/klipper"),
+            &CheckoutRevision::Known("v0.13.0-753-g8c29c0a8e".to_owned()),
+            &inventory,
+            None,
+        );
+
+        assert!(output.contains("  firmware:     Beacon\n"));
+        assert!(output.contains("  supported:    no (third-party firmware: Beacon)\n"));
+        assert!(output.contains(
+            "  supported:    no (Klipper version too old (v0.12.0-500-gdeadbeef < v0.13.0-753-g8c29c0a8e))\n"
+        ));
     }
 
     #[test]

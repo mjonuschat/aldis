@@ -96,6 +96,6 @@ fn accepts_an_mcu_object_with_no_kconfig_as_unsupported_rather_than_failing() {
     assert_eq!(inventory.mcus[0].kconfig, "");
     assert_eq!(
         classify_mcu(&inventory.mcus[0]),
-        Eligibility::ExternallyManaged
+        Eligibility::ExternallyManaged("Beacon".to_owned())
     );
 }
