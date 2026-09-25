@@ -61,6 +61,49 @@ pub trait MoonrakerPort {
     fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError>;
 }
 
+/// Klipper's `print_stats.state`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrintState {
+    Standby,
+    Printing,
+    Paused,
+    Complete,
+    Cancelled,
+    Error,
+    /// A state this version of aldis does not recognize.
+    Unknown(String),
+}
+
+impl PrintState {
+    /// Whether stopping Klipper now cannot interrupt a print.
+    pub fn is_idle(&self) -> bool {
+        matches!(
+            self,
+            Self::Standby | Self::Complete | Self::Cancelled | Self::Error
+        )
+    }
+}
+
+impl std::fmt::Display for PrintState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Standby => "standby",
+            Self::Printing => "printing",
+            Self::Paused => "paused",
+            Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+            Self::Unknown(state) => state,
+        })
+    }
+}
+
+/// A source of Klipper's current print state.
+pub trait PrinterStatePort {
+    /// Queries Klipper's `print_stats` state through Moonraker.
+    fn print_state(&self) -> Result<PrintState, MoonrakerError>;
+}
+
 pub struct MoonrakerAdapter {
     base_url: String,
     agent: ureq::Agent,
@@ -69,6 +112,22 @@ pub struct MoonrakerAdapter {
 impl MoonrakerPort for MoonrakerAdapter {
     fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
         MoonrakerAdapter::discover_mcus(self)
+    }
+}
+
+impl PrinterStatePort for MoonrakerAdapter {
+    fn print_state(&self) -> Result<PrintState, MoonrakerError> {
+        let body = serde_json::to_string(&json!({ "objects": { "print_stats": ["state"] } }))?;
+        let response = self
+            .agent
+            .post(&self.endpoint("/printer/objects/query"))
+            .header("Content-Type", "application/json")
+            .send(body)
+            .map_err(map_http_error)?
+            .body_mut()
+            .read_to_string()?;
+
+        parse_print_state(&response)
     }
 }
 
@@ -175,8 +234,58 @@ fn check_ready(state: &str, state_message: &str) -> Result<(), MoonrakerError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        McuSettings, McuTransport, MoonrakerError, check_ready, map_http_error, parse_transport,
+        McuSettings, McuTransport, MoonrakerError, PrintState, check_ready, map_http_error,
+        parse_print_state, parse_transport,
     };
+
+    fn print_stats_response(state: &str) -> String {
+        format!(
+            r#"{{"result":{{"eventtime":1.0,"status":{{"print_stats":{{"state":"{state}"}}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn parses_every_klipper_print_state() {
+        for (raw, expected) in [
+            ("standby", PrintState::Standby),
+            ("printing", PrintState::Printing),
+            ("paused", PrintState::Paused),
+            ("complete", PrintState::Complete),
+            ("cancelled", PrintState::Cancelled),
+            ("error", PrintState::Error),
+        ] {
+            assert_eq!(
+                parse_print_state(&print_stats_response(raw)).expect("state should parse"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn treats_only_finished_or_idle_states_as_idle() {
+        assert!(PrintState::Standby.is_idle());
+        assert!(PrintState::Complete.is_idle());
+        assert!(PrintState::Cancelled.is_idle());
+        assert!(PrintState::Error.is_idle());
+        assert!(!PrintState::Printing.is_idle());
+        assert!(!PrintState::Paused.is_idle());
+        assert!(!PrintState::Unknown("resuming".to_owned()).is_idle());
+    }
+
+    #[test]
+    fn keeps_an_unrecognized_print_state_verbatim() {
+        assert_eq!(
+            parse_print_state(&print_stats_response("resuming")).expect("state should parse"),
+            PrintState::Unknown("resuming".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_a_response_without_print_stats() {
+        let error = parse_print_state(r#"{"result":{"status":{}}}"#).unwrap_err();
+
+        assert!(matches!(error, MoonrakerError::InvalidResponse(_)));
+    }
 
     #[test]
     fn reports_klippy_not_connected_for_a_503_status() {
@@ -355,6 +464,46 @@ struct ObjectListResponse {
 #[derive(Deserialize)]
 struct ObjectList {
     objects: Vec<String>,
+}
+
+fn parse_print_state(response: &str) -> Result<PrintState, MoonrakerError> {
+    let response: PrintStatsResponse = serde_json::from_str(response)?;
+    let state = response
+        .result
+        .status
+        .print_stats
+        .ok_or_else(|| MoonrakerError::InvalidResponse("print_stats was not reported".to_owned()))?
+        .state;
+    Ok(match state.as_str() {
+        "standby" => PrintState::Standby,
+        "printing" => PrintState::Printing,
+        "paused" => PrintState::Paused,
+        "complete" => PrintState::Complete,
+        "cancelled" => PrintState::Cancelled,
+        "error" => PrintState::Error,
+        _ => PrintState::Unknown(state),
+    })
+}
+
+#[derive(Deserialize)]
+struct PrintStatsResponse {
+    result: PrintStatsResult,
+}
+
+#[derive(Deserialize)]
+struct PrintStatsResult {
+    status: PrintStatsStatus,
+}
+
+#[derive(Deserialize)]
+struct PrintStatsStatus {
+    #[serde(default)]
+    print_stats: Option<PrintStats>,
+}
+
+#[derive(Deserialize)]
+struct PrintStats {
+    state: String,
 }
 
 #[derive(Deserialize)]

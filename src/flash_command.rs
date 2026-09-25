@@ -78,6 +78,13 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
     };
     let target_kconfig = pending.kconfig().to_owned();
+    crate::update::ensure_printer_idle(&MoonrakerAdapter::new(
+        &arguments.connection.moonraker.moonraker,
+    ))
+    .map_err(|message| {
+        ui.action(&format!("error: {message}"));
+        anyhow::anyhow!(message)
+    })?;
     match coordinator.flash_firmware_system_with_progress(
         pending.approve(),
         &firmware,

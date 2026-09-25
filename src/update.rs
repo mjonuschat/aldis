@@ -17,7 +17,9 @@ use aldis::flash::katapult::system::SystemKatapultOptions;
 use aldis::flash::linux_host::HOST_MCU_UNIT_FILE;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
 use aldis::logging::{self, LoggingCommandAdapter};
-use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
+use aldis::moonraker::{
+    McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort, PrinterStatePort,
+};
 use aldis::retry::retry_until_available;
 use aldis::workspace::RunWorkspace;
 
@@ -144,6 +146,8 @@ fn run_update(
         },
         host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
     };
+    let moonraker = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker);
+    let mut printer_checked = false;
     let mut accepted = Vec::new();
     for name in offered {
         let mcu = inventory
@@ -168,6 +172,13 @@ fn run_update(
                 ui.action(&format!("error: {}", aldis::error_chain(error)));
             })
             .with_context(|| format!("failed to prepare {name} for flashing"))?;
+        if !printer_checked {
+            ensure_printer_idle(&moonraker).map_err(|message| {
+                ui.action(&format!("error: {message}"));
+                anyhow::anyhow!(message)
+            })?;
+            printer_checked = true;
+        }
         match coordinator.execute_and_flash_system_with_progress(
             pending.approve(),
             options.clone(),
@@ -218,11 +229,7 @@ fn run_update(
     }
     ui.finish_success("Klipper ready");
     ui.begin("waiting for updated MCUs to reconnect");
-    if let Err(error) = wait_for_mcus(
-        &MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker),
-        &accepted,
-        &checkout,
-    ) {
+    if let Err(error) = wait_for_mcus(&moonraker, &accepted, &checkout) {
         tracing::debug!(?error, "waiting for updated MCUs to reconnect failed");
         ui.finish_failure();
         ui.action(&format!("error: {error}"));
@@ -265,6 +272,19 @@ fn update_failure(
             "update failed: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
             aldis::error_chain(&restore_error)
         ),
+    }
+}
+
+pub(crate) fn ensure_printer_idle(printer: &impl PrinterStatePort) -> Result<(), String> {
+    match printer.print_state() {
+        Ok(state) if state.is_idle() => Ok(()),
+        Ok(state) => Err(format!(
+            "the printer is {state}; refusing to stop Klipper, run again when it is idle"
+        )),
+        Err(error) => Err(format!(
+            "could not confirm the printer is idle; refusing to stop Klipper: {}",
+            aldis::error_chain(&error)
+        )),
     }
 }
 
@@ -375,9 +395,71 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        mcu_count_label, pending_mcus, selection_for, unknown_targets, update_failure,
-        wait_for_application_with_timeout, wait_for_mcus,
+        ensure_printer_idle, mcu_count_label, pending_mcus, selection_for, unknown_targets,
+        update_failure, wait_for_application_with_timeout, wait_for_mcus,
     };
+    use aldis::moonraker::{PrintState, PrinterStatePort};
+
+    struct FakePrinter(Result<PrintState, String>);
+
+    impl PrinterStatePort for FakePrinter {
+        fn print_state(&self) -> Result<PrintState, MoonrakerError> {
+            self.0.clone().map_err(MoonrakerError::InvalidResponse)
+        }
+    }
+
+    #[test]
+    fn refuses_to_stop_klipper_while_a_print_is_running_or_paused() {
+        for (state, label) in [
+            (PrintState::Printing, "printing"),
+            (PrintState::Paused, "paused"),
+        ] {
+            let message = ensure_printer_idle(&FakePrinter(Ok(state))).unwrap_err();
+
+            assert_eq!(
+                message,
+                format!(
+                    "the printer is {label}; refusing to stop Klipper, run again when it is idle"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_to_stop_klipper_when_the_print_state_is_unrecognized() {
+        let message =
+            ensure_printer_idle(&FakePrinter(Ok(PrintState::Unknown("resuming".to_owned()))))
+                .unwrap_err();
+
+        assert!(
+            message.starts_with("the printer is resuming; refusing"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn refuses_to_stop_klipper_when_the_print_state_cannot_be_read() {
+        let message =
+            ensure_printer_idle(&FakePrinter(Err("connection reset".to_owned()))).unwrap_err();
+
+        assert!(
+            message.starts_with("could not confirm the printer is idle; refusing to stop Klipper"),
+            "{message}"
+        );
+        assert!(message.contains("connection reset"), "{message}");
+    }
+
+    #[test]
+    fn proceeds_when_the_printer_is_idle() {
+        for state in [
+            PrintState::Standby,
+            PrintState::Complete,
+            PrintState::Cancelled,
+            PrintState::Error,
+        ] {
+            assert!(ensure_printer_idle(&FakePrinter(Ok(state))).is_ok());
+        }
+    }
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
     use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
     use aldis::eligibility::CheckoutRevision;
