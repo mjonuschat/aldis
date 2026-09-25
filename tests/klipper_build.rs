@@ -160,6 +160,32 @@ fn copies_uf2_artifact_for_a_no_bootloader_rp2040_build() {
 }
 
 #[test]
+fn copies_the_elf_artifact_for_a_linux_host_build() {
+    let root = temporary_directory("linux-host");
+    let source_dir = root.join("klipper");
+    let config_path = root.join("run/mcu host/.config");
+    let artifact_path = root.join("artifacts/mcu host.bin");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory should exist");
+    fs::write(source_dir.join("out/klipper.elf"), b"\x7fELF host").expect("fixture artifact");
+    let builder = KlipperBuilder::new(&source_dir, FakeRunner::success());
+
+    builder
+        .build(&BuildRequest {
+            kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_LINUX=y\n".to_owned(),
+            config_path,
+            artifact_path: artifact_path.clone(),
+            clean: false,
+        })
+        .expect("build should succeed");
+
+    assert_eq!(
+        fs::read(&artifact_path).expect("copied artifact"),
+        b"\x7fELF host"
+    );
+    fs::remove_dir_all(root).expect("test directory cleanup");
+}
+
+#[test]
 fn returns_the_expanded_kconfig_after_olddefconfig() {
     let root = temporary_directory("expanded");
     let source_dir = root.join("klipper");

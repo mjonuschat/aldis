@@ -310,7 +310,9 @@ where
 }
 
 fn output_artifact_name(kconfig: &str) -> &'static str {
-    if kconfig
+    if crate::flash::linux_host::is_linux_host(kconfig) {
+        "out/klipper.elf"
+    } else if kconfig
         .lines()
         .any(|line| line.trim() == "CONFIG_MACH_RPXXXX=y")
         && !kconfig
