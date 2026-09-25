@@ -10,7 +10,6 @@ use aldis::flash::katapult::system::SystemKatapultOptions;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
 use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::MoonrakerAdapter;
-use aldis::plan::build_update_plan;
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::FlashArgs;
@@ -42,7 +41,6 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     ))
     .context("failed to discover MCUs from Moonraker")?;
     arguments.target = crate::discovery::resolve_target_name(&inventory, &arguments.target);
-    let plan = build_update_plan(&inventory);
 
     let workspace_root =
         crate::default_run_workspace().context("could not create the run workspace")?;
@@ -53,7 +51,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         LoggingCommandAdapter::new(SystemCommandAdapter),
     );
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, &arguments.target, false)
+        .prepare(&inventory, &workspace, &arguments.target, false)
         .with_context(|| format!("failed to prepare {} for flashing", arguments.target))?;
 
     if !arguments.force {

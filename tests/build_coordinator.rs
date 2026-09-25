@@ -7,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aldis::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
 use aldis::moonraker::parse_inventory;
-use aldis::plan::build_update_plan;
 use aldis::workspace::RunWorkspace;
 
 #[test]
@@ -19,7 +18,6 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
     let workspace = RunWorkspace::create(root.join("run")).expect("workspace should create");
     let inventory =
         parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("fixture should parse");
-    let plan = build_update_plan(&inventory);
     let make_runner = FakeRunner::new([success_output(), success_output()]);
     let service_runner = FakeRunner::new([
         state_output(true, b"active\n"),
@@ -30,7 +28,7 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
         BuildCoordinator::new(&source_dir, make_runner.clone(), service_runner.clone());
 
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .prepare(&inventory, &workspace, "mcu toolhead", false)
         .expect("build should prepare");
     assert!(
         pending
@@ -110,7 +108,6 @@ fn reports_build_phases_before_the_flash_callback() {
     let workspace = RunWorkspace::create(root.join("run")).expect("workspace should create");
     let inventory =
         parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("fixture should parse");
-    let plan = build_update_plan(&inventory);
     let build_runner = FakeRunner::new([success_output(), success_output()]);
     let service_runner = FakeRunner::new([
         state_output(true, b"active\n"),
@@ -119,7 +116,7 @@ fn reports_build_phases_before_the_flash_callback() {
     ]);
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner);
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .prepare(&inventory, &workspace, "mcu toolhead", false)
         .expect("build should prepare");
     let mut phases = Vec::new();
 
@@ -191,7 +188,6 @@ fn does_not_restart_klipper_when_a_later_batch_flash_fails() {
     let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
     let inventory =
         parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
-    let plan = build_update_plan(&inventory);
     let build_runner = FakeRunner::new([success_output(), success_output()]);
     let service_runner = FakeRunner::new([
         state_output(true, b"active\n"),
@@ -200,7 +196,7 @@ fn does_not_restart_klipper_when_a_later_batch_flash_fails() {
     ]);
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .prepare(&inventory, &workspace, "mcu toolhead", false)
         .expect("prepare");
 
     assert!(
@@ -241,7 +237,6 @@ fn restores_klipper_after_a_build_failure_when_it_was_active_before_the_batch() 
     let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
     let inventory =
         parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
-    let plan = build_update_plan(&inventory);
     let build_runner = FakeRunner::new([failure_output()]);
     let service_runner = FakeRunner::new([
         state_output(true, b"active\n"),
@@ -252,7 +247,7 @@ fn restores_klipper_after_a_build_failure_when_it_was_active_before_the_batch() 
     ]);
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .prepare(&inventory, &workspace, "mcu toolhead", false)
         .expect("prepare");
 
     assert!(coordinator.execute(pending.approve()).is_err());
@@ -281,12 +276,11 @@ fn leaves_klipper_stopped_after_a_build_failure_when_it_was_already_inactive() {
     let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
     let inventory =
         parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
-    let plan = build_update_plan(&inventory);
     let build_runner = FakeRunner::new([failure_output()]);
     let service_runner = FakeRunner::new([state_output(false, b"inactive\n")]);
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
     let pending = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .prepare(&inventory, &workspace, "mcu toolhead", false)
         .expect("prepare");
 
     assert!(coordinator.execute(pending.approve()).is_err());
@@ -309,7 +303,6 @@ fn restores_to_the_batchs_initial_state_when_a_later_mcu_fails_to_build() {
     let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
     let inventory =
         parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
-    let plan = build_update_plan(&inventory);
     let build_runner = FakeRunner::new([success_output(), success_output(), failure_output()]);
     let service_runner = FakeRunner::new([
         state_output(true, b"active\n"),
@@ -322,14 +315,14 @@ fn restores_to_the_batchs_initial_state_when_a_later_mcu_fails_to_build() {
     let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
 
     let first = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .prepare(&inventory, &workspace, "mcu toolhead", false)
         .expect("prepare first target");
     coordinator
         .execute(first.approve())
         .expect("first MCU should build");
 
     let second = coordinator
-        .prepare(&inventory, &plan, &workspace, "mcu", false)
+        .prepare(&inventory, &workspace, "mcu", false)
         .expect("prepare second target");
     assert!(coordinator.execute(second.approve()).is_err());
 

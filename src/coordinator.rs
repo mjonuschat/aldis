@@ -9,7 +9,6 @@ use crate::flash::system::{
     flash_prepared_firmware_file_with_progress, flash_prepared_system_with_progress,
 };
 use crate::moonraker::McuInventory;
-use crate::plan::UpdatePlan;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
 use crate::service::{KlipperService, ServiceError, ServiceState};
 use crate::workspace::{RunWorkspace, WorkspaceError};
@@ -49,7 +48,7 @@ pub enum CoordinatorError {
     /// The isolated workspace could not reserve target paths.
     #[error("workspace preparation failed")]
     Workspace(#[source] WorkspaceError),
-    /// The selected plan target could not be matched to Moonraker inventory.
+    /// The selected target could not be matched to Moonraker inventory.
     #[error("build preparation failed")]
     Preparation(#[source] PreparationError),
     /// Klipper's service state could not be queried or changed.
@@ -145,7 +144,6 @@ where
     pub fn prepare(
         &self,
         inventory: &McuInventory,
-        plan: &UpdatePlan,
         workspace: &RunWorkspace,
         target_name: &str,
         clean: bool,
@@ -155,7 +153,6 @@ where
             .map_err(CoordinatorError::Workspace)?;
         let prepared = prepare_build(
             inventory,
-            plan,
             target_name,
             paths.config_path,
             paths.artifact_path,

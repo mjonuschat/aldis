@@ -17,7 +17,6 @@ use aldis::flash::katapult::system::SystemKatapultOptions;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
 use aldis::logging::{self, LoggingCommandAdapter};
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
-use aldis::plan::build_update_plan;
 use aldis::retry::retry_until_available;
 use aldis::workspace::RunWorkspace;
 
@@ -103,7 +102,6 @@ fn run_update(
             unknown.join(", ")
         );
     }
-    let plan = build_update_plan(&inventory);
     let checkout = checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
     ui.block(&format_status(
         &source,
@@ -162,7 +160,7 @@ fn run_update(
             }
         }
         let pending = coordinator
-            .prepare(&inventory, &plan, workspace, &name, arguments.clean)
+            .prepare(&inventory, workspace, &name, arguments.clean)
             .inspect_err(|error| {
                 tracing::debug!(?error, "flash preparation failed");
                 ui.action(&format!("error: {}", aldis::error_chain(error)));

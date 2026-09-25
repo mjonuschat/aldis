@@ -10,7 +10,6 @@ pub mod eligibility;
 pub mod flash;
 pub mod logging;
 pub mod moonraker;
-pub mod plan;
 pub mod prepare;
 pub mod retry;
 pub mod self_update;
