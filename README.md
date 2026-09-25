@@ -32,7 +32,7 @@ The rest of this document assumes `aldis` was installed this way, i.e. is not on
 
 ## Setup
 
-MCU updates need host permissions that a normal user does not have by default: udev rules so USB bootloader devices are accessible, and a narrow sudoers policy so Klipper can be stopped and started without a password prompt mid-update.
+MCU updates need host permissions that a normal user does not have by default: udev rules so USB bootloader devices are accessible, and a narrow sudoers policy so Klipper can be stopped and started, and the Linux host MCU installed, without a password prompt mid-update.
 
 ```
 sudo ~/aldis/aldis setup
