@@ -30,6 +30,11 @@ impl PendingBuild {
         &self.prepared.request.artifact_path
     }
 
+    /// Returns the Kconfig the selected MCU reported.
+    pub fn kconfig(&self) -> &str {
+        &self.prepared.request.kconfig
+    }
+
     /// Marks this exact target as approved after an operator has confirmed the side effects.
     pub fn approve(self) -> ApprovedBuild {
         ApprovedBuild { pending: self }
@@ -117,6 +122,8 @@ pub enum UpdateProgress {
     BootloaderReady,
     /// The firmware transfer is beginning.
     StartingFlash,
+    /// The Linux host MCU binary is being installed.
+    Installing,
 }
 
 /// Coordinates the explicit Klipper service boundary and a selected firmware build.
@@ -241,6 +248,7 @@ where
                     SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
                     SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
                     SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+                    SystemFlashProgress::Installing => UpdateProgress::Installing,
                 });
             },
         )
@@ -294,6 +302,7 @@ where
                 SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
                 SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
                 SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+                SystemFlashProgress::Installing => UpdateProgress::Installing,
             });
         })
         .map_err(FlashCoordinatorError::Flash)?;

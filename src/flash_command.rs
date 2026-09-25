@@ -75,6 +75,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
             can_bootloader_settle: Duration::from_millis(100),
         },
     };
+    let target_kconfig = pending.kconfig().to_owned();
     match coordinator.flash_firmware_system_with_progress(
         pending.approve(),
         &firmware,
@@ -83,7 +84,10 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         |progress| ui.progress_without_build(progress),
     ) {
         Ok(result) => {
-            ui.finish_success(format!("flashed {} bytes", result.padded_bytes));
+            ui.finish_success(crate::ui::transfer_summary(
+                &target_kconfig,
+                result.padded_bytes,
+            ));
         }
         Err(error) => {
             ui.finish_failure();
@@ -99,7 +103,8 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     if let Err(error) = coordinator.start_after_batch() {
         ui.finish_failure();
         let message = format!(
-            "flashed successfully but Klipper failed to restart: {}",
+            "{} successfully but Klipper failed to restart: {}",
+            crate::ui::transfer_verb(&target_kconfig),
             aldis::error_chain(&error)
         );
         ui.action(&format!("error: {message}"));
@@ -159,6 +164,32 @@ mod tests {
         assert!(prompt.contains("4096 bytes"));
         assert!(prompt.contains("mcu toolhead"));
         assert!(prompt.contains("Kconfig validation"));
+    }
+
+    #[test]
+    fn reports_the_host_mcu_setup_hint_in_the_final_flash_error() {
+        use aldis::flash::linux_host::{InstallStep, LinuxHostError};
+
+        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::LinuxHost(
+            LinuxHostError::CommandFailed {
+                step: InstallStep::Install,
+                output: Box::new(CommandOutput {
+                    success: false,
+                    stdout: Vec::new(),
+                    stderr: b"sudo: a password is required\n".to_vec(),
+                }),
+            },
+        ));
+
+        let message = flash_failure(error, None);
+
+        assert!(
+            message.starts_with(
+                "flash failed: could not install /usr/local/bin/klipper_mcu: \
+                 sudo: a password is required; run sudo aldis setup"
+            ),
+            "{message}"
+        );
     }
 
     #[test]

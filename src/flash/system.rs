@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::build::SystemCommandAdapter;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
 use crate::flash::katapult::adapter::KatapultFlashError;
@@ -13,6 +14,7 @@ use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloade
 use crate::flash::katapult::can::SocketCanIo;
 use crate::flash::katapult::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
 use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
+use crate::flash::linux_host::{HostMcuInstaller, LinuxHostError, is_linux_host};
 use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
 use crate::flash::stm32_dfu::{
     ApplicationProbeResult, Stm32DfuAdapter, Stm32DfuDevice, Stm32DfuError, Stm32DfuTarget,
@@ -24,6 +26,7 @@ use crate::flash::usb_bootloader::{
     select_usb_bootloader,
 };
 use crate::flash::usb_sysfs::usb_device_ancestor;
+use crate::logging::LoggingCommandAdapter;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
@@ -60,6 +63,8 @@ pub enum SystemFlashProgress {
     BootloaderReady,
     /// The firmware transfer is beginning.
     Flashing,
+    /// The Linux host MCU binary is being installed and its service restarted.
+    Installing,
 }
 
 /// A selected update cannot be dispatched to a native backend.
@@ -112,6 +117,8 @@ pub enum SystemFlashError {
     Can(CanBootstrapError<io::Error>),
     /// Katapult rejected or could not verify its CAN transfer.
     CanFlash(KatapultFlashError),
+    /// Installing the Linux host MCU binary or restarting its service failed.
+    LinuxHost(LinuxHostError),
 }
 
 impl fmt::Display for SystemFlashError {
@@ -186,6 +193,7 @@ impl fmt::Display for SystemFlashError {
                 "the re-enumerated bootloader is not supported for automatic flashing: {error}\n  \
                  transport:    {transport}"
             ),
+            Self::LinuxHost(error) => write!(f, "{error}"),
             Self::MissingTransport => write!(f, "the MCU does not expose a configured transport"),
         }
     }
@@ -208,6 +216,7 @@ impl std::error::Error for SystemFlashError {
             Self::KatapultOpen(error) => Some(error),
             Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
             Self::PicoBoot(error) => Some(error),
+            Self::LinuxHost(error) => std::error::Error::source(error),
             Self::CanSocket(error) => Some(error),
             Self::CanUsbTopology(error) => Some(error),
         }
@@ -325,13 +334,17 @@ fn kconfig_flash_start_symbols(kconfig: &str) -> Vec<String> {
         .collect()
 }
 
-/// Flashes one prepared artifact while reporting native bootloader phases.
+/// Flashes one prepared artifact while reporting native bootloader phases, or
+/// installs it when it targets the Linux host MCU.
 pub fn flash_prepared_system_with_progress(
     prepared: &PreparedBuild,
     firmware: &[u8],
     options: SystemFlashOptions,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    if is_linux_host(&prepared.request.kconfig) {
+        return install_linux_host(firmware, &mut progress);
+    }
     match prepared
         .transport
         .as_ref()
@@ -353,6 +366,16 @@ pub fn flash_prepared_system_with_progress(
             &mut progress,
         ),
     }
+}
+
+fn install_linux_host(
+    firmware: &[u8],
+    progress: &mut impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    progress(SystemFlashProgress::Installing);
+    HostMcuInstaller::new(LoggingCommandAdapter::new(SystemCommandAdapter))
+        .install(firmware)
+        .map_err(SystemFlashError::LinuxHost)
 }
 
 fn flash_serial_system(
@@ -387,6 +410,9 @@ pub fn flash_prepared_firmware_file_with_progress(
     force: bool,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    if is_linux_host(&prepared.request.kconfig) {
+        return install_linux_host(firmware, &mut progress);
+    }
     match prepared
         .transport
         .as_ref()

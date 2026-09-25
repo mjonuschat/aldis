@@ -161,6 +161,10 @@ impl UpdateUi {
             }
             UpdateProgress::BootloaderReady => self.finish_success("bootloader ready"),
             UpdateProgress::StartingFlash => self.begin("flashing firmware"),
+            UpdateProgress::Installing => {
+                self.finish_success("compiled firmware");
+                self.begin("installing host MCU");
+            }
         }
     }
 
@@ -173,11 +177,27 @@ impl UpdateUi {
             }
             UpdateProgress::BootloaderReady => self.finish_success("bootloader ready"),
             UpdateProgress::StartingFlash => self.begin("flashing firmware"),
+            UpdateProgress::Installing => {
+                self.finish_success("stopped Klipper");
+                self.begin("installing host MCU");
+            }
             UpdateProgress::ConfiguringFirmware | UpdateProgress::CompilingFirmware => {
                 unreachable!("flashing without a build never reports build phases")
             }
         }
     }
+}
+
+pub(crate) fn transfer_verb(kconfig: &str) -> &'static str {
+    if aldis::flash::linux_host::is_linux_host(kconfig) {
+        "installed"
+    } else {
+        "flashed"
+    }
+}
+
+pub(crate) fn transfer_summary(kconfig: &str, bytes: usize) -> String {
+    format!("{} {bytes} bytes", transfer_verb(kconfig))
 }
 
 impl Drop for UpdateUi {
@@ -246,6 +266,18 @@ pub(crate) fn confirmed() -> bool {
 mod tests {
     use super::{colors_enabled, confirmed_by_default, plain_success_line};
     use crate::cli::ColorMode;
+
+    #[test]
+    fn summarizes_a_host_mcu_as_installed_and_others_as_flashed() {
+        assert_eq!(
+            super::transfer_summary("CONFIG_MACH_LINUX=y\n", 812),
+            "installed 812 bytes"
+        );
+        assert_eq!(
+            super::transfer_summary("CONFIG_MACH_STM32=y\n", 812),
+            "flashed 812 bytes"
+        );
+    }
 
     #[test]
     fn honors_color_mode_without_using_terminal_escape_codes_in_plain_output() {

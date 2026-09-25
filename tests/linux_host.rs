@@ -302,3 +302,94 @@ impl CommandPort for FakeRunner {
             .expect("an output is scripted for every command")
     }
 }
+
+use std::time::Duration;
+
+use aldis::build::BuildRequest;
+use aldis::flash::katapult::system::SystemKatapultOptions;
+use aldis::flash::system::{
+    SystemFlashError, SystemFlashOptions, SystemFlashProgress,
+    flash_prepared_firmware_file_with_progress, flash_prepared_system_with_progress,
+};
+use aldis::prepare::PreparedBuild;
+
+fn host_prepared_build() -> PreparedBuild {
+    PreparedBuild {
+        target_name: "mcu host".to_owned(),
+        mcu: "linux".to_owned(),
+        transport: None,
+        request: BuildRequest {
+            kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_LINUX=y\n".to_owned(),
+            config_path: PathBuf::from("/nonexistent/.config"),
+            artifact_path: PathBuf::from("/nonexistent/klipper.elf"),
+            clean: false,
+        },
+    }
+}
+
+fn flash_options() -> SystemFlashOptions {
+    SystemFlashOptions {
+        katapult: SystemKatapultOptions {
+            baud_rate: 250_000,
+            bootloader_timeout: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(10),
+            read_timeout: Duration::from_secs(1),
+            can_bootloader_settle: Duration::from_millis(10),
+        },
+    }
+}
+
+const REFUSED_BEFORE_ANY_COMMAND: &[u8] = b"not an elf";
+
+#[test]
+fn dispatches_a_built_host_mcu_to_the_installer_before_any_transport() {
+    let mut stages = Vec::new();
+
+    let error = flash_prepared_system_with_progress(
+        &host_prepared_build(),
+        REFUSED_BEFORE_ANY_COMMAND,
+        flash_options(),
+        |stage| stages.push(stage),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SystemFlashError::LinuxHost(LinuxHostError::NotHostElf)
+    ));
+    assert_eq!(stages, [SystemFlashProgress::Installing]);
+}
+
+#[test]
+fn dispatches_a_host_mcu_firmware_file_to_the_installer() {
+    let mut stages = Vec::new();
+
+    let error = flash_prepared_firmware_file_with_progress(
+        &host_prepared_build(),
+        REFUSED_BEFORE_ANY_COMMAND,
+        flash_options(),
+        false,
+        |stage| stages.push(stage),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SystemFlashError::LinuxHost(LinuxHostError::NotHostElf)
+    ));
+    assert_eq!(stages, [SystemFlashProgress::Installing]);
+}
+
+#[test]
+fn host_mcu_flash_errors_display_the_full_installer_message() {
+    let error = SystemFlashError::LinuxHost(LinuxHostError::CommandFailed {
+        step: InstallStep::Install,
+        output: Box::new(failed(b"sudo: a password is required\n")),
+    });
+
+    assert_eq!(
+        error.to_string(),
+        "could not install /usr/local/bin/klipper_mcu: sudo: a password is required; run sudo aldis setup"
+    );
+    assert_eq!(aldis::error_chain(&error), error.to_string());
+}

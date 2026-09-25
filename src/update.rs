@@ -172,7 +172,10 @@ fn run_update(
             |progress| ui.progress(progress),
         ) {
             Ok(v) => {
-                ui.finish_success(format!("flashed {} bytes", v.flash.padded_bytes));
+                ui.finish_success(crate::ui::transfer_summary(
+                    &mcu.kconfig,
+                    v.flash.padded_bytes,
+                ));
                 ui.begin("waiting for MCU restart");
                 if let Err(error) = wait_for_application(mcu) {
                     tracing::debug!(?error, "waiting for MCU restart failed");
@@ -390,6 +393,32 @@ mod tests {
 
         assert_eq!(selection_for(false), UpdateSelection::Required);
         assert_eq!(selection_for(true), UpdateSelection::All);
+    }
+
+    #[test]
+    fn reports_the_host_mcu_setup_hint_in_the_final_update_error() {
+        use aldis::flash::linux_host::{InstallStep, LinuxHostError};
+
+        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::LinuxHost(
+            LinuxHostError::CommandFailed {
+                step: InstallStep::Install,
+                output: Box::new(CommandOutput {
+                    success: false,
+                    stdout: Vec::new(),
+                    stderr: b"sudo: a password is required\n".to_vec(),
+                }),
+            },
+        ));
+
+        let message = update_failure(error, None);
+
+        assert!(
+            message.starts_with(
+                "update failed: could not install /usr/local/bin/klipper_mcu: \
+                 sudo: a password is required; run sudo aldis setup"
+            ),
+            "{message}"
+        );
     }
 
     #[test]
