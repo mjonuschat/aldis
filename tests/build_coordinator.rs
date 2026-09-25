@@ -233,6 +233,130 @@ fn rejects_a_restart_that_does_not_make_klipper_active() {
     assert!(coordinator.start_after_batch().is_err());
 }
 
+#[test]
+fn restores_klipper_after_a_build_failure_when_it_was_active_before_the_batch() {
+    let root = temporary_directory();
+    let source_dir = root.join("klipper");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory");
+    let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
+    let inventory =
+        parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
+    let plan = build_update_plan(&inventory);
+    let build_runner = FakeRunner::new([failure_output()]);
+    let service_runner = FakeRunner::new([
+        state_output(true, b"active\n"),
+        success_output(),
+        state_output(false, b"inactive\n"),
+        success_output(),
+        state_output(true, b"active\n"),
+    ]);
+    let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
+    let pending = coordinator
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .expect("prepare");
+
+    assert!(coordinator.execute(pending.approve()).is_err());
+    coordinator
+        .restore_after_failure()
+        .expect("Klipper should restart");
+
+    let actions = service_runner
+        .commands
+        .lock()
+        .expect("runner lock")
+        .iter()
+        .map(|command| command.arguments[2].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        ["is-active", "stop", "is-active", "start", "is-active"]
+    );
+}
+
+#[test]
+fn leaves_klipper_stopped_after_a_build_failure_when_it_was_already_inactive() {
+    let root = temporary_directory();
+    let source_dir = root.join("klipper");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory");
+    let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
+    let inventory =
+        parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
+    let plan = build_update_plan(&inventory);
+    let build_runner = FakeRunner::new([failure_output()]);
+    let service_runner = FakeRunner::new([state_output(false, b"inactive\n")]);
+    let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
+    let pending = coordinator
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .expect("prepare");
+
+    assert!(coordinator.execute(pending.approve()).is_err());
+    coordinator
+        .restore_after_failure()
+        .expect("a no-op restore should still succeed");
+
+    assert_eq!(
+        service_runner.commands.lock().expect("runner lock").len(),
+        1
+    );
+}
+
+#[test]
+fn restores_to_the_batchs_initial_state_when_a_later_mcu_fails_to_build() {
+    let root = temporary_directory();
+    let source_dir = root.join("klipper");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory");
+    fs::write(source_dir.join("out/klipper.bin"), b"firmware").expect("source artifact");
+    let workspace = RunWorkspace::create(root.join("run")).expect("workspace");
+    let inventory =
+        parse_inventory(include_str!("fixtures/mcu-inventory.json")).expect("inventory");
+    let plan = build_update_plan(&inventory);
+    let build_runner = FakeRunner::new([success_output(), success_output(), failure_output()]);
+    let service_runner = FakeRunner::new([
+        state_output(true, b"active\n"),
+        success_output(),
+        state_output(false, b"inactive\n"),
+        state_output(false, b"inactive\n"),
+        success_output(),
+        state_output(true, b"active\n"),
+    ]);
+    let coordinator = BuildCoordinator::new(&source_dir, build_runner, service_runner.clone());
+
+    let first = coordinator
+        .prepare(&inventory, &plan, &workspace, "mcu toolhead", false)
+        .expect("prepare first target");
+    coordinator
+        .execute(first.approve())
+        .expect("first MCU should build");
+
+    let second = coordinator
+        .prepare(&inventory, &plan, &workspace, "mcu", false)
+        .expect("prepare second target");
+    assert!(coordinator.execute(second.approve()).is_err());
+
+    coordinator
+        .restore_after_failure()
+        .expect("Klipper should restart from the batch's original active state");
+
+    let actions = service_runner
+        .commands
+        .lock()
+        .expect("runner lock")
+        .iter()
+        .map(|command| command.arguments[2].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        [
+            "is-active",
+            "stop",
+            "is-active",
+            "is-active",
+            "start",
+            "is-active"
+        ]
+    );
+}
+
 #[derive(Clone)]
 struct FakeRunner {
     commands: Arc<Mutex<Vec<BuildCommand>>>,
@@ -264,6 +388,14 @@ impl CommandPort for FakeRunner {
 
 fn success_output() -> CommandOutput {
     CommandOutput::success()
+}
+
+fn failure_output() -> CommandOutput {
+    CommandOutput {
+        success: false,
+        stdout: Vec::new(),
+        stderr: b"build failed".to_vec(),
+    }
 }
 
 fn state_output(success: bool, stdout: &[u8]) -> CommandOutput {

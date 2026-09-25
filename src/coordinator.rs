@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -123,6 +124,7 @@ pub enum UpdateProgress {
 pub struct BuildCoordinator<B, S> {
     builder: KlipperBuilder<B>,
     service: KlipperService<S>,
+    first_observed_active: Cell<Option<bool>>,
 }
 
 impl<B, S> BuildCoordinator<B, S>
@@ -135,6 +137,7 @@ where
         Self {
             builder: KlipperBuilder::new(klipper_source_dir, build_runner),
             service: KlipperService::new(service_runner),
+            first_observed_active: Cell::new(None),
         }
     }
 
@@ -190,7 +193,12 @@ where
         &self,
         progress: &mut impl FnMut(UpdateProgress),
     ) -> Result<(), CoordinatorError> {
-        match self.service.state().map_err(CoordinatorError::Service)? {
+        let state = self.service.state().map_err(CoordinatorError::Service)?;
+        if self.first_observed_active.get().is_none() {
+            self.first_observed_active
+                .set(Some(state == ServiceState::Active));
+        }
+        match state {
             ServiceState::Active => {
                 progress(UpdateProgress::StoppingKlipper);
                 self.service.stop().map_err(CoordinatorError::Service)?;
@@ -297,6 +305,25 @@ where
 
     /// Starts Klipper once every selected MCU has completed its flash and application checks.
     pub fn start_after_batch(&self) -> Result<(), CoordinatorError> {
+        self.start_and_verify()
+    }
+
+    /// Restores Klipper after a failure that happened before any bootloader entry (the
+    /// initial stop itself, or a Make/build failure) — never call this after a flash
+    /// attempt, since the MCU's state at that point is no longer known to be safe to
+    /// resume against.
+    ///
+    /// Starts Klipper only if it was active the first time this coordinator observed
+    /// its state; otherwise this is a no-op, so an operator who had already stopped
+    /// Klipper before running the batch is left with it stopped, not force-started.
+    pub fn restore_after_failure(&self) -> Result<(), CoordinatorError> {
+        if self.first_observed_active.get() != Some(true) {
+            return Ok(());
+        }
+        self.start_and_verify()
+    }
+
+    fn start_and_verify(&self) -> Result<(), CoordinatorError> {
         self.service.start().map_err(CoordinatorError::Service)?;
         match self.service.state().map_err(CoordinatorError::Service)? {
             ServiceState::Active => Ok(()),

@@ -89,7 +89,9 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         }
         Err(error) => {
             ui.finish_failure();
-            let message = flash_failure(error);
+            let restore = (!matches!(error, FlashCoordinatorError::Flash(_)))
+                .then(|| coordinator.restore_after_failure());
+            let message = flash_failure(error, restore);
             ui.action(&format!("error: {message}"));
             return Err(anyhow::anyhow!(message));
         }
@@ -117,7 +119,10 @@ fn confirmation_prompt(target: &str, firmware: &Path, byte_count: usize) -> Stri
     )
 }
 
-fn flash_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
+fn flash_failure(
+    error: FlashCoordinatorError<SystemFlashError>,
+    restore: Option<Result<(), aldis::coordinator::CoordinatorError>>,
+) -> String {
     let detail = match error {
         FlashCoordinatorError::Coordinator(error) => aldis::error_chain(&error),
         FlashCoordinatorError::Artifact(error) => {
@@ -125,9 +130,18 @@ fn flash_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
         }
         FlashCoordinatorError::Flash(error) => error.to_string(),
     };
-    format!(
-        "flash failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
-    )
+    match restore {
+        None => format!(
+            "flash failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
+        ),
+        Some(Ok(())) => format!(
+            "flash failed: {detail}. Klipper has been left in its state from before this flash attempt"
+        ),
+        Some(Err(restore_error)) => format!(
+            "flash failed: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
+            aldis::error_chain(&restore_error)
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -166,10 +180,22 @@ mod tests {
             }),
         );
 
-        let message = flash_failure(error);
+        let message = flash_failure(error, None);
 
         assert!(message.contains("make failed: permission denied"));
         assert!(!message.contains("unrelated output"));
         assert!(message.contains("may still be stopped"));
+    }
+
+    #[test]
+    fn reports_that_klipper_was_restored_after_a_pre_flash_failure() {
+        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
+            "missing firmware file",
+        ));
+
+        let message = flash_failure(error, Some(Ok(())));
+
+        assert!(message.contains("left in its state from before this flash attempt"));
+        assert!(!message.contains("may still be stopped"));
     }
 }

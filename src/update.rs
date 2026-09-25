@@ -188,7 +188,12 @@ fn run_update(
             Err(error) => {
                 ui.finish_failure();
                 tracing::debug!(?error, "flash failed");
-                let message = update_failure(error);
+                let restore = (!matches!(error, FlashCoordinatorError::Flash(_)))
+                    .then(|| coordinator.restore_after_failure());
+                if let Some(Err(restore_error)) = &restore {
+                    tracing::debug!(?restore_error, "restoring Klipper after the failure failed");
+                }
+                let message = update_failure(error, restore);
                 ui.action(&format!("error: {message}"));
                 return Err(anyhow::anyhow!(message));
             }
@@ -234,7 +239,10 @@ fn mcu_count_label(count: usize) -> &'static str {
     if count == 1 { "MCU" } else { "MCUs" }
 }
 
-fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
+fn update_failure(
+    error: FlashCoordinatorError<SystemFlashError>,
+    restore: Option<Result<(), aldis::coordinator::CoordinatorError>>,
+) -> String {
     let detail = match error {
         FlashCoordinatorError::Coordinator(error) => aldis::error_chain(&error),
         FlashCoordinatorError::Artifact(error) => {
@@ -242,9 +250,18 @@ fn update_failure(error: FlashCoordinatorError<SystemFlashError>) -> String {
         }
         FlashCoordinatorError::Flash(error) => error.to_string(),
     };
-    format!(
-        "update failed: {detail}. Klipper may still be stopped; fix the issue, then rerun update"
-    )
+    match restore {
+        None => format!(
+            "update failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
+        ),
+        Some(Ok(())) => format!(
+            "update failed: {detail}. Klipper has been left in its state from before this update"
+        ),
+        Some(Err(restore_error)) => format!(
+            "update failed: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
+            aldis::error_chain(&restore_error)
+        ),
+    }
 }
 
 fn wait_for_application(mcu: &aldis::moonraker::Mcu) -> Result<(), String> {
@@ -394,11 +411,37 @@ mod tests {
             }),
         );
 
-        let message = update_failure(error);
+        let message = update_failure(error, None);
 
         assert!(message.contains("make failed: permission denied"));
         assert!(!message.contains("unrelated output"));
         assert!(message.contains("may still be stopped"));
+    }
+
+    #[test]
+    fn reports_that_klipper_was_restored_after_a_pre_flash_failure() {
+        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
+            "missing artifact",
+        ));
+
+        let message = update_failure(error, Some(Ok(())));
+
+        assert!(message.contains("left in its state from before this update"));
+        assert!(!message.contains("may still be stopped"));
+    }
+
+    #[test]
+    fn reports_when_restoring_klipper_after_a_pre_flash_failure_also_fails() {
+        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
+            "missing artifact",
+        ));
+        let restore_error =
+            CoordinatorError::UnexpectedKlipperState(aldis::service::ServiceState::Failed);
+
+        let message = update_failure(error, Some(Err(restore_error)));
+
+        assert!(message.contains("also failed to restore"));
+        assert!(message.contains("restart it manually"));
     }
 
     #[test]
