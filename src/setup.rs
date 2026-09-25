@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
+use aldis::flash::linux_host::{INSTALL_COMMAND, RESTART_COMMAND};
 use anyhow::{Context, bail};
 
 use crate::cli::SetupArgs;
@@ -128,8 +129,13 @@ fn check_setup() -> ExitCode {
         .args(["-n", "/bin/systemctl", "is-active", "klipper"])
         .output()
         .is_ok_and(|output| sudo_policy_allows_service_status(&output.stdout));
-    tracing::debug!(rules, service, "setup check results");
-    println!("{}", setup_check_report(rules, service));
+    let host_mcu = Command::new("sudo")
+        .args(["-n", "-l"])
+        .args(INSTALL_COMMAND)
+        .output()
+        .is_ok_and(|output| output.status.success());
+    tracing::debug!(rules, service, host_mcu, "setup check results");
+    println!("{}", setup_check_report(rules, service, host_mcu));
     if rules && service {
         ExitCode::SUCCESS
     } else {
@@ -137,15 +143,16 @@ fn check_setup() -> ExitCode {
     }
 }
 
-fn setup_check_report(rules: bool, service: bool) -> String {
+fn setup_check_report(rules: bool, service: bool, host_mcu: bool) -> String {
     format!(
-        "aldis setup:\n  udev rules: {}\n  Klipper service access: {}",
+        "aldis setup:\n  udev rules: {}\n  Klipper service access: {}\n  host MCU install: {}",
         if rules {
             "ready"
         } else {
             "missing or outdated"
         },
         if service { "ready" } else { "unavailable" },
+        if host_mcu { "ready" } else { "unavailable" },
     )
 }
 
@@ -169,7 +176,10 @@ fn udev_rules() -> &'static str {
 
 fn sudoers_policy(user: &str) -> String {
     format!(
-        "{user} ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, /bin/systemctl start klipper\n"
+        "{user} ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
+         /bin/systemctl start klipper, {}, {}\n",
+        INSTALL_COMMAND.join(" "),
+        RESTART_COMMAND.join(" "),
     )
 }
 
@@ -182,6 +192,7 @@ mod tests {
 
     use super::{
         setup_check_report, setup_install_report, stage_sudoers, sudo_policy_allows_service_status,
+        sudoers_policy,
     };
 
     #[test]
@@ -195,8 +206,19 @@ mod tests {
     #[test]
     fn reports_each_setup_prerequisite() {
         assert_eq!(
-            setup_check_report(true, false),
-            "aldis setup:\n  udev rules: ready\n  Klipper service access: unavailable"
+            setup_check_report(true, false, false),
+            "aldis setup:\n  udev rules: ready\n  Klipper service access: unavailable\n  host MCU install: unavailable"
+        );
+        assert!(setup_check_report(true, true, true).ends_with("host MCU install: ready"));
+    }
+
+    #[test]
+    fn grants_exactly_the_fixed_host_mcu_commands() {
+        assert_eq!(
+            sudoers_policy("pi"),
+            "pi ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
+             /bin/systemctl start klipper, /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu, \
+             /bin/systemctl restart klipper-mcu\n"
         );
     }
 
