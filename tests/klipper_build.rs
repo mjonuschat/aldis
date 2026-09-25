@@ -186,6 +186,36 @@ fn copies_the_elf_artifact_for_a_linux_host_build() {
 }
 
 #[test]
+fn forces_the_version_to_be_re_embedded_before_compiling() {
+    let root = temporary_directory("reembed-version");
+    let source_dir = root.join("klipper");
+    fs::create_dir_all(source_dir.join("out")).expect("source output directory should exist");
+    fs::write(source_dir.join("out/compile_time_request.o"), b"stale").expect("stale object");
+    fs::write(source_dir.join("out/klipper.bin"), b"firmware").expect("fixture artifact");
+    let runner = VersionObjectRunner {
+        object: source_dir.join("out/compile_time_request.o"),
+        present_at_compile: Arc::new(Mutex::new(None)),
+    };
+    let builder = KlipperBuilder::new(&source_dir, runner.clone());
+
+    builder
+        .build(&BuildRequest {
+            kconfig: "CONFIG_MACH_STM32=y\n".to_owned(),
+            config_path: root.join("run/mcu/.config"),
+            artifact_path: root.join("artifacts/mcu.bin"),
+            clean: false,
+        })
+        .expect("build should succeed");
+
+    assert_eq!(
+        *runner.present_at_compile.lock().expect("runner lock"),
+        Some(false),
+        "make must not see the stale version object, or it keeps the old version string"
+    );
+    fs::remove_dir_all(root).expect("test directory cleanup");
+}
+
+#[test]
 fn returns_the_expanded_kconfig_after_olddefconfig() {
     let root = temporary_directory("expanded");
     let source_dir = root.join("klipper");
@@ -313,4 +343,23 @@ fn temporary_directory(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("aldis-build-{name}-{}-{nonce}", std::process::id()));
     assert!(!Path::new(&path).exists(), "test directory must be unique");
     path
+}
+
+#[derive(Clone)]
+struct VersionObjectRunner {
+    object: PathBuf,
+    present_at_compile: Arc<Mutex<Option<bool>>>,
+}
+
+impl CommandPort for VersionObjectRunner {
+    fn run(&self, command: &BuildCommand) -> Result<CommandOutput, aldis::build::CommandError> {
+        if command
+            .arguments
+            .iter()
+            .any(|argument| argument.starts_with("-j"))
+        {
+            *self.present_at_compile.lock().expect("runner lock") = Some(self.object.exists());
+        }
+        Ok(CommandOutput::success())
+    }
 }

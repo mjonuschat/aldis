@@ -253,6 +253,14 @@ where
                 source,
             })?;
         progress(BuildProgress::Compiling);
+        // Klipper embeds `git describe` only when compile_time_request.o is rebuilt, and
+        // make skips that when no firmware source changed (e.g. a docs-only pull).
+        remove_if_present(&self.source_dir.join("out/compile_time_request.o")).map_err(
+            |source| BuildError::Io {
+                action: "discard Klipper's stale version object",
+                source,
+            },
+        )?;
         self.run_make(vec![
             kconfig_argument(checkout_config_path_str),
             format!("-j{}", parallel_jobs()),
@@ -336,6 +344,13 @@ fn write_if_changed(path: &std::path::Path, content: &str) -> io::Result<()> {
         return Ok(());
     }
     fs::write(path, content)
+}
+
+fn remove_if_present(path: &std::path::Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 fn parallel_jobs() -> std::num::NonZeroUsize {
