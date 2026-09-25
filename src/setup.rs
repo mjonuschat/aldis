@@ -1,6 +1,9 @@
 //! Host permission setup: udev rules and the sudoers policy for the Klipper service.
 
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, bail};
@@ -35,15 +38,8 @@ fn install_setup() -> anyhow::Result<()> {
     tracing::debug!(rules_action, "udev rules installed");
     tracing::info!("installing service policy");
     let service_policy = sudoers_policy(&user);
-    let service_action = install_file(SUDOERS_PATH, &service_policy, "service policy")?;
+    let service_action = install_sudoers_policy(SUDOERS_PATH, &service_policy)?;
     tracing::debug!(service_action, "service policy installed");
-    let status = Command::new("chmod")
-        .args(["440", SUDOERS_PATH])
-        .status()
-        .context("could not protect service policy")?;
-    if !status.success() {
-        bail!("could not protect service policy: chmod exited with {status}");
-    }
     let status = Command::new("udevadm")
         .args(["control", "--reload-rules"])
         .status()
@@ -69,6 +65,54 @@ fn install_file(path: &str, contents: &str, description: &str) -> anyhow::Result
     }
     fs::write(path, contents).with_context(|| format!("could not install {description}"))?;
     Ok("installed")
+}
+
+fn install_sudoers_policy(path: &str, contents: &str) -> anyhow::Result<&'static str> {
+    let action = if fs::read_to_string(path).is_ok_and(|current| current == contents) {
+        "already current"
+    } else {
+        stage_and_install_sudoers(path, contents)?;
+        "installed"
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(0o440))
+        .context("could not protect service policy")?;
+    Ok(action)
+}
+
+fn stage_and_install_sudoers(path: &str, contents: &str) -> anyhow::Result<()> {
+    let dir = Path::new(path)
+        .parent()
+        .context("service policy path has no parent directory")?;
+    let staged = stage_sudoers(dir, contents)?;
+
+    let status = Command::new("visudo")
+        .args(["-c", "-f"])
+        .arg(staged.path())
+        .status()
+        .context("could not validate the service policy with visudo")?;
+    if !status.success() {
+        bail!("staged service policy failed visudo validation: visudo exited with {status}");
+    }
+
+    staged
+        .persist(path)
+        .context("could not install the validated service policy")?;
+    Ok(())
+}
+
+fn stage_sudoers(dir: &Path, contents: &str) -> anyhow::Result<tempfile::NamedTempFile> {
+    let mut staged = tempfile::Builder::new()
+        .prefix(".aldis-sudoers-")
+        .tempfile_in(dir)
+        .context("could not stage the service policy")?;
+    staged
+        .write_all(contents.as_bytes())
+        .context("could not write the staged service policy")?;
+    staged
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o440))
+        .context("could not protect the staged service policy")?;
+    Ok(staged)
 }
 
 fn setup_install_report(rules_action: &str, service_action: &str) -> String {
@@ -131,7 +175,14 @@ fn sudoers_policy(user: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{setup_check_report, setup_install_report, sudo_policy_allows_service_status};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{
+        setup_check_report, setup_install_report, stage_sudoers, sudo_policy_allows_service_status,
+    };
 
     #[test]
     fn recognizes_a_permitted_inactive_klipper_status() {
@@ -155,5 +206,36 @@ mod tests {
             setup_install_report("already current", "installed"),
             "aldis setup:\n  udev rules: already current\n  service policy: installed\n  service policy permissions: set to 0440\n  udev rules: reloaded and triggered"
         );
+    }
+
+    #[test]
+    fn stages_the_service_policy_at_mode_0440_with_its_content() {
+        let dir = temporary_directory();
+        fs::create_dir_all(&dir).expect("staging directory");
+        let contents = "pi ALL=(root) NOPASSWD: /bin/systemctl is-active klipper\n";
+
+        let staged = stage_sudoers(&dir, contents).expect("staging should succeed");
+
+        assert_eq!(
+            fs::read_to_string(staged.path()).expect("staged file should be readable"),
+            contents
+        );
+        let mode = fs::metadata(staged.path())
+            .expect("staged file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o440);
+        assert_eq!(staged.path().parent(), Some(dir.as_path()));
+
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    fn temporary_directory() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("aldis-setup-{}-{nonce}", std::process::id()))
     }
 }
