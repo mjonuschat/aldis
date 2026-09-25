@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::build::SystemCommandAdapter;
+use crate::build::CommandPort;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
 use crate::flash::katapult::adapter::KatapultFlashError;
@@ -26,7 +26,6 @@ use crate::flash::usb_bootloader::{
     select_usb_bootloader,
 };
 use crate::flash::usb_sysfs::usb_device_ancestor;
-use crate::logging::LoggingCommandAdapter;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
@@ -52,6 +51,8 @@ pub enum SerialFlashRoute {
 pub struct SystemFlashOptions {
     /// Timing and baud settings for Katapult.
     pub katapult: SystemKatapultOptions,
+    /// The systemd unit that must exist before the Linux host MCU is installed.
+    pub host_mcu_unit_file: PathBuf,
 }
 
 /// A visible phase of a native bootloader transfer.
@@ -340,10 +341,11 @@ pub fn flash_prepared_system_with_progress(
     prepared: &PreparedBuild,
     firmware: &[u8],
     options: SystemFlashOptions,
+    runner: &impl CommandPort,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     if is_linux_host(&prepared.request.kconfig) {
-        return install_linux_host(firmware, &mut progress);
+        return install_linux_host(runner, &options.host_mcu_unit_file, firmware, &mut progress);
     }
     match prepared
         .transport
@@ -369,11 +371,13 @@ pub fn flash_prepared_system_with_progress(
 }
 
 fn install_linux_host(
+    runner: &impl CommandPort,
+    unit_file: &Path,
     firmware: &[u8],
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::Installing);
-    HostMcuInstaller::new(LoggingCommandAdapter::new(SystemCommandAdapter))
+    HostMcuInstaller::new(runner, unit_file)
         .install(firmware)
         .map_err(SystemFlashError::LinuxHost)
 }
@@ -407,11 +411,12 @@ pub fn flash_prepared_firmware_file_with_progress(
     prepared: &PreparedBuild,
     firmware: &[u8],
     options: SystemFlashOptions,
+    runner: &impl CommandPort,
     force: bool,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     if is_linux_host(&prepared.request.kconfig) {
-        return install_linux_host(firmware, &mut progress);
+        return install_linux_host(runner, &options.host_mcu_unit_file, firmware, &mut progress);
     }
     match prepared
         .transport

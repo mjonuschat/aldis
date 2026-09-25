@@ -97,6 +97,12 @@ pub trait CommandPort {
     fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError>;
 }
 
+impl<T: CommandPort + ?Sized> CommandPort for &T {
+    fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
+        (**self).run(command)
+    }
+}
+
 /// Runs commands through the host operating system.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemCommandAdapter;

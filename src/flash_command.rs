@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -7,6 +7,7 @@ use anyhow::Context;
 use aldis::build::SystemCommandAdapter;
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
 use aldis::flash::katapult::system::SystemKatapultOptions;
+use aldis::flash::linux_host::HOST_MCU_UNIT_FILE;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
 use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::MoonrakerAdapter;
@@ -74,6 +75,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
             read_timeout: Duration::from_secs(5),
             can_bootloader_settle: Duration::from_millis(100),
         },
+        host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
     };
     let target_kconfig = pending.kconfig().to_owned();
     match coordinator.flash_firmware_system_with_progress(

@@ -45,7 +45,7 @@ fn installs_syncs_then_restarts_the_service() {
     let unit = unit_file();
     let firmware = host_elf();
     let runner = FakeRunner::new([Ok(ok()), Ok(ok()), Ok(ok())]);
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+    let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
     let result = installer
         .install(&firmware)
@@ -98,7 +98,7 @@ fn refuses_anything_but_a_complete_host_elf_header_before_running_anything() {
     ];
     for firmware in rejected {
         let runner = FakeRunner::new([]);
-        let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+        let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
         let error = installer.install(&firmware).unwrap_err();
 
@@ -118,7 +118,7 @@ fn accepts_a_32_bit_arm_host_mcu_built_on_a_32_bit_userland() {
     firmware[6] = 1;
     firmware[18..20].copy_from_slice(&40u16.to_le_bytes());
     let runner = FakeRunner::new([Ok(ok()), Ok(ok()), Ok(ok())]);
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+    let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
     installer
         .install(&firmware)
@@ -131,7 +131,7 @@ fn accepts_a_32_bit_arm_host_mcu_built_on_a_32_bit_userland() {
 fn refuses_when_the_systemd_unit_is_missing() {
     let runner = FakeRunner::new([]);
     let missing = std::env::temp_dir().join("aldis-no-such-klipper-mcu.service");
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &missing);
+    let installer = HostMcuInstaller::new(runner.clone(), &missing);
 
     let error = installer.install(&host_elf()).unwrap_err();
 
@@ -144,7 +144,7 @@ fn refuses_when_the_systemd_unit_is_missing() {
 fn tells_the_user_to_run_setup_when_sudo_wants_a_password() {
     let unit = unit_file();
     let runner = FakeRunner::new([Ok(failed(b"sudo: a password is required\n"))]);
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+    let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
     let error = installer.install(&host_elf()).unwrap_err();
 
@@ -180,7 +180,7 @@ fn reports_a_failed_restart_as_installed_but_not_restarted() {
         Ok(ok()),
         Ok(failed(b"Job for klipper-mcu.service failed.\n")),
     ]);
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+    let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
     let error = installer.install(&host_elf()).unwrap_err();
 
@@ -211,7 +211,7 @@ fn reports_an_unrunnable_restart_as_installed_but_not_restarted() {
         Ok(ok()),
         Err(CommandError::Spawn(std::io::Error::other("fork failed"))),
     ]);
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+    let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
     let error = installer.install(&host_elf()).unwrap_err();
 
@@ -234,7 +234,7 @@ fn reports_an_unrunnable_restart_as_installed_but_not_restarted() {
 fn does_not_restart_when_sync_fails() {
     let unit = unit_file();
     let runner = FakeRunner::new([Ok(ok()), Ok(failed(b"sync: I/O error\n"))]);
-    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+    let installer = HostMcuInstaller::new(runner.clone(), &unit.path);
 
     let error = installer.install(&host_elf()).unwrap_err();
 
@@ -347,7 +347,7 @@ fn host_prepared_build() -> PreparedBuild {
     }
 }
 
-fn flash_options() -> SystemFlashOptions {
+fn flash_options(unit: &UnitFile) -> SystemFlashOptions {
     SystemFlashOptions {
         katapult: SystemKatapultOptions {
             baud_rate: 250_000,
@@ -356,47 +356,66 @@ fn flash_options() -> SystemFlashOptions {
             read_timeout: Duration::from_secs(1),
             can_bootloader_settle: Duration::from_millis(10),
         },
+        host_mcu_unit_file: unit.path.clone(),
     }
 }
 
-const REFUSED_BEFORE_ANY_COMMAND: &[u8] = b"not an elf";
+fn programs(runner: &FakeRunner) -> Vec<String> {
+    runner
+        .commands()
+        .iter()
+        .map(|command| {
+            std::iter::once(command.program.as_str())
+                .chain(command.arguments.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+const HOST_INSTALL_SEQUENCE: [&str; 3] = [
+    "sudo -n /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu",
+    "sync",
+    "sudo -n /bin/systemctl restart klipper-mcu",
+];
 
 #[test]
 fn dispatches_a_built_host_mcu_to_the_installer_before_any_transport() {
+    let unit = unit_file();
+    let runner = FakeRunner::new([Ok(ok()), Ok(ok()), Ok(ok())]);
     let mut stages = Vec::new();
 
-    let error = flash_prepared_system_with_progress(
+    let result = flash_prepared_system_with_progress(
         &host_prepared_build(),
-        REFUSED_BEFORE_ANY_COMMAND,
-        flash_options(),
+        &host_elf(),
+        flash_options(&unit),
+        &runner,
         |stage| stages.push(stage),
     )
-    .unwrap_err();
+    .expect("host MCU install should succeed");
 
-    assert!(matches!(
-        error,
-        SystemFlashError::LinuxHost(LinuxHostError::NotHostElf)
-    ));
+    assert_eq!(result.padded_bytes, host_elf().len());
+    assert_eq!(programs(&runner), HOST_INSTALL_SEQUENCE);
     assert_eq!(stages, [SystemFlashProgress::Installing]);
 }
 
 #[test]
 fn dispatches_a_host_mcu_firmware_file_to_the_installer() {
+    let unit = unit_file();
+    let runner = FakeRunner::new([Ok(ok()), Ok(ok()), Ok(ok())]);
     let mut stages = Vec::new();
 
-    let error = flash_prepared_firmware_file_with_progress(
+    flash_prepared_firmware_file_with_progress(
         &host_prepared_build(),
-        REFUSED_BEFORE_ANY_COMMAND,
-        flash_options(),
+        &host_elf(),
+        flash_options(&unit),
+        &runner,
         false,
         |stage| stages.push(stage),
     )
-    .unwrap_err();
+    .expect("host MCU install should succeed");
 
-    assert!(matches!(
-        error,
-        SystemFlashError::LinuxHost(LinuxHostError::NotHostElf)
-    ));
+    assert_eq!(programs(&runner), HOST_INSTALL_SEQUENCE);
     assert_eq!(stages, [SystemFlashProgress::Installing]);
 }
 

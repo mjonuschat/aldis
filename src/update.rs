@@ -1,7 +1,7 @@
 //! The interactive build-and-flash update command.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ use aldis::eligibility::{
     CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected, revisions_match,
 };
 use aldis::flash::katapult::system::SystemKatapultOptions;
+use aldis::flash::linux_host::HOST_MCU_UNIT_FILE;
 use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
 use aldis::logging::{self, LoggingCommandAdapter};
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
@@ -141,6 +142,7 @@ fn run_update(
             read_timeout: Duration::from_secs(5),
             can_bootloader_settle: Duration::from_millis(100),
         },
+        host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
     };
     let mut accepted = Vec::new();
     for name in offered {

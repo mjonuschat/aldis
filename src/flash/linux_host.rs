@@ -132,13 +132,9 @@ pub struct HostMcuInstaller<R> {
 }
 
 impl<R: CommandPort> HostMcuInstaller<R> {
-    /// Creates an installer for the standard `klipper-mcu` systemd unit.
-    pub fn new(runner: R) -> Self {
-        Self::with_unit_file(runner, HOST_MCU_UNIT_FILE)
-    }
-
-    /// Creates an installer that checks for the unit at `unit_file`.
-    pub fn with_unit_file(runner: R, unit_file: impl Into<PathBuf>) -> Self {
+    /// Creates an installer that runs its commands through `runner` and
+    /// requires the systemd unit at `unit_file`.
+    pub fn new(runner: R, unit_file: impl Into<PathBuf>) -> Self {
         Self {
             runner,
             unit_file: unit_file.into(),

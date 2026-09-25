@@ -53,6 +53,11 @@ where
         Self { runner }
     }
 
+    /// Returns the runner used for privileged host commands.
+    pub fn runner(&self) -> &R {
+        &self.runner
+    }
+
     /// Returns systemd's current Klipper state without changing it.
     pub fn state(&self) -> Result<ServiceState, ServiceError> {
         let (_, output) = self.run_systemctl(["is-active", KLIPPER_UNIT])?;

@@ -253,6 +253,7 @@ where
             &approved.pending.prepared,
             firmware,
             options,
+            self.service.runner(),
             force,
             |stage| {
                 progress(match stage {
@@ -308,14 +309,20 @@ where
             .map_err(FlashCoordinatorError::Coordinator)?;
         prepared.request.kconfig = artifact.kconfig.clone();
         let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
-        let flash = flash_prepared_system_with_progress(&prepared, &firmware, options, |stage| {
-            progress(match stage {
-                SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
-                SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
-                SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
-                SystemFlashProgress::Installing => UpdateProgress::Installing,
-            });
-        })
+        let flash = flash_prepared_system_with_progress(
+            &prepared,
+            &firmware,
+            options,
+            self.service.runner(),
+            |stage| {
+                progress(match stage {
+                    SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
+                    SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
+                    SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+                    SystemFlashProgress::Installing => UpdateProgress::Installing,
+                });
+            },
+        )
         .map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
     }
@@ -446,6 +453,7 @@ mod tests {
                 read_timeout: Duration::from_secs(5),
                 can_bootloader_settle: Duration::from_millis(100),
             },
+            host_mcu_unit_file: PathBuf::from("/nonexistent/klipper-mcu.service"),
         }
     }
 
