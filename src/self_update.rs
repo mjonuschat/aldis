@@ -47,8 +47,9 @@ pub struct LatestRelease {
 pub trait ReleasePort {
     /// Queries GitHub for the latest published release.
     fn latest_release(&self) -> Result<LatestRelease, ReleaseError>;
-    /// Downloads the release archive for `platform` (e.g. `"aarch64-linux"`).
-    fn download_archive(&self, platform: &str) -> Result<Vec<u8>, ReleaseError>;
+    /// Downloads the release archive for `tag` (e.g. `"v0.2.3"`, from a prior
+    /// [`Self::latest_release`] call) and `platform` (e.g. `"aarch64-linux"`).
+    fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError>;
 }
 
 /// Fetches releases from a GitHub repository over HTTPS.
@@ -91,10 +92,10 @@ impl ReleasePort for GithubReleaseAdapter {
         })
     }
 
-    fn download_archive(&self, platform: &str) -> Result<Vec<u8>, ReleaseError> {
+    fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
         let mut bytes = Vec::new();
         self.agent
-            .get(download_url(&self.repo, platform))
+            .get(download_url(&self.repo, tag, platform))
             .header("User-Agent", "aldis-self-update")
             .call()?
             .body_mut()
@@ -131,8 +132,8 @@ pub fn target_platform(arch: &str) -> Result<&'static str, ReleaseError> {
     }
 }
 
-fn download_url(repo: &str, platform: &str) -> String {
-    format!("https://github.com/{repo}/releases/latest/download/aldis-{platform}.tar.xz")
+fn download_url(repo: &str, tag: &str, platform: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{tag}/aldis-{platform}.tar.xz")
 }
 
 /// Extracts `archive` (a `.tar.xz`, as published) into `dest_dir`, stripping
@@ -191,12 +192,20 @@ fn install_binary_impl(new_binary: &Path, current_exe: &Path) -> io::Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use super::{is_up_to_date, target_platform};
+    use super::{download_url, is_up_to_date, target_platform};
 
     #[test]
     fn matches_a_tag_with_or_without_its_v_prefix() {
         assert!(is_up_to_date("0.2.3", "v0.2.3"));
         assert!(!is_up_to_date("0.2.2", "v0.2.3"));
+    }
+
+    #[test]
+    fn downloads_the_asset_for_the_specific_tag_rather_than_whatever_is_latest() {
+        assert_eq!(
+            download_url("mjonuschat/aldis", "v0.2.3", "aarch64-linux"),
+            "https://github.com/mjonuschat/aldis/releases/download/v0.2.3/aldis-aarch64-linux.tar.xz"
+        );
     }
 
     #[test]

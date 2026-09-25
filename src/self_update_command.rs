@@ -48,7 +48,7 @@ fn run_self_update(arguments: SelfUpdateArgs, ui: &mut UpdateUi) -> anyhow::Resu
         target_platform(std::env::consts::ARCH).context("cannot self-update on this platform")?;
     ui.begin(format!("downloading {}", latest.tag));
     let archive_bytes = adapter
-        .download_archive(platform)
+        .download_archive(&latest.tag, platform)
         .context("failed to download the release archive")?;
     ui.finish_success(format!("downloaded {} bytes", archive_bytes.len()));
 
