@@ -23,12 +23,23 @@ pub const INSTALL_COMMAND: [&str; 5] = [
 /// The privileged restart command.
 pub const RESTART_COMMAND: [&str; 3] = ["/bin/systemctl", "restart", "klipper-mcu"];
 
+const ELFCLASS64: u8 = 2;
 #[cfg(target_arch = "aarch64")]
-const HOST_ELF_MACHINE: u16 = 183;
+const ELFCLASS32: u8 = 1;
+#[cfg(target_arch = "aarch64")]
+const EM_ARM: u16 = 40;
+#[cfg(target_arch = "aarch64")]
+const EM_AARCH64: u16 = 183;
 #[cfg(target_arch = "x86_64")]
-const HOST_ELF_MACHINE: u16 = 62;
-const HOST_ELF_CLASS: u8 = 2;
-const ELF64_HEADER_LEN: usize = 64;
+const EM_X86_64: u16 = 62;
+
+/// Klipper builds `klipper.elf` with the host compiler, so a correct image
+/// targets a userland this CPU runs. A 64-bit ARM kernel commonly hosts a
+/// 32-bit Raspberry Pi OS userland, while aldis itself ships as aarch64.
+#[cfg(target_arch = "aarch64")]
+const HOST_ELF_TARGETS: &[(u8, u16)] = &[(ELFCLASS64, EM_AARCH64), (ELFCLASS32, EM_ARM)];
+#[cfg(target_arch = "x86_64")]
+const HOST_ELF_TARGETS: &[(u8, u16)] = &[(ELFCLASS64, EM_X86_64)];
 
 /// Whether an MCU's Kconfig selects Klipper's Linux host machine.
 pub fn is_linux_host(kconfig: &str) -> bool {
@@ -37,14 +48,17 @@ pub fn is_linux_host(kconfig: &str) -> bool {
         .any(|line| line.trim() == "CONFIG_MACH_LINUX=y")
 }
 
-/// Klipper builds `klipper.elf` with the host compiler, so a correct image
-/// always matches the architecture aldis itself was built for.
 fn is_host_elf(firmware: &[u8]) -> bool {
-    firmware.len() >= ELF64_HEADER_LEN
-        && firmware.starts_with(b"\x7fELF")
-        && firmware[4] == HOST_ELF_CLASS
-        && firmware[5] == 1
-        && u16::from_le_bytes([firmware[18], firmware[19]]) == HOST_ELF_MACHINE
+    let Some(identity) = firmware.get(..20) else {
+        return false;
+    };
+    let class = identity[4];
+    let machine = u16::from_le_bytes([identity[18], identity[19]]);
+    let header_len = if class == ELFCLASS64 { 64 } else { 52 };
+    identity.starts_with(b"\x7fELF")
+        && identity[5] == 1
+        && firmware.len() >= header_len
+        && HOST_ELF_TARGETS.contains(&(class, machine))
 }
 
 /// The install step a failure happened in, rendered as the resulting state.

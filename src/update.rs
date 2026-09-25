@@ -189,7 +189,8 @@ fn run_update(
             Err(error) => {
                 ui.finish_failure();
                 tracing::debug!(?error, "flash failed");
-                let restore = (!matches!(error, FlashCoordinatorError::Flash(_)))
+                let restore = error
+                    .allows_klipper_restore()
                     .then(|| coordinator.restore_after_failure());
                 if let Some(Err(restore_error)) = &restore {
                     tracing::debug!(?restore_error, "restoring Klipper after the failure failed");

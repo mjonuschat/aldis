@@ -107,6 +107,26 @@ fn refuses_anything_but_a_complete_host_elf_header_before_running_anything() {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn accepts_a_32_bit_arm_host_mcu_built_on_a_32_bit_userland() {
+    let unit = unit_file();
+    let mut firmware = vec![0; 52];
+    firmware[..4].copy_from_slice(b"\x7fELF");
+    firmware[4] = 1;
+    firmware[5] = 1;
+    firmware[6] = 1;
+    firmware[18..20].copy_from_slice(&40u16.to_le_bytes());
+    let runner = FakeRunner::new([Ok(ok()), Ok(ok()), Ok(ok())]);
+    let installer = HostMcuInstaller::with_unit_file(runner.clone(), &unit.path);
+
+    installer
+        .install(&firmware)
+        .expect("a 32-bit ARM image runs on a 64-bit ARM kernel");
+
+    assert_eq!(runner.commands().len(), 3);
+}
+
 #[test]
 fn refuses_when_the_systemd_unit_is_missing() {
     let runner = FakeRunner::new([]);

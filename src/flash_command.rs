@@ -91,7 +91,8 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         }
         Err(error) => {
             ui.finish_failure();
-            let restore = (!matches!(error, FlashCoordinatorError::Flash(_)))
+            let restore = error
+                .allows_klipper_restore()
                 .then(|| coordinator.restore_after_failure());
             let message = flash_failure(error, restore);
             ui.action(&format!("error: {message}"));

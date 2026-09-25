@@ -78,6 +78,17 @@ pub enum FlashCoordinatorError<E> {
     Flash(E),
 }
 
+impl FlashCoordinatorError<SystemFlashError> {
+    /// Whether Klipper can safely be restarted after this failure. A USB MCU may
+    /// be left in its bootloader, but the host MCU never is.
+    pub fn allows_klipper_restore(&self) -> bool {
+        match self {
+            Self::Flash(error) => matches!(error, SystemFlashError::LinuxHost(_)),
+            Self::Coordinator(_) | Self::Artifact(_) => true,
+        }
+    }
+}
+
 impl fmt::Display for FlashCoordinatorError<SystemFlashError> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -350,6 +361,24 @@ mod tests {
     use crate::flash::katapult::system::SystemKatapultOptions;
     use crate::flash::system::{SystemFlashError, SystemFlashOptions};
     use crate::prepare::PreparedBuild;
+
+    #[test]
+    fn allows_restoring_klipper_after_a_host_mcu_failure_but_not_a_bootloader_failure() {
+        use crate::flash::linux_host::LinuxHostError;
+
+        assert!(
+            FlashCoordinatorError::Flash(SystemFlashError::LinuxHost(LinuxHostError::NotHostElf))
+                .allows_klipper_restore()
+        );
+        assert!(
+            !FlashCoordinatorError::Flash(SystemFlashError::MissingTransport)
+                .allows_klipper_restore()
+        );
+        assert!(
+            FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other("gone"))
+                .allows_klipper_restore()
+        );
+    }
 
     #[derive(Clone)]
     struct FakeRunner {
