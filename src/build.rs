@@ -1,7 +1,8 @@
+use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 /// The inputs and output location for one Klipper firmware build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,17 @@ pub enum BuildProgress {
     Compiling,
 }
 
+/// Bytes written to a command's standard input. `Debug` shows only the length so
+/// firmware images never reach logs or error reports.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CommandStdin(pub Vec<u8>);
+
+impl fmt::Debug for CommandStdin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CommandStdin({} bytes)", self.0.len())
+    }
+}
+
 /// A fully specified command invocation without shell interpolation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildCommand {
@@ -45,6 +57,8 @@ pub struct BuildCommand {
     pub arguments: Vec<String>,
     /// Optional directory in which the command runs.
     pub current_dir: Option<PathBuf>,
+    /// Optional payload piped to the command's standard input.
+    pub stdin: Option<CommandStdin>,
 }
 
 /// Captured result of a command invocation.
@@ -94,7 +108,11 @@ impl CommandPort for SystemCommandAdapter {
         if let Some(current_dir) = &command.current_dir {
             process.current_dir(current_dir);
         }
-        let output = process.output().map_err(CommandError::Spawn)?;
+        let output = match &command.stdin {
+            Some(CommandStdin(input)) => output_with_stdin(&mut process, input),
+            None => process.output(),
+        }
+        .map_err(CommandError::Spawn)?;
 
         Ok(CommandOutput {
             success: output.status.success(),
@@ -102,6 +120,25 @@ impl CommandPort for SystemCommandAdapter {
             stderr: output.stderr,
         })
     }
+}
+
+fn output_with_stdin(process: &mut Command, input: &[u8]) -> io::Result<Output> {
+    let mut child = process
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is configured as piped");
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(input));
+        let output = child.wait_with_output()?;
+        match writer.join().expect("stdin writer does not panic") {
+            // A child that exits without reading (e.g. sudo refusing) closes the pipe;
+            // its own exit status and stderr are the useful report.
+            Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error),
+            _ => Ok(output),
+        }
+    })
 }
 
 /// Errors while preparing or running Klipper's existing build pipeline.
@@ -251,6 +288,7 @@ where
             program: "make".to_owned(),
             arguments,
             current_dir: Some(self.source_dir.clone()),
+            stdin: None,
         };
         let output = self
             .runner

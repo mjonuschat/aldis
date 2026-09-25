@@ -400,6 +400,7 @@ mod tests {
                     program: "make".to_owned(),
                     arguments: Vec::new(),
                     current_dir: None,
+                    stdin: None,
                 }),
                 output: Box::new(CommandOutput {
                     success: false,

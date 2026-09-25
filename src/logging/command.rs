@@ -42,12 +42,15 @@ impl<R: CommandPort> CommandPort for LoggingCommandAdapter<R> {
 }
 
 fn display_arguments(command: &BuildCommand) -> String {
-    let arguments = command
+    let mut arguments = command
         .arguments
         .iter()
         .map(|argument| shell_token(argument))
         .collect::<Vec<_>>()
         .join(" ");
+    if let Some(stdin) = &command.stdin {
+        arguments.push_str(&format!(" (stdin: {} bytes)", stdin.0.len()));
+    }
     command
         .current_dir
         .as_ref()
@@ -141,6 +144,7 @@ mod tests {
             program: "make".to_owned(),
             arguments: vec!["olddefconfig".to_owned()],
             current_dir: Some(PathBuf::from("/home/pi/klipper")),
+            stdin: None,
         };
 
         let output = tracing::subscriber::with_default(subscriber, || {
@@ -158,6 +162,30 @@ mod tests {
     }
 
     #[test]
+    fn traces_the_stdin_length_without_its_content() {
+        let buffer = SharedBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        let adapter = LoggingCommandAdapter::new(SuccessfulRunner);
+        let command = BuildCommand {
+            program: "sudo".to_owned(),
+            arguments: vec!["-n".to_owned(), "/usr/bin/install".to_owned()],
+            current_dir: None,
+            stdin: Some(crate::build::CommandStdin(b"FIRMWARE-BYTES".to_vec())),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            adapter.run(&command).expect("adapter returns output")
+        });
+
+        let contents = captured_output(buffer);
+        assert!(contents.contains("(stdin: 14 bytes)"));
+        assert!(!contents.contains("FIRMWARE-BYTES"));
+    }
+
+    #[test]
     fn emits_one_event_with_the_complete_captured_output_for_a_successful_command() {
         let buffer = SharedBuffer::default();
         let subscriber = tracing_subscriber::fmt()
@@ -169,6 +197,7 @@ mod tests {
             program: "make".to_owned(),
             arguments: vec!["KCONFIG_CONFIG=/tmp/mcu.config".to_owned()],
             current_dir: None,
+            stdin: None,
         };
 
         let output = tracing::subscriber::with_default(subscriber, || {

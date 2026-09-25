@@ -154,6 +154,7 @@ pub fn extract_binary(
                 "--strip-components=1".to_owned(),
             ],
             current_dir: None,
+            stdin: None,
         })
         .map_err(ReleaseError::Extract)?;
     if !output.success {

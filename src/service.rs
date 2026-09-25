@@ -100,6 +100,7 @@ where
                 .chain(arguments.into_iter().map(str::to_owned))
                 .collect(),
             current_dir: None,
+            stdin: None,
         };
         let output = self
             .runner
