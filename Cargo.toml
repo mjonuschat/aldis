@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 ureq = "3.4.1"
 
 socketcan = { version = "4.0.0", default-features = false }
+semver = "1.0.28"
 
 [patch.crates-io]
 dfu-core = { git = "https://github.com/mjonuschat/dfu-core", rev = "e0150206498cbb2b1f06c897ba129b5daa841f7a" }

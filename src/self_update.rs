@@ -106,9 +106,18 @@ impl ReleasePort for GithubReleaseAdapter {
 }
 
 /// Returns whether `current_version` (e.g. `"0.2.3"`, matching
-/// `CARGO_PKG_VERSION`) already matches `latest_tag` (e.g. `"v0.2.3"`).
+/// `CARGO_PKG_VERSION`) needs no update: it already matches `latest_tag`
+/// (e.g. `"v0.2.3"`), or is ahead of it (e.g. a locally built version not
+/// yet published). Either version failing to parse as semver is treated as
+/// up to date, refusing to install a release it can't confirm is newer.
 pub fn is_up_to_date(current_version: &str, latest_tag: &str) -> bool {
-    latest_tag.trim_start_matches('v') == current_version
+    let (Ok(current), Ok(latest)) = (
+        semver::Version::parse(current_version),
+        semver::Version::parse(latest_tag.trim_start_matches('v')),
+    ) else {
+        return true;
+    };
+    current >= latest
 }
 
 /// Maps the host architecture to the platform suffix release archives are
@@ -188,6 +197,24 @@ mod tests {
     fn matches_a_tag_with_or_without_its_v_prefix() {
         assert!(is_up_to_date("0.2.3", "v0.2.3"));
         assert!(!is_up_to_date("0.2.2", "v0.2.3"));
+    }
+
+    #[test]
+    fn does_not_offer_to_downgrade_a_locally_built_version_ahead_of_the_release() {
+        assert!(is_up_to_date("0.3.0", "v0.2.3"));
+        assert!(is_up_to_date("1.0.0", "v0.2.3"));
+    }
+
+    #[test]
+    fn compares_versions_numerically_rather_than_lexically() {
+        assert!(!is_up_to_date("0.9.0", "v0.10.0"));
+        assert!(is_up_to_date("0.10.0", "v0.9.0"));
+    }
+
+    #[test]
+    fn refuses_to_update_when_either_version_does_not_parse_as_semver() {
+        assert!(is_up_to_date("0.2.3", "v0.2.3-not-a-real-tag!"));
+        assert!(is_up_to_date("not-a-version", "v0.2.3"));
     }
 
     #[test]
