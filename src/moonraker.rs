@@ -174,7 +174,9 @@ fn check_ready(state: &str, state_message: &str) -> Result<(), MoonrakerError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MoonrakerError, check_ready, map_http_error};
+    use super::{
+        McuSettings, McuTransport, MoonrakerError, check_ready, map_http_error, parse_transport,
+    };
 
     #[test]
     fn reports_klippy_not_connected_for_a_503_status() {
@@ -204,6 +206,38 @@ mod tests {
             error,
             MoonrakerError::KlippyStarting(message) if message == "Loading configuration..."
         ));
+    }
+
+    #[test]
+    fn defaults_an_omitted_canbus_interface_to_can0() {
+        let settings = McuSettings {
+            serial: None,
+            canbus_uuid: Some("e7819ed8e7d3".to_owned()),
+            canbus_interface: None,
+        };
+
+        let transport = parse_transport("mcu toolhead", &settings).unwrap();
+
+        assert_eq!(
+            transport,
+            Some(McuTransport::Can {
+                interface: "can0".to_owned(),
+                uuid: 0xe781_9ed8_e7d3,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_an_explicitly_empty_canbus_interface() {
+        let settings = McuSettings {
+            serial: None,
+            canbus_uuid: Some("e7819ed8e7d3".to_owned()),
+            canbus_interface: Some(String::new()),
+        };
+
+        let error = parse_transport("mcu toolhead", &settings).unwrap_err();
+
+        assert!(matches!(error, MoonrakerError::InvalidResponse(_)));
     }
 }
 
@@ -278,11 +312,9 @@ fn parse_transport(
             device: device.clone(),
         }));
     };
-    let interface = settings.canbus_interface.as_deref().ok_or_else(|| {
-        MoonrakerError::InvalidResponse(format!(
-            "MCU object {name:?} configures canbus_uuid without canbus_interface"
-        ))
-    })?;
+    // Klipper defaults `canbus_interface` to "can0" when the option is omitted
+    // (klippy/mcu.py: `config.get('canbus_interface', 'can0')`).
+    let interface = settings.canbus_interface.as_deref().unwrap_or("can0");
     if interface.is_empty() {
         return Err(MoonrakerError::InvalidResponse(format!(
             "MCU object {name:?} configures an empty canbus_interface"
