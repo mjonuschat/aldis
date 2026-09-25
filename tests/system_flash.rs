@@ -45,8 +45,26 @@ fn routes_each_supported_serial_bootloader_from_its_observed_identity() {
 fn rejects_unknown_observed_bootloaders_before_selecting_a_route() {
     assert!(matches!(
         route("1234:5678", "CONFIG_STM32_FLASH_START_2000=y\n"),
-        Err(SystemFlashError::Selection(_))
+        Err(SystemFlashError::Selection { .. })
     ));
+}
+
+#[test]
+fn reports_the_unsupported_identity_and_transport_in_the_error_message() {
+    let error = serial_route(
+        observed("1234:5678"),
+        "",
+        &UnsupportedBootloaderContext {
+            transport: "serial (/dev/serial/by-id/mcu)".to_owned(),
+            reset_elapsed: None,
+        },
+    )
+    .expect_err("an unrecognized identity should be rejected");
+
+    let message = error.to_string();
+    assert!(message.contains("USB device 1234:5678"));
+    assert!(message.contains("sysfs path:   /sys/devices/pci0000:00/usb1/1-2"));
+    assert!(message.contains("transport:    serial (/dev/serial/by-id/mcu)"));
 }
 
 #[test]
@@ -61,6 +79,6 @@ fn requires_a_valid_stm32_application_address_only_for_dfuse() {
     ));
     assert!(matches!(
         route("239a:000b", ""),
-        Err(SystemFlashError::Selection(_))
+        Err(SystemFlashError::Selection { .. })
     ));
 }

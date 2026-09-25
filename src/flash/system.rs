@@ -72,7 +72,12 @@ pub enum SystemFlashError {
     /// The re-enumerated USB device was not accessible before the timeout.
     UsbAccess(io::Error),
     /// The observed USB identity has no safe native backend.
-    Selection(UsbBootloaderSelectionError),
+    Selection {
+        /// The unrecognized bootloader identity.
+        error: UsbBootloaderSelectionError,
+        /// The MCU transport that was asked to enter its bootloader.
+        transport: String,
+    },
     /// The observed STM32 route has no valid Kconfig application address.
     Stm32Target(Stm32DfuError),
     /// A firmware file's vector table did not resolve to a known STM32
@@ -176,9 +181,10 @@ impl fmt::Display for SystemFlashError {
                 "flash refused due to a target mismatch, and rebooting the device back to \
                  its existing application failed: {error}"
             ),
-            Self::Selection(_) => write!(
+            Self::Selection { error, transport } => write!(
                 f,
-                "the re-enumerated bootloader is not supported for automatic flashing"
+                "the re-enumerated bootloader is not supported for automatic flashing: {error}\n  \
+                 transport:    {transport}"
             ),
             Self::MissingTransport => write!(f, "the MCU does not expose a configured transport"),
         }
@@ -194,7 +200,7 @@ impl std::error::Error for SystemFlashError {
             | Self::Stm32TargetMismatch { .. } => None,
             Self::Bootloader(error) => Some(error),
             Self::UsbAccess(error) => Some(error),
-            Self::Selection(error) => Some(error),
+            Self::Selection { error, .. } => Some(error),
             Self::Stm32Target(error)
             | Self::Stm32Dfu(error)
             | Self::Stm32Probe(error)
@@ -208,8 +214,9 @@ impl std::error::Error for SystemFlashError {
     }
 }
 
-/// Context for diagnosing an unsupported bootloader identity. Attached only
-/// to the debug log; it never affects backend selection.
+/// Context for diagnosing an unsupported bootloader identity; never affects
+/// backend selection. `transport` also reaches the user-facing error
+/// message; the rest stays in the debug log only.
 #[derive(Clone, Debug, Default)]
 pub struct UnsupportedBootloaderContext {
     /// The MCU transport that was asked to enter its bootloader.
@@ -280,7 +287,7 @@ fn resolve_serial_route(
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
         }
-        Err(error @ UsbBootloaderSelectionError::Unsupported { .. }) => {
+        Err(error @ UsbBootloaderSelectionError::Unsupported(_)) => {
             tracing::debug!(
                 transport = %context.transport,
                 machine = %kconfig_machine(kconfig),
@@ -288,9 +295,15 @@ fn resolve_serial_route(
                 reset_elapsed = ?context.reset_elapsed,
                 "unsupported bootloader context"
             );
-            Err(SystemFlashError::Selection(error))
+            Err(SystemFlashError::Selection {
+                error,
+                transport: context.transport.clone(),
+            })
         }
-        Err(error) => Err(SystemFlashError::Selection(error)),
+        Err(error) => Err(SystemFlashError::Selection {
+            error,
+            transport: context.transport.clone(),
+        }),
     }
 }
 

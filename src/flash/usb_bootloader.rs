@@ -61,17 +61,41 @@ pub enum SelectedUsbBootloader {
     },
 }
 
+/// Diagnostic identity of a USB bootloader no supported backend recognizes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsupportedBootloaderIdentity {
+    /// USB vendor and product identifiers observed after re-enumeration.
+    pub usb_id: String,
+    /// USB manufacturer observed after re-enumeration.
+    pub manufacturer: String,
+    /// USB product string, or `"unknown"` when the device reported none.
+    pub product: String,
+    /// USB serial number string, or `"none"` when the device reported none.
+    pub serial: String,
+    /// USB device class byte, as reported (e.g. `"ef"`).
+    pub device_class: String,
+    /// USB device subclass byte, as reported.
+    pub device_subclass: String,
+    /// USB device protocol byte, as reported.
+    pub device_protocol: String,
+    /// Linux sysfs path identifying the physical USB topology observed.
+    pub sysfs_path: String,
+}
+
 /// An observed USB bootloader cannot be used by a supported native backend.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UsbBootloaderSelectionError {
     /// No supported backend recognizes the observed bootloader identity.
-    #[error("USB device {usb_id} ({manufacturer}) is not a supported bootloader")]
-    Unsupported {
-        /// USB vendor and product identifiers observed after re-enumeration.
-        usb_id: String,
-        /// USB manufacturer observed after re-enumeration.
-        manufacturer: String,
-    },
+    #[error(
+        "USB device {} ({}) is not a supported bootloader\n  \
+         product:      {}\n  \
+         serial:       {}\n  \
+         device class: {}/{}/{}\n  \
+         sysfs path:   {}",
+        .0.usb_id, .0.manufacturer, .0.product, .0.serial,
+        .0.device_class, .0.device_subclass, .0.device_protocol, .0.sysfs_path
+    )]
+    Unsupported(Box<UnsupportedBootloaderIdentity>),
     /// Katapult appeared without a unique serial device at its topology.
     #[error("Katapult bootloader at {} has no unique serial device", .0.display())]
     KatapultSerialDeviceMissing(PathBuf),
@@ -99,22 +123,37 @@ pub fn select_usb_bootloader(
         Some(UsbBootloaderKind::PicoBoot) => Ok(SelectedUsbBootloader::PicoBoot {
             sysfs_path: observed.sysfs_path,
         }),
-        None => Err(UsbBootloaderSelectionError::Unsupported {
-            usb_id: observed.usb_id,
-            manufacturer: observed.manufacturer,
-        }),
+        None => {
+            let snapshot = usb_sysfs::usb_topology_snapshot(&sysfs_path);
+            Err(UsbBootloaderSelectionError::Unsupported(Box::new(
+                UnsupportedBootloaderIdentity {
+                    usb_id: observed.usb_id,
+                    manufacturer: observed.manufacturer,
+                    product: non_empty_or(&snapshot.product, "unknown"),
+                    serial: non_empty_or(&snapshot.serial, "none"),
+                    device_class: snapshot.device_class,
+                    device_subclass: snapshot.device_subclass,
+                    device_protocol: snapshot.device_protocol,
+                    sysfs_path: sysfs_path.display().to_string(),
+                },
+            )))
+        }
     };
 
     match &result {
         Ok(selected) => tracing::debug!(selected = ?selected, "usb bootloader selected"),
-        Err(error @ UsbBootloaderSelectionError::Unsupported { .. }) => {
-            let snapshot = usb_sysfs::usb_topology_snapshot(&sysfs_path);
-            tracing::debug!(%error, ?snapshot, "usb bootloader identity unsupported");
-        }
         Err(error) => tracing::debug!(%error, "usb bootloader identity unsupported"),
     }
 
     result
+}
+
+fn non_empty_or(value: &str, fallback: &str) -> String {
+    if value.is_empty() {
+        fallback.to_owned()
+    } else {
+        value.to_owned()
+    }
 }
 
 /// Scans every USB device directly under `root` and returns the ones whose

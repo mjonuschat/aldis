@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aldis::flash::usb_bootloader::{
-    ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderKind, UsbBootloaderSelectionError,
-    classify_usb_identity, scan_usb_bootloaders, select_usb_bootloader,
+    ObservedUsbBootloader, SelectedUsbBootloader, UnsupportedBootloaderIdentity, UsbBootloaderKind,
+    UsbBootloaderSelectionError, classify_usb_identity, scan_usb_bootloaders,
+    select_usb_bootloader,
 };
 
 #[test]
@@ -74,8 +75,68 @@ fn rejects_unknown_bootloaders_before_a_backend_can_flash() {
 
     assert!(matches!(
         select_usb_bootloader(observed),
-        Err(UsbBootloaderSelectionError::Unsupported { .. })
+        Err(UsbBootloaderSelectionError::Unsupported(_))
     ));
+}
+
+#[test]
+fn captures_topology_diagnostics_for_an_unsupported_bootloader() {
+    let root = unique_temporary_path();
+    let device_dir = root.join("1-1.5");
+    fs::create_dir_all(&device_dir).expect("create device fixture");
+    fs::write(device_dir.join("bDeviceClass"), "ef\n").expect("write bDeviceClass");
+    fs::write(device_dir.join("bDeviceSubClass"), "02\n").expect("write bDeviceSubClass");
+    fs::write(device_dir.join("bDeviceProtocol"), "01\n").expect("write bDeviceProtocol");
+    fs::write(device_dir.join("product"), "Example Device\n").expect("write product");
+
+    let observed = ObservedUsbBootloader {
+        sysfs_path: device_dir.clone(),
+        usb_id: "1209:0001".to_owned(),
+        manufacturer: "example".to_owned(),
+        serial_device: None,
+    };
+
+    let error =
+        select_usb_bootloader(observed).expect_err("an unrecognized identity should be rejected");
+    assert_eq!(
+        error,
+        UsbBootloaderSelectionError::Unsupported(Box::new(UnsupportedBootloaderIdentity {
+            usb_id: "1209:0001".to_owned(),
+            manufacturer: "example".to_owned(),
+            product: "Example Device".to_owned(),
+            serial: "none".to_owned(),
+            device_class: "ef".to_owned(),
+            device_subclass: "02".to_owned(),
+            device_protocol: "01".to_owned(),
+            sysfs_path: device_dir.display().to_string(),
+        }))
+    );
+
+    fs::remove_dir_all(root).expect("remove sysfs fixture");
+}
+
+#[test]
+fn falls_back_to_unknown_and_none_for_missing_product_and_serial() {
+    let root = unique_temporary_path();
+    let device_dir = root.join("1-1.6");
+    fs::create_dir_all(&device_dir).expect("create device fixture");
+
+    let observed = ObservedUsbBootloader {
+        sysfs_path: device_dir,
+        usb_id: "1209:0002".to_owned(),
+        manufacturer: "example".to_owned(),
+        serial_device: None,
+    };
+
+    let error =
+        select_usb_bootloader(observed).expect_err("an unrecognized identity should be rejected");
+    assert!(matches!(
+        error,
+        UsbBootloaderSelectionError::Unsupported(identity)
+            if identity.product == "unknown" && identity.serial == "none"
+    ));
+
+    fs::remove_dir_all(root).expect("remove sysfs fixture");
 }
 
 #[test]
