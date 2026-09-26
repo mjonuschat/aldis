@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::flash::linux_host::HOST_MCU_SERIAL_PATH;
 use crate::moonraker::{KlippyState, Mcu, McuInventory, McuTransport, UnreportedReason};
 
 const MESSAGE_MIN: usize = 5;
@@ -301,6 +302,10 @@ pub fn resolve_unreported(inventory: &mut McuInventory, prober: &impl IdentifyPo
             remaining.push(unreported);
             continue;
         };
+        if device == HOST_MCU_SERIAL_PATH {
+            remaining.push(unreported);
+            continue;
+        }
         match prober.identify(device) {
             Ok(data) => inventory.mcus.push(Mcu {
                 name: unreported.name,

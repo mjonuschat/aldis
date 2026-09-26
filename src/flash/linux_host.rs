@@ -22,6 +22,15 @@ pub const INSTALL_COMMAND: [&str; 5] = [
 ];
 /// The privileged restart command.
 pub const RESTART_COMMAND: [&str; 3] = ["/bin/systemctl", "restart", "klipper-mcu"];
+/// Klipper's own `config/generic-linux.cfg` example (and virtually every host-MCU setup) configures
+/// this exact path as the host MCU's `serial` setting — a virtual pty Klipper's own process manages,
+/// not a hardware device. It is indistinguishable from a real serial MCU's `McuTransport::Serial`
+/// shape before identification, so `resolve_unreported` in `identify.rs` matches on this well-known
+/// path to keep the direct-identify fallback off the host MCU, per the design's safety constraint
+/// (host MCU pipe traffic while Klippy may also be attached cannot be proven safe). A host MCU
+/// configured with a different path is a known, undetectable gap: nothing in Moonraker's response
+/// distinguishes it from ordinary hardware at this stage.
+pub const HOST_MCU_SERIAL_PATH: &str = "/tmp/klipper_host_mcu";
 
 const ELFCLASS64: u8 = 2;
 #[cfg(target_arch = "aarch64")]

@@ -94,6 +94,27 @@ fn identifies_serial_mcus_and_never_probes_can() {
 }
 
 #[test]
+fn never_probes_the_linux_host_mcu_pipe() {
+    let mut inventory = McuInventory {
+        mcus: Vec::new(),
+        unreported: vec![unreported("mcu host", serial("/tmp/klipper_host_mcu"))],
+    };
+    // No script entries: a probe of the host MCU pipe must panic via "unexpected probe" instead of
+    // this test silently exercising real host MCU traffic.
+    let prober = Scripted(RefCell::new(Vec::new()));
+
+    resolve_unreported(&mut inventory, &prober);
+
+    assert_eq!(inventory.mcus.len(), 0);
+    assert_eq!(inventory.unreported.len(), 1);
+    assert_eq!(inventory.unreported[0].name, "mcu host");
+    assert_eq!(
+        inventory.unreported[0].reason,
+        UnreportedReason::NotIdentified
+    );
+}
+
+#[test]
 fn probes_only_in_error_or_shutdown() {
     assert!(should_probe(&KlippyState::Error));
     assert!(should_probe(&KlippyState::Shutdown));

@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aldis::build::{BuildCommand, CommandError, CommandOutput, CommandPort, CommandStdin};
-use aldis::flash::linux_host::{HostMcuInstaller, InstallStep, LinuxHostError, is_linux_host};
+use aldis::flash::linux_host::{
+    HOST_MCU_SERIAL_PATH, HostMcuInstaller, InstallStep, LinuxHostError, is_linux_host,
+};
 
 #[cfg(target_arch = "aarch64")]
 const HOST_MACHINE: u16 = 183;
@@ -38,6 +40,11 @@ fn recognizes_only_an_enabled_linux_machine() {
     ));
     assert!(!is_linux_host("CONFIG_MACH_LINUXX=y\n"));
     assert!(!is_linux_host(""));
+}
+
+#[test]
+fn host_mcu_serial_path_matches_klippers_well_known_pty() {
+    assert_eq!(HOST_MCU_SERIAL_PATH, "/tmp/klipper_host_mcu");
 }
 
 #[test]
