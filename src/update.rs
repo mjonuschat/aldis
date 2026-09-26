@@ -87,6 +87,9 @@ fn run_update(
         } else {
             None
         };
+    let moonraker_url = &arguments.connection.moonraker.moonraker;
+    aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
+        .context("refusing to update firmware")?;
     ui.action("discovering MCUs from Moonraker");
     let inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
         &arguments.connection.moonraker.moonraker,

@@ -104,6 +104,34 @@ pub trait PrinterStatePort {
     fn print_state(&self) -> Result<PrintState, MoonrakerError>;
 }
 
+/// Host facts Moonraker reports about the Klipper instance it manages.
+pub trait HostPort {
+    /// The systemd unit Moonraker pairs with, from `machine.system_info`; `None` when unreported.
+    fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError>;
+}
+
+impl HostPort for MoonrakerAdapter {
+    fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
+        let response = self
+            .agent
+            .get(&self.endpoint("/machine/system_info"))
+            .call()
+            .map_err(map_http_error)?
+            .body_mut()
+            .read_to_string()?;
+        parse_klipper_unit(&response)
+    }
+}
+
+/// Extracts `instance_ids.klipper` from a `/machine/system_info` response.
+pub fn parse_klipper_unit(response: &str) -> Result<Option<String>, MoonrakerError> {
+    let response: Value = serde_json::from_str(response)?;
+    Ok(response
+        .pointer("/result/system_info/instance_ids/klipper")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
 pub struct MoonrakerAdapter {
     base_url: String,
     agent: ureq::Agent,
