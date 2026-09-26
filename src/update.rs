@@ -91,7 +91,7 @@ fn run_update(
     aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
         .context("refusing to update firmware")?;
     ui.action("discovering MCUs from Moonraker");
-    let inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
+    let mut inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
         &arguments.connection.moonraker.moonraker,
     ))
     .inspect_err(|error| {
@@ -99,6 +99,11 @@ fn run_update(
         ui.action(&format!("error: {}", aldis::error_chain(error)));
     })
     .context("failed to discover MCUs from Moonraker")?;
+    crate::discovery::probe_unreported(
+        moonraker_url,
+        &MoonrakerAdapter::new(moonraker_url),
+        &mut inventory,
+    );
     for target in &mut arguments.targets {
         *target = crate::discovery::resolve_target_name(&inventory, target);
     }
@@ -280,7 +285,17 @@ fn update_failure(
     }
 }
 
-pub(crate) fn ensure_printer_idle(printer: &impl PrinterStatePort) -> Result<(), String> {
+pub(crate) fn ensure_printer_idle(
+    printer: &(impl PrinterStatePort + aldis::moonraker::HostPort),
+) -> Result<(), String> {
+    if printer.host_info().is_ok_and(|info| {
+        matches!(
+            info.state,
+            aldis::moonraker::KlippyState::Error | aldis::moonraker::KlippyState::Shutdown
+        )
+    }) {
+        return Ok(());
+    }
     match printer.print_state() {
         Ok(state) if state.is_idle() => Ok(()),
         Ok(state) => Err(format!(
@@ -403,13 +418,34 @@ mod tests {
         ensure_printer_idle, mcu_count_label, pending_mcus, selection_for, unknown_targets,
         update_failure, wait_for_application_with_timeout, wait_for_mcus,
     };
-    use aldis::moonraker::{PrintState, PrinterStatePort};
+    use aldis::moonraker::{KlippyState, PrintState, PrinterStatePort};
 
-    struct FakePrinter(Result<PrintState, String>);
+    struct FakePrinter(Result<PrintState, String>, KlippyState);
+
+    impl FakePrinter {
+        fn in_state(state: KlippyState, print: Result<PrintState, String>) -> Self {
+            Self(print, state)
+        }
+    }
 
     impl PrinterStatePort for FakePrinter {
         fn print_state(&self) -> Result<PrintState, MoonrakerError> {
             self.0.clone().map_err(MoonrakerError::InvalidResponse)
+        }
+    }
+
+    impl aldis::moonraker::HostPort for FakePrinter {
+        fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
+            Ok(None)
+        }
+
+        fn host_info(&self) -> Result<aldis::moonraker::HostInfo, MoonrakerError> {
+            Ok(aldis::moonraker::HostInfo {
+                state: self.1.clone(),
+                state_message: String::new(),
+                software_version: None,
+                klipper_path: None,
+            })
         }
     }
 
@@ -419,7 +455,8 @@ mod tests {
             (PrintState::Printing, "printing"),
             (PrintState::Paused, "paused"),
         ] {
-            let message = ensure_printer_idle(&FakePrinter(Ok(state))).unwrap_err();
+            let message =
+                ensure_printer_idle(&FakePrinter(Ok(state), KlippyState::Ready)).unwrap_err();
 
             assert_eq!(
                 message,
@@ -432,9 +469,11 @@ mod tests {
 
     #[test]
     fn refuses_to_stop_klipper_when_the_print_state_is_unrecognized() {
-        let message =
-            ensure_printer_idle(&FakePrinter(Ok(PrintState::Unknown("resuming".to_owned()))))
-                .unwrap_err();
+        let message = ensure_printer_idle(&FakePrinter(
+            Ok(PrintState::Unknown("resuming".to_owned())),
+            KlippyState::Ready,
+        ))
+        .unwrap_err();
 
         assert!(
             message.starts_with("the printer is resuming; refusing"),
@@ -444,8 +483,11 @@ mod tests {
 
     #[test]
     fn refuses_to_stop_klipper_when_the_print_state_cannot_be_read() {
-        let message =
-            ensure_printer_idle(&FakePrinter(Err("connection reset".to_owned()))).unwrap_err();
+        let message = ensure_printer_idle(&FakePrinter(
+            Err("connection reset".to_owned()),
+            KlippyState::Ready,
+        ))
+        .unwrap_err();
 
         assert!(
             message.starts_with("could not confirm the printer is idle; refusing to stop Klipper"),
@@ -462,8 +504,18 @@ mod tests {
             PrintState::Cancelled,
             PrintState::Error,
         ] {
-            assert!(ensure_printer_idle(&FakePrinter(Ok(state))).is_ok());
+            assert!(ensure_printer_idle(&FakePrinter(Ok(state), KlippyState::Ready)).is_ok());
         }
+    }
+
+    #[test]
+    fn skips_the_print_check_while_klipper_is_in_an_error_state() {
+        for state in [KlippyState::Error, KlippyState::Shutdown] {
+            let printer = FakePrinter::in_state(state, Err("print_stats unavailable".to_owned()));
+            assert!(ensure_printer_idle(&printer).is_ok());
+        }
+        let ready = FakePrinter::in_state(KlippyState::Ready, Err("connection reset".to_owned()));
+        assert!(ensure_printer_idle(&ready).is_err());
     }
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
     use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};

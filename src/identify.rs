@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::moonraker::{KlippyState, Mcu, McuInventory, McuTransport, UnreportedReason};
+
 const MESSAGE_MIN: usize = 5;
 const MESSAGE_MAX: usize = 64;
 const MESSAGE_DEST: u8 = 0x10;
@@ -246,4 +248,81 @@ pub fn identify_over<P: Read + Write>(
         }
         data.extend_from_slice(&chunk);
     }
+}
+
+/// Something that can identify the Klipper firmware behind a serial device.
+pub trait IdentifyPort {
+    fn identify(&self, device: &str) -> Result<IdentifyData, IdentifyError>;
+}
+
+/// Identifies over a real serial port, opened exclusively.
+#[derive(Debug, Clone)]
+pub struct SerialIdentify {
+    pub timeout: Duration,
+}
+
+impl Default for SerialIdentify {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(3),
+        }
+    }
+}
+
+impl IdentifyPort for SerialIdentify {
+    fn identify(&self, device: &str) -> Result<IdentifyData, IdentifyError> {
+        if !std::path::Path::new(device).exists() {
+            return Err(IdentifyError::NoResponse);
+        }
+        // serialport opens TTYs with TIOCEXCL, so a port Klippy still holds fails here instead of
+        // letting two hosts talk to one MCU. The baud rate is ignored by USB CDC; 250000 is
+        // Klipper's UART default.
+        let mut port = serialport::new(device, 250_000)
+            .timeout(Duration::from_millis(100))
+            .open()
+            .map_err(|error| IdentifyError::PortUnavailable(error.into()))?;
+        let compressed = identify_over(&mut port, self.timeout)?;
+        IdentifyData::from_compressed(&compressed)
+    }
+}
+
+/// Whether discovery in `state` may probe unreported MCUs. Every update stops Klipper before
+/// touching hardware, so in `error`/`shutdown` no flash can be in progress.
+pub fn should_probe(state: &KlippyState) -> bool {
+    matches!(state, KlippyState::Error | KlippyState::Shutdown)
+}
+
+/// Identifies unreported serial MCUs directly, moving each one that answers into `mcus`.
+/// CAN and host MCUs are never probed and stay `NotIdentified`.
+pub fn resolve_unreported(inventory: &mut McuInventory, prober: &impl IdentifyPort) {
+    let mut remaining = Vec::new();
+    for mut unreported in std::mem::take(&mut inventory.unreported) {
+        let Some(McuTransport::Serial { device }) = &unreported.transport else {
+            remaining.push(unreported);
+            continue;
+        };
+        match prober.identify(device) {
+            Ok(data) => inventory.mcus.push(Mcu {
+                name: unreported.name,
+                app: data.app,
+                version: Some(data.version),
+                mcu: data.mcu,
+                canbus_frequency_hz: data.canbus_frequency_hz,
+                transport: unreported.transport,
+                kconfig: data.kconfig,
+            }),
+            Err(IdentifyError::PortUnavailable(_)) => {
+                unreported.reason = UnreportedReason::NotIdentified;
+                remaining.push(unreported);
+            }
+            Err(error) => {
+                tracing::debug!(name = %unreported.name, ?error, "direct identify failed");
+                unreported.reason = UnreportedReason::NotResponding;
+                remaining.push(unreported);
+            }
+        }
+    }
+    remaining.sort_by(|a, b| a.name.cmp(&b.name));
+    inventory.unreported = remaining;
+    inventory.mcus.sort_by(|a, b| a.name.cmp(&b.name));
 }

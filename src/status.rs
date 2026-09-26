@@ -15,7 +15,12 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
         .klipper_source
         .unwrap_or_else(crate::default_klipper_source);
     let moonraker = MoonrakerAdapter::new(&arguments.moonraker.moonraker);
-    match status_report(&moonraker, &GitCheckoutAdapter, &source) {
+    match status_report(
+        &arguments.moonraker.moonraker,
+        &moonraker,
+        &GitCheckoutAdapter,
+        &source,
+    ) {
         Ok(report) => {
             print!("{report}");
             ExitCode::SUCCESS
@@ -25,13 +30,15 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
 }
 
 fn status_report(
-    moonraker: &impl MoonrakerPort,
+    url: &str,
+    moonraker: &(impl MoonrakerPort + aldis::moonraker::HostPort),
     checkout: &impl CheckoutPort,
     source: &std::path::Path,
 ) -> anyhow::Result<String> {
     tracing::info!("discovering MCUs from Moonraker");
-    let inventory =
+    let mut inventory =
         crate::discovery::discover_mcus_with_retry(moonraker).context("failed to discover MCUs")?;
+    crate::discovery::probe_unreported(url, moonraker, &mut inventory);
     let revision = checkout
         .revision(source)
         .unwrap_or(CheckoutRevision::Indeterminate);
@@ -286,8 +293,13 @@ mod tests {
         }));
         let checkout = FakeCheckout(Ok(CheckoutRevision::Known("v2".to_owned())));
 
-        let report = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
-            .expect("status report should succeed");
+        let report = status_report(
+            "http://127.0.0.1:7125",
+            &moonraker,
+            &checkout,
+            std::path::Path::new("/klipper"),
+        )
+        .expect("status report should succeed");
 
         assert!(report.contains("mcu h723"));
         assert!(report.contains("v2"));
@@ -298,8 +310,13 @@ mod tests {
         let moonraker = FakeMoonraker(Err("no MCU objects were reported".to_owned()));
         let checkout = FakeCheckout(Ok(CheckoutRevision::Indeterminate));
 
-        let error = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
-            .expect_err("status report should fail");
+        let error = status_report(
+            "http://127.0.0.1:7125",
+            &moonraker,
+            &checkout,
+            std::path::Path::new("/klipper"),
+        )
+        .expect_err("status report should fail");
 
         assert!(format!("{error:#}").contains("no MCU objects were reported"));
     }
@@ -309,6 +326,21 @@ mod tests {
     impl MoonrakerPort for FakeMoonraker {
         fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
             self.0.clone().map_err(MoonrakerError::InvalidResponse)
+        }
+    }
+
+    impl aldis::moonraker::HostPort for FakeMoonraker {
+        fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
+            Ok(None)
+        }
+
+        fn host_info(&self) -> Result<aldis::moonraker::HostInfo, MoonrakerError> {
+            Ok(aldis::moonraker::HostInfo {
+                state: aldis::moonraker::KlippyState::Ready,
+                state_message: String::new(),
+                software_version: None,
+                klipper_path: None,
+            })
         }
     }
 

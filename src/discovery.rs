@@ -4,6 +4,24 @@ use std::time::Duration;
 use aldis::moonraker::{McuInventory, MoonrakerError, MoonrakerPort};
 use aldis::retry::retry_until_available;
 
+/// Runs the direct identify fallback when Klippy is in an error state and this Moonraker fronts
+/// the local, default Klipper service.
+pub(crate) fn probe_unreported(
+    url: &str,
+    moonraker: &impl aldis::moonraker::HostPort,
+    inventory: &mut McuInventory,
+) {
+    if inventory.unreported.is_empty() || aldis::host::verify_host(url, moonraker).is_err() {
+        return;
+    }
+    if moonraker
+        .host_info()
+        .is_ok_and(|info| aldis::identify::should_probe(&info.state))
+    {
+        aldis::identify::resolve_unreported(inventory, &aldis::identify::SerialIdentify::default());
+    }
+}
+
 const TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_RETRIES: u32 = 3;
