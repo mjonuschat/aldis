@@ -9,6 +9,7 @@ pub mod coordinator;
 pub mod eligibility;
 pub mod flash;
 pub mod host;
+pub mod identify;
 pub mod lock;
 pub mod logging;
 pub mod moonraker;

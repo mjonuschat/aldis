@@ -25,6 +25,7 @@ dependencies = [
  "clap",
  "dfu-core",
  "dfu-nusb",
+ "flate2",
  "nusb",
  "picoboot",
  "semver",
