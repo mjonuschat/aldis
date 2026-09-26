@@ -19,11 +19,11 @@ A tool for updating MCU firmware. `aldis` is named after the Aldis lamp, the sig
 
 ## Installation
 
-Download the latest build for your platform (most Klipper hosts are Raspberry Pi, i.e. `aarch64-linux`; use `x86_64-linux` on a typical PC) and extract it to `~/aldis`:
+Download the latest build for your host's architecture (`aarch64` or `x86_64`) and extract it to `~/aldis`:
 
 ```
 mkdir -p ~/aldis
-curl -L https://github.com/mjonuschat/aldis/releases/latest/download/aldis-aarch64-linux.tar.xz \
+curl -fL "https://github.com/mjonuschat/aldis/releases/latest/download/aldis-$(uname -m)-linux.tar.xz" \
   | tar xJ -C ~/aldis --strip-components=1
 chmod +x ~/aldis/aldis
 ```
