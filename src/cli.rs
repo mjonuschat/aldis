@@ -132,6 +132,14 @@ pub(crate) struct SetupArgs {
     /// Verify installed host permissions without modifying them.
     #[arg(long)]
     pub(crate) check: bool,
+    /// Also install (or repair) the aldis Moonraker agent service.
+    #[arg(long)]
+    pub(crate) agent: bool,
+    /// With --agent: stop and remove the agent service instead.
+    #[arg(long, requires = "agent")]
+    pub(crate) remove: bool,
+    #[command(flatten)]
+    pub(crate) moonraker: MoonrakerArgs,
 }
 
 #[derive(Debug, Args)]

@@ -71,6 +71,12 @@ fn run_self_update(arguments: SelfUpdateArgs, ui: &mut UpdateUi) -> anyhow::Resu
     ui.begin("installing");
     install_binary(&extracted, &current_exe).context("failed to install the new binary")?;
     ui.finish_success(format!("installed aldis {}", latest.tag));
+    if std::path::Path::new(crate::setup::AGENT_UNIT_PATH).exists() {
+        ui.block(
+            "the aldis agent keeps running the previous version until restarted: \
+             use Fluidd's service menu or run `sudo systemctl restart aldis`\n",
+        );
+    }
     ui.action("run completed successfully");
     Ok(())
 }
