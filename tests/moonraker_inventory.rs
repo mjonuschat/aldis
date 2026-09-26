@@ -1,6 +1,7 @@
 use aldis::eligibility::{Eligibility, classify_mcu};
 use aldis::moonraker::{
     KlippyState, McuTransport, UnreportedMcu, UnreportedReason, parse_host_info, parse_inventory,
+    parse_logs_root,
 };
 
 #[test]
@@ -167,4 +168,15 @@ fn parses_host_info_including_version_and_path() {
         parse_host_info(disconnected).unwrap().state,
         KlippyState::Disconnected
     );
+}
+
+#[test]
+fn reads_the_logs_root_from_file_roots() {
+    let response = r#"{"result":[{"name":"config","path":"/home/pi/printer_data/config","permissions":"rw"},
+        {"name":"logs","path":"/home/pi/printer_data/logs","permissions":"r"}]}"#;
+    assert_eq!(
+        parse_logs_root(response).unwrap(),
+        Some(std::path::PathBuf::from("/home/pi/printer_data/logs"))
+    );
+    assert_eq!(parse_logs_root(r#"{"result":[]}"#).unwrap(), None);
 }

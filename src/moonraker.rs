@@ -141,6 +141,9 @@ pub trait HostPort {
 
     /// Klippy's state, version, and source path; `Disconnected` when Klippy is not connected.
     fn host_info(&self) -> Result<HostInfo, MoonrakerError>;
+
+    /// Moonraker's registered `logs` root (what frontends' log browsers show).
+    fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError>;
 }
 
 impl HostPort for MoonrakerAdapter {
@@ -167,6 +170,28 @@ impl HostPort for MoonrakerAdapter {
             Err(error) => Err(MoonrakerError::Http(error)),
         }
     }
+
+    fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+        let response = self
+            .agent
+            .get(&self.endpoint("/server/files/roots"))
+            .call()
+            .map_err(map_http_error)?
+            .body_mut()
+            .read_to_string()?;
+        parse_logs_root(&response)
+    }
+}
+
+/// Extracts the `logs` root path from a `/server/files/roots` response.
+pub fn parse_logs_root(response: &str) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+    let response: Value = serde_json::from_str(response)?;
+    Ok(response
+        .get("result")
+        .and_then(Value::as_array)
+        .and_then(|roots| roots.iter().find(|root| root["name"] == "logs"))
+        .and_then(|root| root["path"].as_str())
+        .map(std::path::PathBuf::from))
 }
 
 /// Extracts `instance_ids.klipper` from a `/machine/system_info` response.

@@ -418,6 +418,10 @@ mod tests {
                 klipper_path: None,
             })
         }
+
+        fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+            Ok(None)
+        }
     }
 
     #[test]
@@ -727,6 +731,10 @@ mod tests {
                 klipper_path: None,
             })
         }
+
+        fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+            Ok(None)
+        }
     }
 
     impl PrinterStatePort for FakeMoonraker {
@@ -838,6 +846,10 @@ mod tests {
                 software_version: None,
                 klipper_path: None,
             })
+        }
+
+        fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+            Ok(None)
         }
     }
 

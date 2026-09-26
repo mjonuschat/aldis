@@ -56,6 +56,10 @@ fn refuses_when_moonraker_cannot_report_the_unit() {
         fn host_info(&self) -> Result<HostInfo, MoonrakerError> {
             Err(MoonrakerError::KlippyNotConnected)
         }
+
+        fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+            Ok(None)
+        }
     }
 
     assert!(matches!(

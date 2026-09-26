@@ -70,6 +70,77 @@ pub fn init_stderr_only(verbosity: u8) -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to install tracing subscriber: {error}"))
 }
 
+/// A tracing writer that forwards to the current run's log file, if one is open.
+#[derive(Clone, Default)]
+pub struct RunLogSink(std::sync::Arc<std::sync::Mutex<Option<std::fs::File>>>);
+
+impl RunLogSink {
+    /// Opens `path` (creating it if needed) and starts forwarding writes to it.
+    pub fn start(&self, path: &Path) -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        *self.0.lock().unwrap() = Some(file);
+        Ok(())
+    }
+
+    /// Stops forwarding writes; further writes are discarded until [`Self::start`] is called again.
+    pub fn stop(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+pub struct RunLogWriter(std::sync::Arc<std::sync::Mutex<Option<std::fs::File>>>);
+
+impl std::io::Write for RunLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock().unwrap().as_mut() {
+            Some(file) => std::io::Write::write(file, bytes),
+            None => Ok(bytes.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0.lock().unwrap().as_mut() {
+            Some(file) => std::io::Write::flush(file),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RunLogSink {
+    type Writer = RunLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RunLogWriter(std::sync::Arc::clone(&self.0))
+    }
+}
+
+/// Installs the agent's subscriber: operational logs to stdout (journald), and full debug detail
+/// to whichever run log is currently started on the returned sink.
+pub fn init_agent(verbosity: u8) -> anyhow::Result<RunLogSink> {
+    let stdout_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity.max(1)).to_string()));
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_ansi(false)
+        .with_filter(stdout_filter);
+    let sink = RunLogSink::default();
+    let run_layer = tracing_subscriber::fmt::layer()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .with_filter(EnvFilter::new(
+            "debug,dfu_core=info,ureq=warn,ureq::run=debug",
+        ));
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(run_layer)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("failed to install tracing subscriber: {error}"))?;
+    Ok(sink)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +159,23 @@ mod tests {
     fn verbosity_two_or_more_maps_to_debug_level() {
         assert_eq!(stderr_level_for(2), tracing::Level::DEBUG);
         assert_eq!(stderr_level_for(5), tracing::Level::DEBUG);
+    }
+
+    #[test]
+    fn writes_only_while_a_run_log_is_started() {
+        use std::io::Write;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.log");
+        let sink = RunLogSink::default();
+
+        sink.make_writer().write_all(b"before\n").unwrap();
+        sink.start(&path).unwrap();
+        sink.make_writer().write_all(b"during\n").unwrap();
+        sink.stop();
+        sink.make_writer().write_all(b"after\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "during\n");
     }
 }

@@ -342,6 +342,10 @@ mod tests {
                 klipper_path: None,
             })
         }
+
+        fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+            Ok(None)
+        }
     }
 
     struct FakeCheckout(Result<CheckoutRevision, String>);
