@@ -3,6 +3,7 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("aldis supports Linux hosts only");
 
+pub mod agent;
 pub mod build;
 pub mod checkout;
 pub mod coordinator;
