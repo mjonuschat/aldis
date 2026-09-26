@@ -90,6 +90,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Install cross-compilation tool
         uses: taiki-e/install-action@v2
         with:

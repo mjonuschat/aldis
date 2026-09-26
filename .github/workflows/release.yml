@@ -45,6 +45,8 @@ jobs:
 
       - name: Cache cargo & target directories
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Run cargo test
         if: matrix.build != 'aarch64-linux'
