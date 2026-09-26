@@ -25,6 +25,8 @@ pub(crate) fn flash(arguments: FlashArgs, mut ui: UpdateUi) -> ExitCode {
 }
 
 fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
+    let _lock =
+        aldis::lock::UpdateLock::try_acquire_default().context("could not start the flash")?;
     let firmware = std::fs::read(&arguments.firmware).with_context(|| {
         format!(
             "could not read firmware file {}",

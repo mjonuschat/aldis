@@ -63,6 +63,8 @@ fn run_update(
     workspace: &RunWorkspace,
     run_log_path: &Path,
 ) -> anyhow::Result<()> {
+    let _lock =
+        aldis::lock::UpdateLock::try_acquire_default().context("could not start the update")?;
     let source = arguments
         .connection
         .klipper_source

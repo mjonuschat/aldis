@@ -8,6 +8,7 @@ pub mod checkout;
 pub mod coordinator;
 pub mod eligibility;
 pub mod flash;
+pub mod lock;
 pub mod logging;
 pub mod moonraker;
 pub mod prepare;

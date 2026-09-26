@@ -23,6 +23,10 @@ const WATCH_TIMEOUT: Duration = Duration::from_secs(10);
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) fn reboot(arguments: RebootArgs, mut ui: UpdateUi) -> ExitCode {
+    let _lock = match aldis::lock::UpdateLock::try_acquire_default() {
+        Ok(lock) => lock,
+        Err(error) => return crate::fail(format!("could not start the reboot: {error}")),
+    };
     let root = Path::new(USB_SYSFS_ROOT);
     let mut detected = detect_bootloaders(root);
     if detected.is_empty() {
