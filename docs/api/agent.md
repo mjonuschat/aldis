@@ -116,7 +116,13 @@ A request is accepted or rejected whole; there are no partial acceptances.
 
 ### Errors
 
-The agent rejects with a JSON-RPC error `{"code": -32000, "message": "…", "data": {"reason": …}}`.
+The agent rejects with a JSON-RPC error `{"code": …, "message": "…", "data": {"reason": …}}`. Most
+rejections (everything but the two protocol-level reasons below) use `code` -32000:
+
+```jsonc
+{"jsonrpc": "2.0", "id": 42, "error": {"code": -32000, "message": "update already running",
+  "data": {"reason": "busy"}}}
+```
 
 Moonraker (verified against v0.11.0's `common.py`) relays agent errors wrapped: the frontend
 receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole error object as
@@ -128,19 +134,19 @@ receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole er
            "data": {"reason": "busy"}}}}
 ```
 
-| Reason | Meaning |
-| --- | --- |
-| `busy` | An update is running (agent or CLI) |
-| `blocked` | A blocker applies; `data.blocker` carries it |
-| `unknown_mcu` | A named MCU was not discovered |
-| `not_updatable` | A named MCU lacks the `update` action; `data.mcus` gives per-MCU reasons |
-| `nothing_to_update` | `all` matched no MCU |
-| `unavailable` | Moonraker discovery failed |
-| `invalid_request` | `arguments` is malformed (e.g. neither `mcus` nor `all`, or an empty `mcus` list) |
-| `unknown_method` | `method` is neither `status` nor `update` |
+| Reason | Code | Meaning |
+| --- | --- | --- |
+| `busy` | -32000 | An update is running (agent or CLI) |
+| `blocked` | -32000 | A blocker applies; `data.blocker` carries it |
+| `unknown_mcu` | -32000 | A named MCU was not discovered |
+| `not_updatable` | -32000 | A named MCU lacks the `update` action; `data.mcus` gives per-MCU reasons |
+| `nothing_to_update` | -32000 | `all` matched no MCU |
+| `unavailable` | -32000 | Moonraker discovery failed |
+| `invalid_request` | -32602 | `arguments` is malformed (e.g. neither `mcus` nor `all`, or an empty `mcus` list) |
+| `unknown_method` | -32601 | `method` is neither `status` nor `update` |
 
-`invalid_request` and `unknown_method` are protocol-level errors and are not preceded by any lock
-or blocker check.
+`invalid_request` and `unknown_method` are protocol-level errors, use the standard JSON-RPC codes
+for malformed params and an unknown method, and are not preceded by any lock or blocker check.
 
 ## Events
 

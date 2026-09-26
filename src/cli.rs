@@ -53,6 +53,8 @@ pub(crate) enum CliCommand {
     /// Check for and install a newer released aldis binary.
     #[command(name = "self-update")]
     SelfUpdate(SelfUpdateArgs),
+    /// Run as a Moonraker agent serving MCU status and updates to web frontends.
+    Agent(AgentArgs),
 }
 
 #[derive(Debug, Args)]
@@ -137,6 +139,12 @@ pub(crate) struct SelfUpdateArgs {
     /// Report whether a newer release is available without installing it.
     #[arg(long)]
     pub(crate) check: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentArgs {
+    #[command(flatten)]
+    pub(crate) moonraker: MoonrakerArgs,
 }
 
 #[cfg(test)]
