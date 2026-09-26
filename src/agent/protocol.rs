@@ -15,20 +15,37 @@ pub enum Incoming {
         method: String,
         params: Value,
     },
+    /// Moonraker rejected our `server.connection.identify` call (e.g. already registered, or an
+    /// auth failure): the agent is connected but will never actually appear to frontends.
+    IdentifyError { message: String },
     /// Responses to our own calls and Moonraker's `notify_*` broadcasts.
     Ignored,
 }
+
+/// The fixed `id` used for the one `server.connection.identify` call made per connection, so its
+/// reply (success or error) can be told apart from any other response.
+pub const IDENTIFY_ID: u64 = 1;
 
 pub fn parse_incoming(text: &str) -> Incoming {
     let Ok(Value::Object(mut message)) = serde_json::from_str::<Value>(text) else {
         return Incoming::Ignored;
     };
+    let error = message.remove("error");
     match (message.remove("method"), message.remove("id")) {
         (Some(Value::String(method)), Some(id)) if !id.is_null() => Incoming::Request {
             id,
             method,
             params: message.remove("params").unwrap_or(Value::Null),
         },
+        (None, Some(id)) if id == json!(IDENTIFY_ID) && error.is_some() => {
+            let error = error.expect("checked above");
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string());
+            Incoming::IdentifyError { message }
+        }
         _ => Incoming::Ignored,
     }
 }
@@ -112,7 +129,7 @@ mod tests {
                     (json!(7), "status", Value::Null)
                 );
             }
-            Incoming::Ignored => panic!("expected a request"),
+            _ => panic!("expected a request"),
         }
         assert!(matches!(
             parse_incoming(r#"{"jsonrpc":"2.0","result":"ok","id":1}"#),
@@ -127,11 +144,28 @@ mod tests {
 
     #[test]
     fn identifies_as_an_agent() {
-        let message = identify_message(1);
+        let message = identify_message(IDENTIFY_ID);
         assert_eq!(message["method"], "server.connection.identify");
         assert_eq!(message["params"]["client_name"], "aldis");
         assert_eq!(message["params"]["type"], "agent");
         assert_eq!(message["params"]["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn recognizes_a_rejected_identify_reply() {
+        match parse_incoming(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"already registered and connected"}}"#,
+        ) {
+            Incoming::IdentifyError { message } => {
+                assert_eq!(message, "already registered and connected");
+            }
+            _ => panic!("expected an identify error"),
+        }
+        // A response to some other call must not be mistaken for the identify error.
+        assert!(matches!(
+            parse_incoming(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"nope"}}"#),
+            Incoming::Ignored
+        ));
     }
 
     #[test]

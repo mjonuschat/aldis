@@ -8,8 +8,8 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error, Message};
 
 use crate::agent::protocol::{
-    Incoming, dispatch, error_message, event_message, identify_message, parse_incoming,
-    result_message,
+    IDENTIFY_ID, Incoming, dispatch, error_message, event_message, identify_message,
+    parse_incoming, result_message,
 };
 use crate::agent::service::{AgentBackend, AgentService, EventSink};
 
@@ -51,12 +51,12 @@ pub fn serve<B: AgentBackend>(
     let (sender, receiver) = mpsc::channel();
     *events.lock().unwrap() = Some(sender);
     let _clear = ClearOnDrop(events);
-    socket.send(Message::text(identify_message(1).to_string()))?;
+    socket.send(Message::text(identify_message(IDENTIFY_ID).to_string()))?;
     tracing::info!(url, "connected to Moonraker");
     loop {
         match socket.read() {
-            Ok(Message::Text(text)) => {
-                if let Incoming::Request { id, method, params } = parse_incoming(text.as_str()) {
+            Ok(Message::Text(text)) => match parse_incoming(text.as_str()) {
+                Incoming::Request { id, method, params } => {
                     tracing::info!(method, "request");
                     let reply = match dispatch(service, &method, params) {
                         Ok(result) => result_message(&id, result),
@@ -64,7 +64,14 @@ pub fn serve<B: AgentBackend>(
                     };
                     socket.send(Message::text(reply.to_string()))?;
                 }
-            }
+                Incoming::IdentifyError { message } => {
+                    tracing::warn!(message, "Moonraker rejected the identify request");
+                    return Err(Error::Io(io::Error::other(format!(
+                        "Moonraker rejected identify: {message}"
+                    ))));
+                }
+                Incoming::Ignored => {}
+            },
             Ok(Message::Close(_)) | Err(Error::ConnectionClosed | Error::AlreadyClosed) => {
                 return Ok(());
             }

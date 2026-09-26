@@ -141,6 +141,20 @@ impl<B: AgentBackend> AgentService<B> {
             LockError::Busy => ApiError::rejected("busy", "an update is already running"),
             error => ApiError::rejected("unavailable", error.to_string()),
         })?;
+        // The update lock alone isn't enough: a finishing run drops it before its own state is
+        // recorded as `Finished` (see `execute`), so without this check a request landing in that
+        // window would overwrite the still-finishing run's record.
+        if self
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .run
+            .as_ref()
+            .is_some_and(|run| run.state == RunState::Running)
+        {
+            return Err(ApiError::rejected("busy", "an update is already running"));
+        }
         let snapshot = self.backend.snapshot();
         let body = assess(&snapshot);
         if let Some(blocker) = &body.blocker {
@@ -210,6 +224,7 @@ impl<B: AgentBackend> AgentService<B> {
                 "no MCU needs an update",
             ));
         }
+        let mut seen = std::collections::HashSet::new();
         let objects: Vec<String> = entries
             .iter()
             .filter_map(|entry| {
@@ -219,6 +234,9 @@ impl<B: AgentBackend> AgentService<B> {
                     .find(|mcu| display_name(&mcu.name) == entry.name)
                     .map(|mcu| mcu.name.clone())
             })
+            // A request naming the same MCU twice (e.g. differing only in case) must only flash
+            // it once.
+            .filter(|name| seen.insert(name.to_ascii_lowercase()))
             .collect();
         let targets = flash_order(inventory, &objects);
         let run_id = format!(
@@ -317,7 +335,7 @@ impl<B: AgentBackend> AgentService<B> {
         let message = match failed {
             None => format!("{} updated; log: {}", updated.len(), log.display()),
             Some(failure) if klipper_left_stopped => format!(
-                "{} Klipper was left stopped; recover {}, then start Klipper from the service menu; log: {}",
+                "{}. Klipper was left stopped: recover {}, then start Klipper from the service menu; log: {}",
                 failure.message,
                 failure
                     .mcu
@@ -362,9 +380,16 @@ struct AgentHooks<'a, B: AgentBackend> {
 impl<B: AgentBackend> AgentHooks<'_, B> {
     fn send(&mut self, phase: Phase, message: impl Into<String>) {
         self.phase = phase;
+        // `stop-klipper` is host-level, not per-MCU: don't attribute it to whichever MCU triggered
+        // it, even though `self.mcu` stays set across it for the Build-phase events that follow.
+        let mcu = if phase == Phase::StopKlipper {
+            None
+        } else {
+            self.mcu.clone()
+        };
         self.service.emit(UpdateResponse {
             run_id: self.run_id.to_owned(),
-            mcu: self.mcu.clone(),
+            mcu,
             phase,
             message: message.into(),
             complete: false,
@@ -509,7 +534,7 @@ mod tests {
         fn run(
             &self,
             _: &Path,
-            _lock: UpdateLock,
+            lock: UpdateLock,
             _: &Snapshot,
             targets: &[String],
             hooks: &mut dyn RunHooks,
@@ -519,7 +544,11 @@ mod tests {
                 hooks.approve(target, "v1", "v2");
             }
             if let Some(gate) = self.gate.lock().unwrap().take() {
+                // Drop the lock before waiting so a test can observe the real backend's window
+                // between the lock being released and the run's state being recorded as finished.
+                drop(lock);
                 gate.recv().unwrap();
+                return self.result.lock().unwrap().take().unwrap();
             }
             self.result.lock().unwrap().take().unwrap()
         }
@@ -588,6 +617,29 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["rp2040".to_owned()],
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+
+        assert_eq!(
+            *service.backend.seen_targets.lock().unwrap(),
+            vec!["mcu RP2040"]
+        );
+    }
+
+    #[test]
+    fn deduplicates_duplicate_mcu_names_case_insensitively() {
+        let backend = FakeBackend::new(
+            snapshot(PrintState::Standby),
+            Ok(RunOutcome {
+                updated: vec!["mcu RP2040".to_owned()],
+            }),
+        );
+        let service = AgentService::new(backend, sink().0);
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["rp2040".to_owned(), "RP2040".to_owned()],
             })
             .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
@@ -705,6 +757,52 @@ mod tests {
         assert!(matches!(run.state, RunState::Running));
         assert!(!run.messages.is_empty());
         assert!(during.mcus.iter().all(|m| m.actions.is_empty()));
+    }
+
+    #[test]
+    fn rejects_a_second_update_started_while_the_first_run_is_still_finishing() {
+        let backend = FakeBackend::new(
+            snapshot(PrintState::Standby),
+            Ok(RunOutcome {
+                updated: vec!["mcu".to_owned()],
+            }),
+        );
+        let (release, gate) = mpsc::channel();
+        *backend.gate.lock().unwrap() = Some(gate);
+        let service = AgentService::new(backend, sink().0);
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["mcu".to_owned()],
+            })
+            .unwrap();
+
+        // Wait for the fake to drop the update lock while still blocking inside `run`, i.e. the
+        // real backend's window between lock release and the run being recorded as finished.
+        loop {
+            match service.backend.try_lock() {
+                Ok(probe) => {
+                    drop(probe);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+
+        let error = service
+            .update(UpdateRequest::All { all: true })
+            .unwrap_err();
+        assert_eq!(reason(&error), "busy");
+
+        release.send(()).unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+
+        let run = service.status().run.unwrap();
+        assert_eq!(
+            run.result.unwrap().mcus.len(),
+            1,
+            "the original run record must survive, not be overwritten by the rejected second request"
+        );
     }
 
     #[test]

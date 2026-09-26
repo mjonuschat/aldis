@@ -1,5 +1,5 @@
 //! The build-and-flash update loop, shared by every caller that drives a run
-//! (the CLI today; a Moonraker agent later) behind the [`RunHooks`] trait.
+//! (the CLI and the Moonraker agent) behind the [`RunHooks`] trait.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

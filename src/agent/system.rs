@@ -191,7 +191,7 @@ impl SystemBackend {
             LoggingCommandAdapter::new(SystemCommandAdapter),
             LoggingCommandAdapter::new(SystemCommandAdapter),
         );
-        run_updates(
+        let result = run_updates(
             &coordinator,
             &self.adapter(),
             inventory,
@@ -202,7 +202,17 @@ impl SystemBackend {
                 clean: false,
             },
             hooks,
-        )
+        );
+        // The run's actual outcome stands regardless of whether cleanup succeeds; this is a
+        // long-lived service, so leaving the workspace behind would accumulate indefinitely.
+        if let Err(error) = std::fs::remove_dir_all(workspace.root()) {
+            tracing::warn!(
+                ?error,
+                path = %workspace.root().display(),
+                "could not remove the run workspace"
+            );
+        }
+        result
     }
 }
 
