@@ -8,6 +8,7 @@ pub mod checkout;
 pub mod coordinator;
 pub mod eligibility;
 pub mod flash;
+pub mod flash_order;
 pub mod host;
 pub mod identify;
 pub mod lock;

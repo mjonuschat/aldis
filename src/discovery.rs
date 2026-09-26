@@ -11,14 +11,37 @@ pub(crate) fn probe_unreported(
     moonraker: &impl aldis::moonraker::HostPort,
     inventory: &mut McuInventory,
 ) {
-    if inventory.unreported.is_empty() || aldis::host::verify_host(url, moonraker).is_err() {
+    probe_unreported_with(
+        url,
+        moonraker,
+        inventory,
+        &aldis::identify::SerialIdentify::default(),
+    );
+}
+
+/// [`probe_unreported`] with an injectable prober, so callers that also need to test the
+/// fallback (like the post-flash reconnect wait) can substitute a fake `IdentifyPort`.
+pub(crate) fn probe_unreported_with(
+    url: &str,
+    moonraker: &impl aldis::moonraker::HostPort,
+    inventory: &mut McuInventory,
+    prober: &impl aldis::identify::IdentifyPort,
+) {
+    if inventory.unreported.is_empty() {
+        return;
+    }
+    if let Err(error) = aldis::host::verify_host(url, moonraker) {
+        tracing::debug!(
+            ?error,
+            "host check failed; skipping the direct identify fallback"
+        );
         return;
     }
     if moonraker
         .host_info()
         .is_ok_and(|info| aldis::identify::should_probe(&info.state))
     {
-        aldis::identify::resolve_unreported(inventory, &aldis::identify::SerialIdentify::default());
+        aldis::identify::resolve_unreported(inventory, prober);
     }
 }
 
