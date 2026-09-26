@@ -62,6 +62,8 @@ installs both. Run `~/aldis/aldis setup --check` to verify they're in place with
 
 `self-update` compares the running binary's version against the latest GitHub release and, unless already current, downloads and installs the matching platform archive over the current binary. No `sudo` is required as long as `~/aldis` is writable by the current user.
 
+`status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker instance or a non-default Klipper service, and only one `update`, `flash`, or `reboot` runs at a time — a second concurrent run fails immediately rather than racing the first.
+
 ## Supported Flash Backends
 
 These bootloaders are entered and flashed unattended, directly from the running Klipper application:
