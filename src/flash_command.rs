@@ -1,14 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
-use aldis::flash::katapult::system::SystemKatapultOptions;
-use aldis::flash::linux_host::HOST_MCU_UNIT_FILE;
-use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
+use aldis::flash::system::SystemFlashError;
 use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::MoonrakerAdapter;
 use aldis::workspace::RunWorkspace;
@@ -72,18 +69,9 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         }
     }
 
-    let options = SystemFlashOptions {
-        katapult: SystemKatapultOptions {
-            baud_rate: 250_000,
-            bootloader_timeout: Duration::from_secs(10),
-            poll_interval: Duration::from_millis(50),
-            read_timeout: Duration::from_secs(5),
-            can_bootloader_settle: Duration::from_millis(100),
-        },
-        host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
-    };
+    let options = aldis::update_run::standard_flash_options();
     let target_kconfig = pending.kconfig().to_owned();
-    crate::update::ensure_printer_idle(&MoonrakerAdapter::new(
+    aldis::update_run::ensure_printer_idle(&MoonrakerAdapter::new(
         &arguments.connection.moonraker.moonraker,
     ))
     .map_err(|message| {

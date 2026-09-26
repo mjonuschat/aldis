@@ -1,31 +1,23 @@
 //! The interactive build-and-flash update command.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
-use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
-use aldis::eligibility::{
-    CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected, revisions_match,
-};
-use aldis::flash::katapult::system::SystemKatapultOptions;
-use aldis::flash::linux_host::HOST_MCU_UNIT_FILE;
-use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
+use aldis::coordinator::{BuildCoordinator, UpdateProgress};
+use aldis::eligibility::{CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected};
 use aldis::logging::{self, LoggingCommandAdapter};
-use aldis::moonraker::{
-    McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort, PrinterStatePort,
-};
-use aldis::retry::retry_until_available;
+use aldis::moonraker::{McuInventory, MoonrakerAdapter};
+use aldis::update_run::{RunHooks, RunRequest, RunStep};
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::UpdateArgs;
 use crate::fail;
-use crate::status::{checkout_label, format_status, refresh_label};
+use crate::status::{format_status, refresh_label};
 use crate::ui::UpdateUi;
 
 pub(crate) fn update(arguments: UpdateArgs, verbose: u8, mut ui: UpdateUi) -> ExitCode {
@@ -147,265 +139,94 @@ fn run_update(
         LoggingCommandAdapter::new(SystemCommandAdapter),
         LoggingCommandAdapter::new(SystemCommandAdapter),
     );
-    let options = SystemFlashOptions {
-        katapult: SystemKatapultOptions {
-            baud_rate: 250_000,
-            bootloader_timeout: Duration::from_secs(10),
-            poll_interval: Duration::from_millis(50),
-            read_timeout: Duration::from_secs(5),
-            can_bootloader_settle: Duration::from_millis(100),
-        },
-        host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
+    let moonraker = MoonrakerAdapter::new(moonraker_url);
+    let mut hooks = CliHooks {
+        ui,
+        auto: arguments.auto,
     };
-    let moonraker = MoonrakerAdapter::new(&arguments.connection.moonraker.moonraker);
-    let mut printer_checked = false;
-    let mut accepted = Vec::new();
-    for name in offered {
-        let mcu = inventory
-            .mcus
-            .iter()
-            .find(|mcu| mcu.name == name)
-            .expect("offered MCU is discovered");
-        let current = mcu.version.as_deref().unwrap_or("unknown");
-        let next = checkout_label(&checkout);
-        if arguments.auto {
-            ui.heading(&format!("Update {name} from {current} to {next}"));
-        } else {
-            ui.prompt(&format!("Update {name} from {current} to {next}?"));
-            if !crate::ui::confirmed() {
-                continue;
-            }
-        }
-        let pending = coordinator
-            .prepare(&inventory, workspace, &name, arguments.clean)
-            .inspect_err(|error| {
-                tracing::debug!(?error, "flash preparation failed");
-                ui.action(&format!("error: {}", aldis::error_chain(error)));
-            })
-            .with_context(|| format!("failed to prepare {name} for flashing"))?;
-        if !printer_checked {
-            ensure_printer_idle(&moonraker).map_err(|message| {
-                ui.action(&format!("error: {message}"));
-                anyhow::anyhow!(message)
-            })?;
-            printer_checked = true;
-        }
-        match coordinator.execute_and_flash_system_with_progress(
-            pending.approve(),
-            options.clone(),
-            |progress| ui.progress(progress),
-        ) {
-            Ok(v) => {
-                ui.finish_success(crate::ui::transfer_summary(
-                    &mcu.kconfig,
-                    v.flash.padded_bytes,
-                ));
-                ui.begin("waiting for MCU restart");
-                if let Err(error) = wait_for_application(mcu) {
-                    tracing::debug!(?error, "waiting for MCU restart failed");
-                    ui.finish_failure();
-                    ui.action(&format!("error: {error}"));
-                    return Err(anyhow::anyhow!(error));
-                }
-                ui.finish_success("MCU restart confirmed");
-                accepted.push(name);
-            }
-            Err(error) => {
-                ui.finish_failure();
-                tracing::debug!(?error, "flash failed");
-                let restore = error
-                    .allows_klipper_restore()
-                    .then(|| coordinator.restore_after_failure());
-                if let Some(Err(restore_error)) = &restore {
-                    tracing::debug!(?restore_error, "restoring Klipper after the failure failed");
-                }
-                let message = update_failure(error, restore);
-                ui.action(&format!("error: {message}"));
-                return Err(anyhow::anyhow!(message));
-            }
-        }
-    }
-    if accepted.is_empty() {
+    let outcome = aldis::update_run::run_updates(
+        &coordinator,
+        &moonraker,
+        &inventory,
+        workspace,
+        RunRequest {
+            targets: &offered,
+            target_revision: &checkout,
+            clean: arguments.clean,
+        },
+        &mut hooks,
+    )
+    .map_err(|failure| anyhow::anyhow!(failure.message))?;
+    let ui = hooks.ui;
+    if outcome.updated.is_empty() {
         ui.block("\nno updates confirmed\n");
         ui.action("run completed successfully: no updates confirmed");
         return Ok(());
     }
-    ui.heading("Finishing update");
-    ui.begin("starting Klipper");
-    if let Err(error) = coordinator.start_after_batch() {
-        tracing::debug!(?error, "starting Klipper after batch failed");
-        ui.finish_failure();
-        ui.action(&format!("error: {}", aldis::error_chain(&error)));
-        return Err(error.into());
-    }
-    ui.finish_success("Klipper ready");
-    ui.begin("waiting for updated MCUs to reconnect");
-    if let Err(error) = wait_for_mcus(moonraker_url, &moonraker, &accepted, &checkout) {
-        tracing::debug!(?error, "waiting for updated MCUs to reconnect failed");
-        ui.finish_failure();
-        ui.action(&format!("error: {error}"));
-        return Err(anyhow::anyhow!(error));
-    }
-    ui.finish_success("all updated MCUs connected");
     ui.heading(&format!(
         "Update complete: {} {} updated (run log: {})",
-        accepted.len(),
-        mcu_count_label(accepted.len()),
+        outcome.updated.len(),
+        mcu_count_label(outcome.updated.len()),
         run_log_path.display()
     ));
     ui.action("run completed successfully");
     Ok(())
 }
 
+struct CliHooks<'a> {
+    ui: &'a mut UpdateUi,
+    auto: bool,
+}
+
+impl RunHooks for CliHooks<'_> {
+    fn approve(&mut self, name: &str, current: &str, next: &str) -> bool {
+        if self.auto {
+            self.ui
+                .heading(&format!("Update {name} from {current} to {next}"));
+            true
+        } else {
+            self.ui
+                .prompt(&format!("Update {name} from {current} to {next}?"));
+            crate::ui::confirmed()
+        }
+    }
+
+    fn progress(&mut self, _: &str, progress: UpdateProgress) {
+        self.ui.progress(progress);
+    }
+
+    fn flashed(&mut self, _: &str, kconfig: &str, padded_bytes: usize) {
+        self.ui
+            .finish_success(crate::ui::transfer_summary(kconfig, padded_bytes));
+    }
+
+    fn step_started(&mut self, step: RunStep) {
+        match step {
+            RunStep::WaitForApplication => self.ui.begin("waiting for MCU restart"),
+            RunStep::StartKlipper => {
+                self.ui.heading("Finishing update");
+                self.ui.begin("starting Klipper");
+            }
+            RunStep::Reconnect => self.ui.begin("waiting for updated MCUs to reconnect"),
+        }
+    }
+
+    fn step_succeeded(&mut self, step: RunStep) {
+        self.ui.finish_success(match step {
+            RunStep::WaitForApplication => "MCU restart confirmed",
+            RunStep::StartKlipper => "Klipper ready",
+            RunStep::Reconnect => "all updated MCUs connected",
+        });
+    }
+
+    fn failed(&mut self, message: &str) {
+        self.ui.finish_failure();
+        self.ui.action(&format!("error: {message}"));
+    }
+}
+
 fn mcu_count_label(count: usize) -> &'static str {
     if count == 1 { "MCU" } else { "MCUs" }
-}
-
-fn update_failure(
-    error: FlashCoordinatorError<SystemFlashError>,
-    restore: Option<Result<(), aldis::coordinator::CoordinatorError>>,
-) -> String {
-    let detail = match error {
-        FlashCoordinatorError::Coordinator(error) => aldis::error_chain(&error),
-        FlashCoordinatorError::Artifact(error) => {
-            format!("could not read the built firmware: {error}")
-        }
-        FlashCoordinatorError::Flash(error) => error.to_string(),
-    };
-    match restore {
-        None => format!(
-            "update failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
-        ),
-        Some(Ok(())) => format!(
-            "update failed: {detail}. Klipper has been left in its state from before this update"
-        ),
-        Some(Err(restore_error)) => format!(
-            "update failed: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
-            aldis::error_chain(&restore_error)
-        ),
-    }
-}
-
-pub(crate) fn ensure_printer_idle(
-    printer: &(impl PrinterStatePort + aldis::moonraker::HostPort),
-) -> Result<(), String> {
-    if printer.host_info().is_ok_and(|info| {
-        matches!(
-            info.state,
-            aldis::moonraker::KlippyState::Error | aldis::moonraker::KlippyState::Shutdown
-        )
-    }) {
-        return Ok(());
-    }
-    match printer.print_state() {
-        Ok(state) if state.is_idle() => Ok(()),
-        Ok(state) => Err(format!(
-            "the printer is {state}; refusing to stop Klipper, run again when it is idle"
-        )),
-        Err(error) => Err(format!(
-            "could not confirm the printer is idle; refusing to stop Klipper: {}",
-            aldis::error_chain(&error)
-        )),
-    }
-}
-
-const NET_SYSFS_ROOT: &str = "/sys/class/net";
-
-fn wait_for_application(mcu: &aldis::moonraker::Mcu) -> Result<(), String> {
-    wait_for_application_in(mcu, Duration::from_secs(15), Path::new(NET_SYSFS_ROOT))
-}
-
-fn wait_for_application_in(
-    mcu: &aldis::moonraker::Mcu,
-    timeout: Duration,
-    net_root: &Path,
-) -> Result<(), String> {
-    let (path, description) = match &mcu.transport {
-        Some(McuTransport::Serial { device }) => (PathBuf::from(device), device.clone()),
-        Some(McuTransport::Can { interface, .. }) if aldis::flash_order::is_usb_can_bridge(mcu) => {
-            (
-                net_root.join(interface),
-                format!("CAN interface {interface}"),
-            )
-        }
-        _ => return Ok(()),
-    };
-    retry_until_available(timeout, Duration::from_millis(100), || {
-        path.exists().then_some(()).ok_or(()).inspect_err(|()| {
-            tracing::debug!(path = %path.display(), "mcu not yet back, still waiting");
-        })
-    })
-    .map_err(|()| format!("{} did not come back at {description}", mcu.name))
-}
-
-fn wait_for_mcus(
-    url: &str,
-    client: &(impl MoonrakerPort + aldis::moonraker::HostPort),
-    selected: &[String],
-    checkout: &CheckoutRevision,
-) -> Result<(), String> {
-    wait_for_mcus_with(
-        url,
-        client,
-        selected,
-        checkout,
-        &aldis::identify::SerialIdentify::default(),
-    )
-}
-
-/// [`wait_for_mcus`] with an injectable direct-identify prober.
-///
-/// A freshly flashed MCU can come back from Moonraker as unreported again: Klipper's restart
-/// re-runs config load in the same order, so it still stops at whatever unrelated, unreachable
-/// predecessor MCU stopped it before the flash. Running the same fallback used during discovery
-/// against each poll lets a genuinely successful flash confirm itself even though Klippy never
-/// reaches that MCU.
-fn wait_for_mcus_with(
-    url: &str,
-    client: &(impl MoonrakerPort + aldis::moonraker::HostPort),
-    selected: &[String],
-    checkout: &CheckoutRevision,
-    prober: &impl aldis::identify::IdentifyPort,
-) -> Result<(), String> {
-    wait_for_mcus_with_params(
-        url,
-        client,
-        selected,
-        checkout,
-        prober,
-        Duration::from_secs(30),
-        Duration::from_millis(250),
-    )
-}
-
-fn wait_for_mcus_with_params(
-    url: &str,
-    client: &(impl MoonrakerPort + aldis::moonraker::HostPort),
-    selected: &[String],
-    checkout: &CheckoutRevision,
-    prober: &impl aldis::identify::IdentifyPort,
-    timeout: Duration,
-    poll_interval: Duration,
-) -> Result<(), String> {
-    retry_until_available(timeout, poll_interval, || {
-        let attempt_result = match client.discover_mcus() {
-            Ok(mut inventory) => {
-                crate::discovery::probe_unreported_with(url, client, &mut inventory, prober);
-                match pending_mcus(&inventory, selected, checkout) {
-                    pending if pending.is_empty() => Ok(()),
-                    pending => Err(format!("still waiting on: {}", pending.join(", "))),
-                }
-            }
-            Err(error) => Err(format!("could not query Moonraker: {error}")),
-        };
-        if let Err(ref error) = attempt_result {
-            tracing::debug!(error = %error, "mcus not yet ready, still waiting");
-        }
-        attempt_result
-    })
-    .map_err(|last_state| {
-        format!("Klipper did not reconnect every updated MCU at the built revision ({last_state})")
-    })
 }
 
 fn unknown_targets<'a>(inventory: &McuInventory, targets: &'a [String]) -> Vec<&'a str> {
@@ -417,37 +238,6 @@ fn unknown_targets<'a>(inventory: &McuInventory, targets: &'a [String]) -> Vec<&
         }
     }
     unknown
-}
-
-/// Selected MCU names not yet reporting `checkout`'s revision, each annotated with its
-/// current state so a timeout explains what was actually observed.
-fn pending_mcus(
-    inventory: &McuInventory,
-    selected: &[String],
-    checkout: &CheckoutRevision,
-) -> Vec<String> {
-    selected
-        .iter()
-        .filter_map(
-            |name| match inventory.mcus.iter().find(|mcu| &mcu.name == name) {
-                None => Some(format!("{name} (not reported by Moonraker)")),
-                Some(mcu) => match checkout {
-                    CheckoutRevision::Known(revision)
-                        if !mcu
-                            .version
-                            .as_deref()
-                            .is_some_and(|version| revisions_match(version, revision)) =>
-                    {
-                        Some(format!(
-                            "{name} (reports {})",
-                            mcu.version.as_deref().unwrap_or("unknown")
-                        ))
-                    }
-                    _ => None,
-                },
-            },
-        )
-        .collect()
 }
 
 fn selection_for(all: bool) -> UpdateSelection {
@@ -466,119 +256,8 @@ fn confirm_pull() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::path::Path;
-    use std::time::Duration;
-
-    use super::{
-        NET_SYSFS_ROOT, ensure_printer_idle, mcu_count_label, pending_mcus, selection_for,
-        unknown_targets, update_failure, wait_for_application_in, wait_for_mcus,
-        wait_for_mcus_with_params,
-    };
-    use aldis::moonraker::{KlippyState, PrintState, PrinterStatePort};
-
-    struct FakePrinter(Result<PrintState, String>, KlippyState);
-
-    impl FakePrinter {
-        fn in_state(state: KlippyState, print: Result<PrintState, String>) -> Self {
-            Self(print, state)
-        }
-    }
-
-    impl PrinterStatePort for FakePrinter {
-        fn print_state(&self) -> Result<PrintState, MoonrakerError> {
-            self.0.clone().map_err(MoonrakerError::InvalidResponse)
-        }
-    }
-
-    impl aldis::moonraker::HostPort for FakePrinter {
-        fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
-            Ok(None)
-        }
-
-        fn host_info(&self) -> Result<aldis::moonraker::HostInfo, MoonrakerError> {
-            Ok(aldis::moonraker::HostInfo {
-                state: self.1.clone(),
-                state_message: String::new(),
-                software_version: None,
-                klipper_path: None,
-            })
-        }
-    }
-
-    #[test]
-    fn refuses_to_stop_klipper_while_a_print_is_running_or_paused() {
-        for (state, label) in [
-            (PrintState::Printing, "printing"),
-            (PrintState::Paused, "paused"),
-        ] {
-            let message =
-                ensure_printer_idle(&FakePrinter(Ok(state), KlippyState::Ready)).unwrap_err();
-
-            assert_eq!(
-                message,
-                format!(
-                    "the printer is {label}; refusing to stop Klipper, run again when it is idle"
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn refuses_to_stop_klipper_when_the_print_state_is_unrecognized() {
-        let message = ensure_printer_idle(&FakePrinter(
-            Ok(PrintState::Unknown("resuming".to_owned())),
-            KlippyState::Ready,
-        ))
-        .unwrap_err();
-
-        assert!(
-            message.starts_with("the printer is resuming; refusing"),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn refuses_to_stop_klipper_when_the_print_state_cannot_be_read() {
-        let message = ensure_printer_idle(&FakePrinter(
-            Err("connection reset".to_owned()),
-            KlippyState::Ready,
-        ))
-        .unwrap_err();
-
-        assert!(
-            message.starts_with("could not confirm the printer is idle; refusing to stop Klipper"),
-            "{message}"
-        );
-        assert!(message.contains("connection reset"), "{message}");
-    }
-
-    #[test]
-    fn proceeds_when_the_printer_is_idle() {
-        for state in [
-            PrintState::Standby,
-            PrintState::Complete,
-            PrintState::Cancelled,
-            PrintState::Error,
-        ] {
-            assert!(ensure_printer_idle(&FakePrinter(Ok(state), KlippyState::Ready)).is_ok());
-        }
-    }
-
-    #[test]
-    fn skips_the_print_check_while_klipper_is_in_an_error_state() {
-        for state in [KlippyState::Error, KlippyState::Shutdown] {
-            let printer = FakePrinter::in_state(state, Err("print_stats unavailable".to_owned()));
-            assert!(ensure_printer_idle(&printer).is_ok());
-        }
-        let ready = FakePrinter::in_state(KlippyState::Ready, Err("connection reset".to_owned()));
-        assert!(ensure_printer_idle(&ready).is_err());
-    }
-    use aldis::build::{BuildCommand, BuildError, CommandOutput};
-    use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
-    use aldis::eligibility::CheckoutRevision;
-    use aldis::flash::system::SystemFlashError;
-    use aldis::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
+    use super::{mcu_count_label, selection_for, unknown_targets};
+    use aldis::moonraker::{Mcu, McuInventory};
 
     #[test]
     fn reports_mcu_counts_with_correct_pluralization() {
@@ -592,210 +271,6 @@ mod tests {
 
         assert_eq!(selection_for(false), UpdateSelection::Required);
         assert_eq!(selection_for(true), UpdateSelection::All);
-    }
-
-    #[test]
-    fn reports_the_host_mcu_setup_hint_in_the_final_update_error() {
-        use aldis::flash::linux_host::{InstallStep, LinuxHostError};
-
-        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::LinuxHost(
-            LinuxHostError::CommandFailed {
-                step: InstallStep::Install,
-                output: Box::new(CommandOutput {
-                    success: false,
-                    stdout: Vec::new(),
-                    stderr: b"sudo: a password is required\n".to_vec(),
-                }),
-            },
-        ));
-
-        let message = update_failure(error, None);
-
-        assert!(
-            message.starts_with(
-                "update failed: could not install /usr/local/bin/klipper_mcu: \
-                 sudo: a password is required; run sudo aldis setup"
-            ),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn reports_build_stderr_without_debugging_command_buffers() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Coordinator(
-            CoordinatorError::Build(BuildError::CommandFailed {
-                command: Box::new(BuildCommand {
-                    program: "make".to_owned(),
-                    arguments: Vec::new(),
-                    current_dir: None,
-                    stdin: None,
-                }),
-                output: Box::new(CommandOutput {
-                    success: false,
-                    stdout: b"unrelated output".to_vec(),
-                    stderr: b"permission denied".to_vec(),
-                }),
-            }),
-        );
-
-        let message = update_failure(error, None);
-
-        assert!(message.contains("make failed: permission denied"));
-        assert!(!message.contains("unrelated output"));
-        assert!(message.contains("may still be stopped"));
-    }
-
-    #[test]
-    fn reports_that_klipper_was_restored_after_a_pre_flash_failure() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
-            "missing artifact",
-        ));
-
-        let message = update_failure(error, Some(Ok(())));
-
-        assert!(message.contains("left in its state from before this update"));
-        assert!(!message.contains("may still be stopped"));
-    }
-
-    #[test]
-    fn reports_when_restoring_klipper_after_a_pre_flash_failure_also_fails() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
-            "missing artifact",
-        ));
-        let restore_error =
-            CoordinatorError::UnexpectedKlipperState(aldis::service::ServiceState::Failed);
-
-        let message = update_failure(error, Some(Err(restore_error)));
-
-        assert!(message.contains("also failed to restore"));
-        assert!(message.contains("restart it manually"));
-    }
-
-    #[test]
-    fn rejects_a_serial_mcu_that_does_not_reenumerate() {
-        let mcu = mcu("mcu h723", "v1", Some("/definitely/missing"));
-        assert!(wait_for_application_in(&mcu, Duration::ZERO, Path::new(NET_SYSFS_ROOT)).is_err());
-    }
-
-    #[test]
-    fn waits_for_a_flashed_bridges_can_interface() {
-        let bridge = Mcu {
-            transport: Some(McuTransport::Can {
-                interface: "can9".to_owned(),
-                uuid: 1,
-            }),
-            kconfig: "CONFIG_USBCANBUS=y\n".to_owned(),
-            ..mcu("mcu", "v1", None)
-        };
-        let net = tempfile::tempdir().unwrap();
-
-        assert!(wait_for_application_in(&bridge, Duration::ZERO, net.path()).is_err());
-        std::fs::create_dir(net.path().join("can9")).unwrap();
-        assert!(wait_for_application_in(&bridge, Duration::ZERO, net.path()).is_ok());
-    }
-
-    #[test]
-    fn requires_every_selected_mcu_at_the_built_revision() {
-        let selected = vec!["mcu h723".to_owned(), "mcu rp2040".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
-        let only_one = McuInventory {
-            mcus: vec![mcu("mcu h723", "v2", None)],
-            unreported: Vec::new(),
-        };
-        assert_eq!(
-            pending_mcus(&only_one, &selected, &checkout),
-            vec!["mcu rp2040 (not reported by Moonraker)".to_owned()]
-        );
-        let wrong_version = McuInventory {
-            mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v1", None)],
-            unreported: Vec::new(),
-        };
-        assert_eq!(
-            pending_mcus(&wrong_version, &selected, &checkout),
-            vec!["mcu rp2040 (reports v1)".to_owned()]
-        );
-        let complete = McuInventory {
-            mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v2", None)],
-            unreported: Vec::new(),
-        };
-        assert!(pending_mcus(&complete, &selected, &checkout).is_empty());
-    }
-
-    #[test]
-    fn wait_for_mcus_succeeds_once_the_injected_source_reports_readiness() {
-        let selected = vec!["mcu h723".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
-        let moonraker = FakeMoonraker::new(Ok(McuInventory {
-            mcus: vec![mcu("mcu h723", "v2", None)],
-            unreported: Vec::new(),
-        }));
-
-        assert!(wait_for_mcus("http://localhost", &moonraker, &selected, &checkout).is_ok());
-    }
-
-    #[test]
-    fn wait_for_mcus_resolves_a_still_unreported_mcu_via_direct_identify() {
-        let selected = vec!["mcu expander".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
-        let moonraker = FakeMoonraker::in_state(
-            Ok(McuInventory {
-                mcus: Vec::new(),
-                unreported: vec![unreported_mcu("mcu expander", "/dev/expander")],
-            }),
-            KlippyState::Error,
-        );
-        let prober = ScriptedIdentify(RefCell::new(vec![(
-            "/dev/expander",
-            Ok(aldis::identify::IdentifyData {
-                app: None,
-                version: "v2".to_owned(),
-                mcu: "test".to_owned(),
-                canbus_frequency_hz: None,
-                kconfig: "CONFIG_TEST=y\n".to_owned(),
-            }),
-        )]));
-
-        let result = wait_for_mcus_with_params(
-            "http://localhost",
-            &moonraker,
-            &selected,
-            &checkout,
-            &prober,
-            Duration::ZERO,
-            Duration::from_millis(10),
-        );
-
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    #[test]
-    fn wait_for_mcus_still_fails_when_direct_identify_cannot_resolve_the_mcu() {
-        let selected = vec!["mcu expander".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
-        let moonraker = FakeMoonraker::in_state(
-            Ok(McuInventory {
-                mcus: Vec::new(),
-                unreported: vec![unreported_mcu("mcu expander", "/dev/expander")],
-            }),
-            KlippyState::Error,
-        );
-        let prober = ScriptedIdentify(RefCell::new(vec![(
-            "/dev/expander",
-            Err(aldis::identify::IdentifyError::NoResponse),
-        )]));
-
-        let result = wait_for_mcus_with_params(
-            "http://localhost",
-            &moonraker,
-            &selected,
-            &checkout,
-            &prober,
-            Duration::ZERO,
-            Duration::from_millis(10),
-        );
-
-        let error = result.unwrap_err();
-        assert!(error.contains("mcu expander"), "{error}");
     }
 
     #[test]
@@ -823,77 +298,6 @@ mod tests {
         );
     }
 
-    struct FakeMoonraker {
-        inventory: Result<McuInventory, String>,
-        state: KlippyState,
-    }
-
-    impl FakeMoonraker {
-        fn new(inventory: Result<McuInventory, String>) -> Self {
-            Self::in_state(inventory, KlippyState::Ready)
-        }
-
-        fn in_state(inventory: Result<McuInventory, String>, state: KlippyState) -> Self {
-            Self { inventory, state }
-        }
-    }
-
-    impl MoonrakerPort for FakeMoonraker {
-        fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
-            self.inventory
-                .clone()
-                .map_err(MoonrakerError::InvalidResponse)
-        }
-    }
-
-    impl aldis::moonraker::HostPort for FakeMoonraker {
-        fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
-            Ok(None)
-        }
-
-        fn host_info(&self) -> Result<aldis::moonraker::HostInfo, MoonrakerError> {
-            Ok(aldis::moonraker::HostInfo {
-                state: self.state.clone(),
-                state_message: String::new(),
-                software_version: None,
-                klipper_path: None,
-            })
-        }
-    }
-
-    struct ScriptedIdentify(
-        RefCell<
-            Vec<(
-                &'static str,
-                Result<aldis::identify::IdentifyData, aldis::identify::IdentifyError>,
-            )>,
-        >,
-    );
-
-    impl aldis::identify::IdentifyPort for ScriptedIdentify {
-        fn identify(
-            &self,
-            device: &str,
-        ) -> Result<aldis::identify::IdentifyData, aldis::identify::IdentifyError> {
-            let mut script = self.0.borrow_mut();
-            let index = script
-                .iter()
-                .position(|(d, _)| *d == device)
-                .expect("unexpected probe");
-            script.remove(index).1
-        }
-    }
-
-    fn unreported_mcu(name: &str, device: &str) -> aldis::moonraker::UnreportedMcu {
-        aldis::moonraker::UnreportedMcu {
-            name: name.to_owned(),
-            transport: Some(McuTransport::Serial {
-                device: device.to_owned(),
-            }),
-            reason: aldis::moonraker::UnreportedReason::NotIdentified,
-        }
-    }
-
     fn mcu(name: &str, version: &str, serial: Option<&str>) -> Mcu {
         Mcu {
             name: name.to_owned(),
@@ -901,7 +305,7 @@ mod tests {
             version: Some(version.to_owned()),
             mcu: "test".to_owned(),
             canbus_frequency_hz: None,
-            transport: serial.map(|device| McuTransport::Serial {
+            transport: serial.map(|device| aldis::moonraker::McuTransport::Serial {
                 device: device.to_owned(),
             }),
             kconfig: "CONFIG_TEST=y\n".to_owned(),
