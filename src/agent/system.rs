@@ -92,14 +92,14 @@ impl AgentBackend for SystemBackend {
             },
             inventory: None,
         };
-        if snapshot.host.info.state == KlippyState::Disconnected
-            || check_host(&self.url, snapshot.host.klipper_unit.as_deref()).is_err()
-        {
+        if snapshot.host.info.state == KlippyState::Disconnected {
             return snapshot;
         }
         match adapter.discover_mcus() {
             Ok(mut inventory) => {
-                if should_probe(&snapshot.host.info.state) {
+                if should_probe(&snapshot.host.info.state)
+                    && check_host(&self.url, snapshot.host.klipper_unit.as_deref()).is_ok()
+                {
                     resolve_unreported(&mut inventory, &SerialIdentify::default());
                 }
                 snapshot.inventory = Some(inventory);
