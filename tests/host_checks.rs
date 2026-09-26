@@ -45,11 +45,15 @@ fn rejects_a_non_default_klipper_unit_and_accepts_default_or_unknown() {
 #[test]
 fn refuses_when_moonraker_cannot_report_the_unit() {
     use aldis::host::verify_host;
-    use aldis::moonraker::{HostPort, MoonrakerError};
+    use aldis::moonraker::{HostInfo, HostPort, MoonrakerError};
 
     struct Broken;
     impl HostPort for Broken {
         fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
+            Err(MoonrakerError::KlippyNotConnected)
+        }
+
+        fn host_info(&self) -> Result<HostInfo, MoonrakerError> {
             Err(MoonrakerError::KlippyNotConnected)
         }
     }

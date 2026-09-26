@@ -574,6 +574,7 @@ mod tests {
         let checkout = CheckoutRevision::Known("v2".to_owned());
         let only_one = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
+            unreported: Vec::new(),
         };
         assert_eq!(
             pending_mcus(&only_one, &selected, &checkout),
@@ -581,6 +582,7 @@ mod tests {
         );
         let wrong_version = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v1", None)],
+            unreported: Vec::new(),
         };
         assert_eq!(
             pending_mcus(&wrong_version, &selected, &checkout),
@@ -588,6 +590,7 @@ mod tests {
         );
         let complete = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None), mcu("mcu rp2040", "v2", None)],
+            unreported: Vec::new(),
         };
         assert!(pending_mcus(&complete, &selected, &checkout).is_empty());
     }
@@ -598,6 +601,7 @@ mod tests {
         let checkout = CheckoutRevision::Known("v2".to_owned());
         let moonraker = FakeMoonraker(Ok(McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
+            unreported: Vec::new(),
         }));
 
         assert!(wait_for_mcus(&moonraker, &selected, &checkout).is_ok());
@@ -607,6 +611,7 @@ mod tests {
     fn reports_every_target_name_with_no_matching_inventory_mcu() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
+            unreported: Vec::new(),
         };
 
         assert_eq!(

@@ -123,7 +123,10 @@ mod tests {
             responses: RefCell::new(vec![
                 Err(MoonrakerError::KlippyStarting("starting".to_owned())),
                 Err(MoonrakerError::KlippyNotConnected),
-                Ok(McuInventory { mcus: Vec::new() }),
+                Ok(McuInventory {
+                    mcus: Vec::new(),
+                    unreported: Vec::new(),
+                }),
             ]),
             calls: RefCell::new(0),
         };
@@ -175,6 +178,7 @@ mod tests {
     fn resolves_an_exact_name_unchanged() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu expander")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -187,6 +191,7 @@ mod tests {
     fn resolves_an_abbreviated_label_to_its_full_name() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu expander")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -199,6 +204,7 @@ mod tests {
     fn resolves_an_abbreviated_label_case_insensitively() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu RP2040")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -211,6 +217,7 @@ mod tests {
     fn leaves_an_unresolvable_name_unchanged() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu expander")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(

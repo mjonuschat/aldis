@@ -156,6 +156,7 @@ mod tests {
                 transport: None,
                 kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\n".to_owned(),
             }],
+            unreported: Vec::new(),
         }
     }
 

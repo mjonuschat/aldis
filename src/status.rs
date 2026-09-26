@@ -68,6 +68,18 @@ pub(crate) fn format_status(
             output.push_str(&format!("  {label:<13} {value}\n"));
         }
     }
+    for unreported in &inventory.unreported {
+        output.push_str(&format!("\n{}\n", unreported.name));
+        for (label, value) in [
+            (
+                "connection:",
+                connection_label(unreported.transport.as_ref()),
+            ),
+            ("supported:", format!("no ({})", unreported.reason)),
+        ] {
+            output.push_str(&format!("  {label:<13} {value}\n"));
+        }
+    }
     output
 }
 
@@ -145,6 +157,7 @@ mod tests {
                 "v0.12.0-123-deadbeef",
                 Some("/dev/serial/by-id/mcu"),
             )],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -193,6 +206,7 @@ mod tests {
                     kconfig: String::new(),
                 },
             ],
+            unreported: Vec::new(),
         };
 
         let output = format_status(
@@ -210,6 +224,33 @@ mod tests {
     }
 
     #[test]
+    fn lists_unreported_mcus_with_their_reason() {
+        use aldis::moonraker::{UnreportedMcu, UnreportedReason};
+
+        let inventory = McuInventory {
+            mcus: Vec::new(),
+            unreported: vec![UnreportedMcu {
+                name: "mcu xiao".to_owned(),
+                transport: None,
+                reason: UnreportedReason::NotResponding,
+            }],
+        };
+
+        let output = format_status(
+            std::path::Path::new("/home/pi/klipper"),
+            &CheckoutRevision::Known("v1".to_owned()),
+            &inventory,
+            None,
+        );
+
+        assert!(output.contains("\nmcu xiao\n"), "{output}");
+        assert!(
+            output.contains("not responding; run `aldis reboot` or power-cycle the board"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn includes_refresh_details_in_the_aligned_checkout_field() {
         let refreshed = RefreshResult {
             before: CheckoutRevision::Known("v0.12.0-123-deadbeef".to_owned()),
@@ -221,7 +262,10 @@ mod tests {
         let output = format_status(
             std::path::Path::new("/home/pi/klipper"),
             &refreshed.after,
-            &McuInventory { mcus: Vec::new() },
+            &McuInventory {
+                mcus: Vec::new(),
+                unreported: Vec::new(),
+            },
             Some(&refreshed),
         );
 
@@ -238,6 +282,7 @@ mod tests {
     fn reports_status_from_injected_moonraker_and_checkout_sources() {
         let moonraker = FakeMoonraker(Ok(McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
+            unreported: Vec::new(),
         }));
         let checkout = FakeCheckout(Ok(CheckoutRevision::Known("v2".to_owned())));
 
