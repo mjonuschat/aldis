@@ -62,8 +62,10 @@ No arguments; read-only.
 `transport` is `null` for an MCU aldis has no configured host transport for. `running_version` is
 `null` when the running firmware version is unknown (e.g. an unreported MCU).
 
-When Klippy is unavailable, `host` carries only `klippy_state` and `klippy_message` (the other
-fields are omitted, not `null`), and `mcus` is empty.
+When Klippy is `disconnected`, `host` carries only `klippy_state` and `klippy_message` (the other
+fields are always omitted, not `null`), and `mcus` is empty. When Klippy is `startup`, `mcus` is
+typically still empty (MCU discovery only succeeds once Klippy is `ready`), but the other `host`
+fields may still be present if Moonraker already reports them.
 
 ### Blocker reasons
 
@@ -140,13 +142,27 @@ receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole er
 | `blocked` | -32000 | A blocker applies; `data.blocker` carries it |
 | `unknown_mcu` | -32000 | A named MCU was not discovered |
 | `not_updatable` | -32000 | A named MCU lacks the `update` action; `data.mcus` gives per-MCU reasons |
-| `nothing_to_update` | -32000 | `all` matched no MCU |
+| `nothing_to_update` | -32000 | `mcus` was empty, or `all` matched no MCU |
 | `unavailable` | -32000 | Moonraker discovery failed |
-| `invalid_request` | -32602 | `arguments` is malformed (e.g. neither `mcus` nor `all`, or an empty `mcus` list) |
+| `invalid_request` | -32602 | `arguments` deserializes to neither `{"mcus": [...]}` nor `{"all": ...}`, or is `{"all": false}` |
 | `unknown_method` | -32601 | `method` is neither `status` nor `update` |
 
-`invalid_request` and `unknown_method` are protocol-level errors, use the standard JSON-RPC codes
-for malformed params and an unknown method, and are not preceded by any lock or blocker check.
+```jsonc
+{"jsonrpc": "2.0", "id": 42, "error": {"code": -32000, "message": "the printer is busy; update when it is idle",
+  "data": {"reason": "blocked", "blocker": {"reason": "printing", "message": "the printer is busy; update when it is idle"}}}}
+{"jsonrpc": "2.0", "id": 42, "error": {"code": -32000, "message": "no MCU named \"typo\"",
+  "data": {"reason": "unknown_mcu", "mcu": "typo"}}}
+{"jsonrpc": "2.0", "id": 42, "error": {"code": -32000, "message": "some requested MCUs cannot be updated",
+  "data": {"reason": "not_updatable",
+           "mcus": [{"name": "mcu", "state": "current", "message": "running v0.13.0-770-gce7002bed"}]}}}
+```
+
+`unknown_method` is a protocol-level error: it's raised by dispatch before `update`'s arguments are
+even looked at, so it precedes any lock or blocker check. `invalid_request` has two sources: a
+malformed `arguments` shape is also protocol-level (raised while parsing, before `update` runs),
+but `{"all": false}` is only recognized as invalid once `update` runs, so it is raised *after* the
+busy and blocker checks (request validation needs the discovered MCU inventory to interpret the
+request at all). Both use the standard JSON-RPC code for malformed params.
 
 ## Events
 
@@ -154,7 +170,8 @@ Event name `update_response`. The payload mirrors Moonraker's own `notify_update
 Fluidd can feed it into its existing `UpdatingDialog`:
 
 ```jsonc
-{"run_id": "…", "mcu": "can", "phase": "flash", "message": "flashing 48 KiB via Katapult", "complete": false}
+{"run_id": "…", "mcu": "can", "phase": "flash", "message": "flashing firmware", "complete": false}
+{"run_id": "…", "mcu": "can", "phase": "flash", "message": "wrote 49152 bytes", "complete": false}
 {"run_id": "…", "mcu": null, "phase": "done", "message": "2 updated; log: …", "complete": true,
  "result": {"outcome": "success",       // success | failed
             "klippy_state": "ready",
