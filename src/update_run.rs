@@ -180,17 +180,20 @@ fn pending_mcus(
         .collect()
 }
 
-fn update_failure(
-    error: FlashCoordinatorError<SystemFlashError>,
-    restore: Option<Result<(), crate::coordinator::CoordinatorError>>,
-) -> String {
-    let detail = match error {
+fn failure_detail(error: FlashCoordinatorError<SystemFlashError>) -> String {
+    match error {
         FlashCoordinatorError::Coordinator(error) => crate::error_chain(&error),
         FlashCoordinatorError::Artifact(error) => {
             format!("could not read the built firmware: {error}")
         }
         FlashCoordinatorError::Flash(error) => error.to_string(),
-    };
+    }
+}
+
+fn update_failure_message(
+    detail: String,
+    restore: Option<Result<(), crate::coordinator::CoordinatorError>>,
+) -> String {
     match restore {
         None => format!(
             "update failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
@@ -239,7 +242,10 @@ pub struct RunOutcome {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct RunFailure {
+    /// The full message for a terminal user, including Klipper restart advice.
     pub message: String,
+    /// What went wrong, without any advice about Klipper's state.
+    pub detail: String,
     /// The MCU being processed when the run failed, if any.
     pub mcu: Option<String>,
     /// MCUs flashed successfully before the failure.
@@ -273,9 +279,20 @@ fn fail(
     mcu: Option<&str>,
     updated: &[String],
 ) -> RunFailure {
-    hooks.failed(&message);
+    fail_with_detail(hooks, message.clone(), message, mcu, updated)
+}
+
+fn fail_with_detail(
+    hooks: &mut dyn RunHooks,
+    detail: String,
+    message: String,
+    mcu: Option<&str>,
+    updated: &[String],
+) -> RunFailure {
+    hooks.failed(&detail);
     RunFailure {
         message,
+        detail,
         mcu: mcu.map(str::to_owned),
         updated: updated.to_vec(),
     }
@@ -346,9 +363,11 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
                 if let Some(Err(restore_error)) = &restore {
                     tracing::debug!(?restore_error, "restoring Klipper after the failure failed");
                 }
-                return Err(fail(
+                let detail = failure_detail(error);
+                return Err(fail_with_detail(
                     hooks,
-                    update_failure(error, restore),
+                    detail.clone(),
+                    update_failure_message(detail, restore),
                     Some(name),
                     &updated,
                 ));
@@ -508,7 +527,7 @@ mod tests {
             },
         ));
 
-        let message = update_failure(error, None);
+        let message = update_failure_message(failure_detail(error), None);
 
         assert!(
             message.starts_with(
@@ -537,7 +556,7 @@ mod tests {
             }),
         );
 
-        let message = update_failure(error, None);
+        let message = update_failure_message(failure_detail(error), None);
 
         assert!(message.contains("make failed: permission denied"));
         assert!(!message.contains("unrelated output"));
@@ -550,7 +569,7 @@ mod tests {
             "missing artifact",
         ));
 
-        let message = update_failure(error, Some(Ok(())));
+        let message = update_failure_message(failure_detail(error), Some(Ok(())));
 
         assert!(message.contains("left in its state from before this update"));
         assert!(!message.contains("may still be stopped"));
@@ -564,7 +583,7 @@ mod tests {
         let restore_error =
             CoordinatorError::UnexpectedKlipperState(crate::service::ServiceState::Failed);
 
-        let message = update_failure(error, Some(Err(restore_error)));
+        let message = update_failure_message(failure_detail(error), Some(Err(restore_error)));
 
         assert!(message.contains("also failed to restore"));
         assert!(message.contains("restart it manually"));
@@ -920,7 +939,7 @@ mod tests {
             failure.message
         );
         assert_eq!(failure.mcu.as_deref(), Some("mcu"));
-        assert_eq!(hooks.failures, vec![failure.message.clone()]);
+        assert_eq!(hooks.failures, vec![failure.detail.clone()]);
         assert!(runner.0.lock().unwrap().is_empty());
     }
 }

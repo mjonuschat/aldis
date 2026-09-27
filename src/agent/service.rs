@@ -320,7 +320,7 @@ impl<B: AgentBackend> AgentService<B> {
                 } else if failed.is_some_and(|f| f.mcu.as_deref() == Some(target.as_str())) {
                     (
                         McuOutcome::Failed,
-                        failed.map(|f| f.message.clone()).unwrap_or_default(),
+                        failed.map(|f| f.detail.clone()).unwrap_or_default(),
                     )
                 } else {
                     (McuOutcome::NotAttempted, "not attempted".to_owned())
@@ -335,8 +335,8 @@ impl<B: AgentBackend> AgentService<B> {
         let message = match failed {
             None => format!("{} updated; log: {}", updated.len(), log.display()),
             Some(failure) if klipper_left_stopped => format!(
-                "{}. Klipper was left stopped: recover {}, then start Klipper from the service menu; log: {}",
-                failure.message,
+                "update failed: {}. Klipper was left stopped: recover {}, then start Klipper from the service menu; log: {}",
+                failure.detail,
                 failure
                     .mcu
                     .as_deref()
@@ -703,7 +703,8 @@ mod tests {
         let mut backend = FakeBackend::new(
             snapshot(PrintState::Standby),
             Err(RunFailure {
-                message: "flash failed".to_owned(),
+                message: "update failed: flash failed. Klipper may still be stopped; fix the issue, then restart it manually".to_owned(),
+                detail: "flash failed".to_owned(),
                 mcu: Some("mcu RP2040".to_owned()),
                 updated: Vec::new(),
             }),
@@ -714,9 +715,20 @@ mod tests {
         service.update(UpdateRequest::All { all: true }).unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
 
-        let result = service.status().run.unwrap().result.unwrap();
+        let run = service.status().run.unwrap();
+        let last = run.messages.last().unwrap();
+        assert!(
+            last.message.starts_with(
+                "update failed: flash failed. Klipper was left stopped: recover RP2040, then start Klipper from the service menu; log: "
+            ),
+            "final message: {}",
+            last.message
+        );
+        assert!(!last.message.contains("restart it manually"));
+        let result = run.result.unwrap();
         assert_eq!(result.outcome, Outcome::Failed);
         assert!(result.klipper_left_stopped);
+        assert_eq!(result.mcus[0].message, "flash failed");
         let outcomes: Vec<_> = result
             .mcus
             .iter()

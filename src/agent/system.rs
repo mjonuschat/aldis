@@ -166,6 +166,7 @@ impl SystemBackend {
         hooks: &mut dyn RunHooks,
     ) -> Result<RunOutcome, RunFailure> {
         let setup_failure = |message: String| RunFailure {
+            detail: message.clone(),
             message,
             mcu: None,
             updated: Vec::new(),
