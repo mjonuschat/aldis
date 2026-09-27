@@ -147,12 +147,19 @@ impl fmt::Display for SystemFlashError {
             Self::CanUsbTopology(error) => {
                 write!(f, "could not identify the USB CAN adapter: {error}")
             }
-            Self::Bootloader(_) => {
-                write!(
-                    f,
-                    "the expected USB bootloader did not appear before the timeout"
-                )
-            }
+            Self::Bootloader(UsbBootloaderError::NoEffect {
+                device,
+                reset_error,
+            }) => write!(
+                f,
+                "no bootloader appeared at {}: it still had its application's USB identity when the wait timed out{}; aldis can flash Katapult, STM32 DFU, and RP2040/RP2350 PicoBoot only",
+                device.display(),
+                reset_error
+                    .as_deref()
+                    .map(|error| format!(" (the serial request reported: {error})"))
+                    .unwrap_or_default()
+            ),
+            Self::Bootloader(error) => write!(f, "{error}"),
             Self::UsbAccess(error) => {
                 write!(f, "the USB bootloader was not accessible: {error}")
             }
@@ -710,8 +717,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        SystemFlashError, kconfig_flash_start_symbols, kconfig_machine, usb_can_bridge,
-        usb_device_node,
+        SystemFlashError, UsbBootloaderError, kconfig_flash_start_symbols, kconfig_machine,
+        usb_can_bridge, usb_device_node,
     };
     use crate::flash::katapult::Command;
     use crate::flash::katapult::adapter::KatapultFlashError;
@@ -758,6 +765,41 @@ mod tests {
             vec!["CONFIG_STM32_FLASH_START_2000=y".to_owned()]
         );
         assert!(kconfig_flash_start_symbols("CONFIG_OTHER=y\n").is_empty());
+    }
+
+    #[test]
+    fn names_each_bootloader_entry_failure_distinctly() {
+        let no_effect = SystemFlashError::Bootloader(UsbBootloaderError::NoEffect {
+            device: std::path::PathBuf::from("/dev/serial/by-id/usb-Klipper_samd21"),
+            reset_error: None,
+        });
+        let message = no_effect.to_string();
+        assert!(
+            message.contains("still had its application's USB identity"),
+            "{message}"
+        );
+        assert!(message.contains("Katapult, STM32 DFU, and RP2040/RP2350 PicoBoot"));
+        assert!(!message.contains("serial request reported"));
+
+        let with_reset_error = SystemFlashError::Bootloader(UsbBootloaderError::NoEffect {
+            device: std::path::PathBuf::from("/dev/ttyACM1"),
+            reset_error: Some("permission denied".to_owned()),
+        });
+        assert!(
+            with_reset_error
+                .to_string()
+                .contains("the serial request reported: permission denied")
+        );
+
+        let not_detected = SystemFlashError::Bootloader(UsbBootloaderError::NotDetected {
+            device: std::path::PathBuf::from("/dev/ttyACM0"),
+            reset_error: None,
+        });
+        assert!(
+            not_detected
+                .to_string()
+                .starts_with("no usable bootloader was found at /dev/ttyACM0")
+        );
     }
 
     #[test]
