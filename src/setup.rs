@@ -73,12 +73,28 @@ fn install_setup() -> anyhow::Result<String> {
 }
 
 fn agent_unit(user: &str, exe: &Path, moonraker: &str) -> String {
+    let exe = escape_for_systemd_exec(&exe.display().to_string());
     format!(
         "[Unit]\nDescription=aldis Moonraker agent\nAfter=moonraker.service\nWants=moonraker.service\n\n\
-         [Service]\nType=simple\nUser={user}\nExecStart={} agent --moonraker {moonraker}\n\
-         Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
-        exe.display()
+         [Service]\nType=simple\nUser={user}\nExecStart=\"{exe}\" agent --moonraker {moonraker}\n\
+         Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     )
+}
+
+/// Escapes `value` for a double-quoted `ExecStart=` argument: doubles `%` (systemd's specifier
+/// expansion) and backslash-escapes `\` and `"` (systemd's own unit-file quoting), so a path
+/// containing spaces, quotes, or `%` still names one argument and survives unit-file parsing.
+fn escape_for_systemd_exec(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '%' => escaped.push_str("%%"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 /// `asvc` with `name` appended, or `None` if it is already listed.
@@ -315,8 +331,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        agent_unit, setup_check_report, setup_install_report, stage_sudoers,
-        sudo_policy_allows_service_status, sudoers_policy, with_service, without_service,
+        agent_unit, escape_for_systemd_exec, setup_check_report, setup_install_report,
+        stage_sudoers, sudo_policy_allows_service_status, sudoers_policy, with_service,
+        without_service,
     };
 
     #[test]
@@ -388,12 +405,45 @@ mod tests {
         assert!(unit.contains("\nUser=pi\n"), "{unit}");
         assert!(
             unit.contains(
-                "\nExecStart=/home/pi/aldis/aldis agent --moonraker http://127.0.0.1:7125\n"
+                "\nExecStart=\"/home/pi/aldis/aldis\" agent --moonraker http://127.0.0.1:7125\n"
             ),
             "{unit}"
         );
         assert!(unit.contains("\nRestart=always\n"), "{unit}");
         assert!(unit.contains("\nAfter=moonraker.service\n"), "{unit}");
+    }
+
+    #[test]
+    fn quotes_an_executable_path_containing_a_space() {
+        let unit = agent_unit(
+            "pi",
+            std::path::Path::new("/home/pi/my aldis/aldis"),
+            "http://127.0.0.1:7125",
+        );
+
+        assert!(
+            unit.contains(
+                "\nExecStart=\"/home/pi/my aldis/aldis\" agent --moonraker http://127.0.0.1:7125\n"
+            ),
+            "a spaced path must stay one ExecStart argument: {unit}"
+        );
+    }
+
+    #[test]
+    fn escapes_quotes_backslashes_and_percent_signs_for_exec_start() {
+        assert_eq!(escape_for_systemd_exec("/home/pi/aldis"), "/home/pi/aldis");
+        assert_eq!(
+            escape_for_systemd_exec(r#"/home/pi/say "hi"/aldis"#),
+            r#"/home/pi/say \"hi\"/aldis"#
+        );
+        assert_eq!(
+            escape_for_systemd_exec(r"/home/pi/back\slash/aldis"),
+            r"/home/pi/back\\slash/aldis"
+        );
+        assert_eq!(
+            escape_for_systemd_exec("/home/100%/aldis"),
+            "/home/100%%/aldis"
+        );
     }
 
     #[test]
