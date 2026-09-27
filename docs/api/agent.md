@@ -7,6 +7,12 @@ trigger updates without shelling out to the CLI.
 Clients detect aldis by finding the agent `aldis` in `server.extensions.list`, then checking
 `status.api_version` for compatibility.
 
+Moonraker also broadcasts `notify_agent_event` with the reserved events `connected` (with the
+agent's `client_data` as `data`) and `disconnected` (no `data`) whenever an agent registers or
+drops, so clients can track presence without polling. Fluidd is the reference consumer of this
+API (its Settings → Firmware Updates card); it checks `status.api_version === 1` and disables
+every update action for any other value.
+
 ## Envelopes
 
 A request from a frontend to Moonraker, relayed to the agent:

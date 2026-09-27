@@ -82,6 +82,24 @@ The agent's API is JSON-RPC relayed through Moonraker's websocket (requests via 
 
 `status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker instance or a non-default Klipper service, and only one `update`, `flash`, or `reboot` runs at a time — a second concurrent run fails immediately rather than racing the first.
 
+## Fluidd
+
+With the agent installed, Fluidd shows a **Settings → Firmware Updates** card listing every MCU
+with its running firmware version and an Update button where the agent offers one. Install the
+agent with
+
+```
+sudo ~/aldis/aldis setup --agent
+sudo systemctl restart moonraker
+```
+
+The Moonraker restart is needed once so Moonraker picks up the `aldis` service that setup adds
+to `moonraker.asvc`; until then Fluidd only shows the card while the agent is connected, and
+the Services list in Fluidd's Host menu cannot start or stop it.
+
+Progress is shown in the same dialog Fluidd uses for software updates. Turn on "Enable
+notifications" on the card to be told when an MCU falls behind the running Klipper host.
+
 ## Supported Flash Backends
 
 These bootloaders are entered and flashed unattended, directly from the running Klipper application:
