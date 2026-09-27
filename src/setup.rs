@@ -17,6 +17,10 @@ const SUDOERS_PATH: &str = "/etc/sudoers.d/aldis";
 const UDEV_RULES: &str = include_str!("../templates/80-aldis.rules");
 pub(crate) const AGENT_UNIT_PATH: &str = "/etc/systemd/system/aldis.service";
 const AGENT_SERVICE: &str = "aldis";
+/// The privileged command `self-update` uses to check whether the agent is running.
+pub(crate) const AGENT_STATUS_COMMAND: [&str; 3] = ["/bin/systemctl", "is-active", AGENT_SERVICE];
+/// The privileged command `self-update` uses to restart the agent onto a new binary.
+pub(crate) const AGENT_RESTART_COMMAND: [&str; 3] = ["/bin/systemctl", "restart", AGENT_SERVICE];
 
 pub(crate) fn setup(arguments: SetupArgs) -> ExitCode {
     if arguments.check {
@@ -317,7 +321,9 @@ fn udev_rules() -> &'static str {
 fn sudoers_policy(user: &str) -> String {
     format!(
         "{user} ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
-         /bin/systemctl start klipper, {}, {}\n",
+         /bin/systemctl start klipper, {}, {}, {}, {}\n",
+        AGENT_STATUS_COMMAND.join(" "),
+        AGENT_RESTART_COMMAND.join(" "),
         INSTALL_COMMAND.join(" "),
         RESTART_COMMAND.join(" "),
     )
@@ -358,7 +364,8 @@ mod tests {
         assert_eq!(
             sudoers_policy("pi"),
             "pi ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
-             /bin/systemctl start klipper, /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu, \
+             /bin/systemctl start klipper, /bin/systemctl is-active aldis, /bin/systemctl restart aldis, \
+             /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu, \
              /bin/systemctl restart klipper-mcu\n"
         );
     }
