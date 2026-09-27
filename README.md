@@ -100,6 +100,18 @@ the Services list in Fluidd's Host menu cannot start or stop it.
 Progress is shown in the same dialog Fluidd uses for software updates. Turn on "Enable
 notifications" on the card to be told when an MCU falls behind the running Klipper host.
 
+## Mainsail
+
+A Mainsail build with firmware update support shows a **Machine → Firmware Updates** panel
+below the Update Manager, listing every MCU with its running firmware version and an Update
+button where the agent offers one. Setup is the same as for Fluidd: install the agent with
+`sudo ~/aldis/aldis setup --agent` and restart Moonraker once.
+
+Mainsail asks for confirmation before each update, like its software updates, unless "Hide
+update warnings" is enabled in its UI settings. Progress is shown in Mainsail's update dialog.
+When an MCU falls behind the running Klipper host, the notification bell shows an entry that can
+be dismissed until the next reboot or until Klipper is next updated.
+
 ## Supported Flash Backends
 
 These bootloaders are entered and flashed unattended, directly from the running Klipper application:

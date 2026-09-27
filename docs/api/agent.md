@@ -10,8 +10,9 @@ Clients detect aldis by finding the agent `aldis` in `server.extensions.list`, t
 Moonraker also broadcasts `notify_agent_event` with the reserved events `connected` (with the
 agent's `client_data` as `data`) and `disconnected` (no `data`) whenever an agent registers or
 drops, so clients can track presence without polling. Fluidd is the reference consumer of this
-API (its Settings → Firmware Updates card); it checks `status.api_version === 1` and disables
-every update action for any other value.
+API (its Settings → Firmware Updates card), and Mainsail consumes it the same way (its Machine →
+Firmware Updates panel). Both check `status.api_version === 1` and disable every update action
+for any other value.
 
 ## Envelopes
 
@@ -174,7 +175,7 @@ request at all). Both use the standard JSON-RPC code for malformed params.
 ## Events
 
 Event name `update_response`. The payload mirrors Moonraker's own `notify_update_response` so
-Fluidd can feed it into its existing `UpdatingDialog`:
+frontends can feed it into their existing update dialogs:
 
 ```jsonc
 {"run_id": "…", "mcu": "can", "phase": "flash", "message": "flashing firmware", "complete": false}
