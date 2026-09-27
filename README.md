@@ -108,7 +108,10 @@ These bootloaders are entered and flashed unattended, directly from the running 
 - **STM32 ROM DFU** (`0483:df11`)
 - **PicoBoot** (RP2040/RP2350, `2e8a:0003`/`2e8a:000f`)
 
-Every other bootloader identity is reported as unsupported rather than guessed at.
+Every other bootloader identity is reported as unsupported rather than guessed at. MCUs whose
+firmware configuration names a family none of these bootloaders run on (Katapult builds only for
+STM32, RP2040/RP235x, and LPC176x) are reported as unsupported up front and never offered an
+update; SAMD21 boards are the common case.
 
 ## License
 

@@ -96,6 +96,7 @@ first one that applies wins):
 | `indeterminate` | Revision cannot be compared | none |
 | `externally_managed` | Non-Klipper application (e.g. Beacon) | none |
 | `unsupported_legacy` | No embedded kconfig | none |
+| `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD21); the message names the family | none |
 | `not_identified` | Empty object; fallback not attempted (CAN, host MCU, or port held) | none |
 | `not_responding` | Empty object; no identify reply. Message points to `aldis reboot` or a power cycle | none |
 

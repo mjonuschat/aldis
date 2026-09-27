@@ -94,6 +94,7 @@ pub enum McuState {
     Indeterminate,
     ExternallyManaged,
     UnsupportedLegacy,
+    UnsupportedMcu,
     NotIdentified,
     NotResponding,
 }
@@ -303,6 +304,10 @@ pub fn assess(snapshot: &Snapshot) -> StatusBody {
                 (Eligibility::Unsupported(reason), _) => {
                     (McuState::UnsupportedLegacy, reason.to_string())
                 }
+                (Eligibility::UnsupportedMcu(family), _) => (
+                    McuState::UnsupportedMcu,
+                    format!("{family} boards have no bootloader aldis can flash"),
+                ),
             };
             let actions = if state == McuState::UpdateAvailable && blocker.is_none() {
                 vec![Action::Update]
@@ -405,6 +410,26 @@ mod tests {
                 }],
             }),
         }
+    }
+
+    #[test]
+    fn reports_an_unflashable_family_without_an_update_action() {
+        let mut snapshot = ready_snapshot();
+        snapshot.inventory.as_mut().unwrap().mcus.push(mcu(
+            "mcu samd",
+            "v0.13.0-753-g8c29c0a8e",
+            "CONFIG_MACH_ATSAMD=y\n",
+        ));
+
+        let body = assess(&snapshot);
+        let entry = body.mcus.iter().find(|entry| entry.name == "samd").unwrap();
+
+        assert_eq!(entry.state, McuState::UnsupportedMcu);
+        assert!(entry.actions.is_empty());
+        assert_eq!(
+            entry.message,
+            "ATSAMD boards have no bootloader aldis can flash"
+        );
     }
 
     #[test]

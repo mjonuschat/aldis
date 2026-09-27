@@ -5,9 +5,10 @@ use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
+use aldis::eligibility::{Eligibility, classify_mcu};
 use aldis::flash::system::SystemFlashError;
 use aldis::logging::LoggingCommandAdapter;
-use aldis::moonraker::MoonrakerAdapter;
+use aldis::moonraker::{McuInventory, MoonrakerAdapter};
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::FlashArgs;
@@ -44,6 +45,10 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     ))
     .context("failed to discover MCUs from Moonraker")?;
     arguments.target = crate::discovery::resolve_target_name(&inventory, &arguments.target);
+    if let Some(reason) = flash_refusal(&inventory, &arguments.target) {
+        ui.action(&format!("error: {reason}"));
+        anyhow::bail!(reason);
+    }
 
     let workspace_root =
         crate::default_run_workspace().context("could not create the run workspace")?;
@@ -150,14 +155,57 @@ fn flash_failure(
     }
 }
 
+fn flash_refusal(inventory: &McuInventory, target: &str) -> Option<String> {
+    let mcu = inventory.mcus.iter().find(|mcu| mcu.name == target)?;
+    match classify_mcu(mcu) {
+        Eligibility::UnsupportedMcu(family) => Some(format!(
+            "refusing to flash {target}: {family} boards have no bootloader aldis can flash"
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use super::{confirmation_prompt, flash_failure};
+    use super::{confirmation_prompt, flash_failure, flash_refusal};
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
     use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
     use aldis::flash::system::SystemFlashError;
+    use aldis::moonraker::{Mcu, McuInventory};
+
+    fn inventory_with(kconfig: &str) -> McuInventory {
+        McuInventory {
+            mcus: vec![Mcu {
+                name: "mcu xiao".to_owned(),
+                app: Some("Klipper".to_owned()),
+                version: Some("v0.13.0-770-gce7002bed".to_owned()),
+                mcu: "samd21g18a".to_owned(),
+                canbus_frequency_hz: None,
+                transport: None,
+                kconfig: kconfig.to_owned(),
+            }],
+            unreported: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn refuses_to_flash_an_mcu_family_without_a_flashable_bootloader() {
+        let reason = flash_refusal(&inventory_with("CONFIG_MACH_ATSAMD=y\n"), "mcu xiao")
+            .expect("SAMD21 has no bootloader aldis can drive");
+
+        assert!(reason.contains("mcu xiao"), "{reason}");
+        assert!(reason.contains("ATSAMD"), "{reason}");
+        assert_eq!(
+            flash_refusal(&inventory_with("CONFIG_MACH_STM32=y\n"), "mcu xiao"),
+            None
+        );
+        assert_eq!(
+            flash_refusal(&inventory_with("CONFIG_MACH_ATSAMD=y\n"), "mcu other"),
+            None
+        );
+    }
 
     #[test]
     fn names_the_firmware_file_target_and_byte_count_in_the_confirmation_prompt() {

@@ -123,6 +123,9 @@ fn supported_label(eligibility: &Eligibility) -> String {
         Eligibility::Eligible => "yes".to_owned(),
         Eligibility::ExternallyManaged(app) => format!("no (third-party firmware: {app})"),
         Eligibility::Unsupported(reason) => format!("no ({reason})"),
+        Eligibility::UnsupportedMcu(family) => {
+            format!("no ({family} boards have no bootloader aldis can flash)")
+        }
     }
 }
 

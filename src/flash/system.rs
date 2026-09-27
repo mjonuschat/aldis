@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::build::CommandPort;
+use crate::eligibility::kconfig_machine;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
 use crate::flash::katapult::adapter::KatapultFlashError;
@@ -315,15 +316,6 @@ fn resolve_serial_route(
             transport: context.transport.clone(),
         }),
     }
-}
-
-fn kconfig_machine(kconfig: &str) -> String {
-    kconfig
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("CONFIG_MACH_") && line.ends_with("=y"))
-        .unwrap_or_default()
-        .to_owned()
 }
 
 fn kconfig_flash_start_symbols(kconfig: &str) -> Vec<String> {
