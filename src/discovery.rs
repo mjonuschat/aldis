@@ -4,6 +4,47 @@ use std::time::Duration;
 use aldis::moonraker::{McuInventory, MoonrakerError, MoonrakerPort};
 use aldis::retry::retry_until_available;
 
+/// Runs the direct identify fallback when Klippy is in an error state and this Moonraker fronts
+/// the local, default Klipper service.
+pub(crate) fn probe_unreported(
+    url: &str,
+    moonraker: &impl aldis::moonraker::HostPort,
+    inventory: &mut McuInventory,
+) {
+    probe_unreported_with(
+        url,
+        moonraker,
+        inventory,
+        &aldis::identify::SerialIdentify::default(),
+    );
+}
+
+/// [`probe_unreported`] with an injectable prober, so callers that also need to test the
+/// fallback (like the post-flash reconnect wait) can substitute a fake `IdentifyPort`.
+pub(crate) fn probe_unreported_with(
+    url: &str,
+    moonraker: &impl aldis::moonraker::HostPort,
+    inventory: &mut McuInventory,
+    prober: &impl aldis::identify::IdentifyPort,
+) {
+    if inventory.unreported.is_empty() {
+        return;
+    }
+    if let Err(error) = aldis::host::verify_host(url, moonraker) {
+        tracing::debug!(
+            ?error,
+            "host check failed; skipping the direct identify fallback"
+        );
+        return;
+    }
+    if moonraker
+        .host_info()
+        .is_ok_and(|info| aldis::identify::should_probe(&info.state))
+    {
+        aldis::identify::resolve_unreported(inventory, prober);
+    }
+}
+
 const TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_RETRIES: u32 = 3;
@@ -123,7 +164,10 @@ mod tests {
             responses: RefCell::new(vec![
                 Err(MoonrakerError::KlippyStarting("starting".to_owned())),
                 Err(MoonrakerError::KlippyNotConnected),
-                Ok(McuInventory { mcus: Vec::new() }),
+                Ok(McuInventory {
+                    mcus: Vec::new(),
+                    unreported: Vec::new(),
+                }),
             ]),
             calls: RefCell::new(0),
         };
@@ -175,6 +219,7 @@ mod tests {
     fn resolves_an_exact_name_unchanged() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu expander")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -187,6 +232,7 @@ mod tests {
     fn resolves_an_abbreviated_label_to_its_full_name() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu expander")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -199,6 +245,7 @@ mod tests {
     fn resolves_an_abbreviated_label_case_insensitively() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu RP2040")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -211,6 +258,7 @@ mod tests {
     fn leaves_an_unresolvable_name_unchanged() {
         let inventory = McuInventory {
             mcus: vec![mcu("mcu"), mcu("mcu expander")],
+            unreported: Vec::new(),
         };
 
         assert_eq!(

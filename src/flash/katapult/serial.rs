@@ -353,6 +353,7 @@ fn timeout_outcome(
     if last_observed == initial {
         UsbBootloaderError::NoEffect {
             device: device.to_path_buf(),
+            reset_error,
         }
     } else {
         UsbBootloaderError::NotDetected {
@@ -371,11 +372,12 @@ pub enum UsbBootloaderError {
         /// The configured serial device.
         device: PathBuf,
     },
-    /// Katapult did not appear at the same USB topology before the timeout.
+    /// No usable bootloader was found at the same USB topology before the timeout: either the
+    /// identity changed to something unrecognised, or a recognised one had no usable endpoint yet.
     #[error(
-        "no bootloader appeared at {} before the timeout{}",
+        "no usable bootloader was found at {} before the timeout{}",
         .device.display(),
-        .reset_error.as_deref().map(|error| format!(" (reset error: {error})")).unwrap_or_default()
+        .reset_error.as_deref().map(|error| format!(" (the serial request reported: {error})")).unwrap_or_default()
     )]
     NotDetected {
         /// The configured serial device.
@@ -384,10 +386,16 @@ pub enum UsbBootloaderError {
         reset_error: Option<String>,
     },
     /// The device never left its pre-reset identity before the timeout.
-    #[error("{} never left application firmware; the reset request had no effect", .device.display())]
+    #[error(
+        "{} still had its application's USB identity when the bootloader wait timed out{}",
+        .device.display(),
+        .reset_error.as_deref().map(|error| format!(" (the serial request reported: {error})")).unwrap_or_default()
+    )]
     NoEffect {
         /// The configured serial device or observed USB topology.
         device: PathBuf,
+        /// A best-effort reset error, if opening the device failed before the wait began.
+        reset_error: Option<String>,
     },
 }
 

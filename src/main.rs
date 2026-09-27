@@ -1,5 +1,6 @@
 //! `aldis` CLI entry point: dispatches to the status, inspect, update, and setup commands.
 
+mod agent_command;
 mod cli;
 mod discovery;
 mod flash_command;
@@ -63,6 +64,9 @@ fn main() -> ExitCode {
                 ui::UpdateUi::new(cli.color, cli.no_progress),
             )
         }
+        // The agent owns its logging init (routed to journald/stdout plus
+        // per-run log files), so no init_logging_with_fallback here.
+        CliCommand::Agent(arguments) => agent_command::agent(arguments, cli.verbose),
     }
 }
 
@@ -156,6 +160,7 @@ mod tests {
                 transport: None,
                 kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\n".to_owned(),
             }],
+            unreported: Vec::new(),
         }
     }
 

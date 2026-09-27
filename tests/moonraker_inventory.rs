@@ -1,5 +1,8 @@
 use aldis::eligibility::{Eligibility, classify_mcu};
-use aldis::moonraker::{McuTransport, parse_inventory};
+use aldis::moonraker::{
+    KlippyState, McuTransport, UnreportedMcu, UnreportedReason, parse_host_info, parse_inventory,
+    parse_logs_root,
+};
 
 #[test]
 fn parses_mcu_inventory_from_a_moonraker_object_query() {
@@ -98,4 +101,82 @@ fn accepts_an_mcu_object_with_no_kconfig_as_unsupported_rather_than_failing() {
         classify_mcu(&inventory.mcus[0]),
         Eligibility::ExternallyManaged("Beacon".to_owned())
     );
+}
+
+#[test]
+fn keeps_empty_mcu_objects_as_unreported_with_their_configured_transport() {
+    let response = r#"{
+      "result": {
+        "status": {
+          "mcu": {
+            "mcu_version": "v0.13.0-770-gce7002bed",
+            "mcu_constants": {"MCU": "stm32h723xx"},
+            "mcu_kconfig": "CONFIG_MACH_STM32=y\n"
+          },
+          "mcu XIAO": {},
+          "configfile": {
+            "settings": {
+              "mcu xiao": {"serial": "/dev/serial/by-id/usb-Klipper_samd21g18a_1-if00"}
+            }
+          }
+        }
+      }
+    }"#;
+
+    let inventory = parse_inventory(response).expect("fixture should parse");
+
+    assert_eq!(inventory.mcus.len(), 1);
+    assert_eq!(
+        inventory.unreported,
+        vec![UnreportedMcu {
+            name: "mcu XIAO".to_owned(),
+            transport: Some(McuTransport::Serial {
+                device: "/dev/serial/by-id/usb-Klipper_samd21g18a_1-if00".to_owned(),
+            }),
+            reason: UnreportedReason::NotIdentified,
+        }]
+    );
+}
+
+#[test]
+fn still_rejects_a_populated_object_without_an_mcu_constant() {
+    let response = r#"{"result":{"status":{"mcu":{"mcu_version":"v1","mcu_constants":{}}}}}"#;
+    assert!(parse_inventory(response).is_err());
+}
+
+#[test]
+fn parses_host_info_including_version_and_path() {
+    let response = r#"{"result":{"state":"error","state_message":"MCU Protocol error",
+        "software_version":"v0.13.0-770-gce7002bed","klipper_path":"/home/pi/klipper"}}"#;
+
+    let info = parse_host_info(response).unwrap();
+
+    assert_eq!(info.state, KlippyState::Error);
+    assert_eq!(info.state_message, "MCU Protocol error");
+    assert_eq!(
+        info.software_version.as_deref(),
+        Some("v0.13.0-770-gce7002bed")
+    );
+    assert_eq!(
+        info.klipper_path,
+        Some(std::path::PathBuf::from("/home/pi/klipper"))
+    );
+
+    let disconnected =
+        r#"{"result":{"state":"disconnected","state_message":"Klippy Disconnected"}}"#;
+    assert_eq!(
+        parse_host_info(disconnected).unwrap().state,
+        KlippyState::Disconnected
+    );
+}
+
+#[test]
+fn reads_the_logs_root_from_file_roots() {
+    let response = r#"{"result":[{"name":"config","path":"/home/pi/printer_data/config","permissions":"rw"},
+        {"name":"logs","path":"/home/pi/printer_data/logs","permissions":"r"}]}"#;
+    assert_eq!(
+        parse_logs_root(response).unwrap(),
+        Some(std::path::PathBuf::from("/home/pi/printer_data/logs"))
+    );
+    assert_eq!(parse_logs_root(r#"{"result":[]}"#).unwrap(), None);
 }

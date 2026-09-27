@@ -15,19 +15,35 @@ use crate::fail;
 const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/80-aldis.rules";
 const SUDOERS_PATH: &str = "/etc/sudoers.d/aldis";
 const UDEV_RULES: &str = include_str!("../templates/80-aldis.rules");
+pub(crate) const AGENT_UNIT_PATH: &str = "/etc/systemd/system/aldis.service";
+const AGENT_SERVICE: &str = "aldis";
+/// The privileged command `self-update` uses to check whether the agent is running.
+pub(crate) const AGENT_STATUS_COMMAND: [&str; 3] = ["/bin/systemctl", "is-active", AGENT_SERVICE];
+/// The privileged command `self-update` uses to restart the agent onto a new binary.
+pub(crate) const AGENT_RESTART_COMMAND: [&str; 3] = ["/bin/systemctl", "restart", AGENT_SERVICE];
 
 pub(crate) fn setup(arguments: SetupArgs) -> ExitCode {
     if arguments.check {
-        check_setup()
+        return check_setup();
+    }
+    let result = if arguments.remove {
+        remove_agent(&arguments.moonraker.moonraker)
     } else {
-        match install_setup() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => fail(format!("{error:#}")),
-        }
+        install_setup().and_then(|user| {
+            if arguments.agent {
+                install_agent(&user, &arguments.moonraker.moonraker)
+            } else {
+                Ok(())
+            }
+        })
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(format!("{error:#}")),
     }
 }
 
-fn install_setup() -> anyhow::Result<()> {
+fn install_setup() -> anyhow::Result<String> {
     let Some(user) = std::env::var_os("SUDO_USER").and_then(|user| user.into_string().ok()) else {
         bail!("setup must be run with sudo; run: sudo aldis setup");
     };
@@ -57,6 +73,134 @@ fn install_setup() -> anyhow::Result<()> {
     }
     tracing::info!("udev rules reloaded and triggered");
     println!("{}", setup_install_report(rules_action, service_action));
+    Ok(user)
+}
+
+fn agent_unit(user: &str, exe: &Path, moonraker: &str) -> String {
+    let exe = escape_for_systemd_exec(&exe.display().to_string());
+    format!(
+        "[Unit]\nDescription=aldis Moonraker agent\nAfter=moonraker.service\nWants=moonraker.service\n\n\
+         [Service]\nType=simple\nUser={user}\nExecStart=\"{exe}\" agent --moonraker {moonraker}\n\
+         Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+    )
+}
+
+/// Escapes `value` for a double-quoted `ExecStart=` argument: doubles `%` (systemd's specifier
+/// expansion) and backslash-escapes `\` and `"` (systemd's own unit-file quoting), so a path
+/// containing spaces, quotes, or `%` still names one argument and survives unit-file parsing.
+fn escape_for_systemd_exec(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '%' => escaped.push_str("%%"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+/// `asvc` with `name` appended, or `None` if it is already listed.
+fn with_service(asvc: &str, name: &str) -> Option<String> {
+    if asvc.lines().any(|line| line.trim() == name) {
+        return None;
+    }
+    let mut updated = asvc.to_owned();
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(name);
+    updated.push('\n');
+    Some(updated)
+}
+
+/// `asvc` without `name`, or `None` if it is not listed.
+fn without_service(asvc: &str, name: &str) -> Option<String> {
+    if !asvc.lines().any(|line| line.trim() == name) {
+        return None;
+    }
+    Some(
+        asvc.lines()
+            .filter(|line| line.trim() != name)
+            .map(|line| format!("{line}\n"))
+            .collect(),
+    )
+}
+
+fn moonraker_asvc(moonraker: &str) -> Option<std::path::PathBuf> {
+    use aldis::moonraker::HostPort;
+    let logs = aldis::moonraker::MoonrakerAdapter::new(moonraker)
+        .logs_root()
+        .ok()
+        .flatten()?;
+    Some(logs.parent()?.join("moonraker.asvc"))
+}
+
+fn systemctl(arguments: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new("systemctl")
+        .args(arguments)
+        .status()
+        .with_context(|| format!("could not run systemctl {}", arguments.join(" ")))?;
+    if !status.success() {
+        bail!("systemctl {} exited with {status}", arguments.join(" "));
+    }
+    Ok(())
+}
+
+fn install_agent(user: &str, moonraker: &str) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .context("could not resolve the aldis binary path")?;
+    let unit_action = install_file(
+        AGENT_UNIT_PATH,
+        &agent_unit(user, &exe, moonraker),
+        "agent service",
+    )?;
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", AGENT_SERVICE])?;
+    // restart rather than start: a repaired unit (new binary path or URL) must take effect.
+    systemctl(&["restart", AGENT_SERVICE])?;
+    let asvc_action = match moonraker_asvc(moonraker) {
+        Some(path) if path.exists() => {
+            let current = fs::read_to_string(&path).context("could not read moonraker.asvc")?;
+            match with_service(&current, AGENT_SERVICE) {
+                Some(updated) => {
+                    fs::write(&path, updated).context("could not update moonraker.asvc")?;
+                    format!(
+                        "added aldis to {}; restart Moonraker for it to appear in the service menu",
+                        path.display()
+                    )
+                }
+                None => format!("already listed in {}", path.display()),
+            }
+        }
+        Some(path) => format!("skipped: {} does not exist", path.display()),
+        None => "skipped: could not ask Moonraker for its data directory".to_owned(),
+    };
+    println!(
+        "aldis agent:\n  service: {unit_action}, enabled and restarted\n  Moonraker service list: {asvc_action}"
+    );
+    Ok(())
+}
+
+fn remove_agent(moonraker: &str) -> anyhow::Result<()> {
+    if Path::new(AGENT_UNIT_PATH).exists() {
+        systemctl(&["disable", "--now", AGENT_SERVICE])?;
+        fs::remove_file(AGENT_UNIT_PATH).context("could not remove the agent service")?;
+        systemctl(&["daemon-reload"])?;
+    }
+    if let Some(path) = moonraker_asvc(moonraker).filter(|path| path.exists()) {
+        let current = fs::read_to_string(&path).context("could not read moonraker.asvc")?;
+        if let Some(updated) = without_service(&current, AGENT_SERVICE) {
+            fs::write(&path, updated).context("could not update moonraker.asvc")?;
+            println!(
+                "removed aldis from {}; restart Moonraker to drop it from the service menu",
+                path.display()
+            );
+        }
+    }
+    println!("aldis agent: removed");
     Ok(())
 }
 
@@ -177,7 +321,9 @@ fn udev_rules() -> &'static str {
 fn sudoers_policy(user: &str) -> String {
     format!(
         "{user} ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
-         /bin/systemctl start klipper, {}, {}\n",
+         /bin/systemctl start klipper, {}, {}, {}, {}\n",
+        AGENT_STATUS_COMMAND.join(" "),
+        AGENT_RESTART_COMMAND.join(" "),
         INSTALL_COMMAND.join(" "),
         RESTART_COMMAND.join(" "),
     )
@@ -191,8 +337,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        setup_check_report, setup_install_report, stage_sudoers, sudo_policy_allows_service_status,
-        sudoers_policy,
+        agent_unit, escape_for_systemd_exec, setup_check_report, setup_install_report,
+        stage_sudoers, sudo_policy_allows_service_status, sudoers_policy, with_service,
+        without_service,
     };
 
     #[test]
@@ -217,7 +364,8 @@ mod tests {
         assert_eq!(
             sudoers_policy("pi"),
             "pi ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
-             /bin/systemctl start klipper, /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu, \
+             /bin/systemctl start klipper, /bin/systemctl is-active aldis, /bin/systemctl restart aldis, \
+             /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu, \
              /bin/systemctl restart klipper-mcu\n"
         );
     }
@@ -251,6 +399,74 @@ mod tests {
         assert_eq!(staged.path().parent(), Some(dir.as_path()));
 
         fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn renders_the_agent_unit_for_the_sudo_user() {
+        let unit = agent_unit(
+            "pi",
+            std::path::Path::new("/home/pi/aldis/aldis"),
+            "http://127.0.0.1:7125",
+        );
+
+        assert!(unit.contains("\nUser=pi\n"), "{unit}");
+        assert!(
+            unit.contains(
+                "\nExecStart=\"/home/pi/aldis/aldis\" agent --moonraker http://127.0.0.1:7125\n"
+            ),
+            "{unit}"
+        );
+        assert!(unit.contains("\nRestart=always\n"), "{unit}");
+        assert!(unit.contains("\nAfter=moonraker.service\n"), "{unit}");
+    }
+
+    #[test]
+    fn quotes_an_executable_path_containing_a_space() {
+        let unit = agent_unit(
+            "pi",
+            std::path::Path::new("/home/pi/my aldis/aldis"),
+            "http://127.0.0.1:7125",
+        );
+
+        assert!(
+            unit.contains(
+                "\nExecStart=\"/home/pi/my aldis/aldis\" agent --moonraker http://127.0.0.1:7125\n"
+            ),
+            "a spaced path must stay one ExecStart argument: {unit}"
+        );
+    }
+
+    #[test]
+    fn escapes_quotes_backslashes_and_percent_signs_for_exec_start() {
+        assert_eq!(escape_for_systemd_exec("/home/pi/aldis"), "/home/pi/aldis");
+        assert_eq!(
+            escape_for_systemd_exec(r#"/home/pi/say "hi"/aldis"#),
+            r#"/home/pi/say \"hi\"/aldis"#
+        );
+        assert_eq!(
+            escape_for_systemd_exec(r"/home/pi/back\slash/aldis"),
+            r"/home/pi/back\\slash/aldis"
+        );
+        assert_eq!(
+            escape_for_systemd_exec("/home/100%/aldis"),
+            "/home/100%%/aldis"
+        );
+    }
+
+    #[test]
+    fn adds_and_removes_the_agent_in_moonrakers_service_list() {
+        let asvc = "klipper_mcu\nwebcamd\nMoonCord\n";
+
+        let added = with_service(asvc, "aldis").unwrap();
+        assert_eq!(added, "klipper_mcu\nwebcamd\nMoonCord\naldis\n");
+        assert_eq!(with_service(&added, "aldis"), None);
+        assert_eq!(
+            with_service("klipper_mcu", "aldis").unwrap(),
+            "klipper_mcu\naldis\n"
+        );
+
+        assert_eq!(without_service(&added, "aldis").unwrap(), asvc);
+        assert_eq!(without_service(asvc, "aldis"), None);
     }
 
     fn temporary_directory() -> PathBuf {

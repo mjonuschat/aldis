@@ -1,6 +1,6 @@
 use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 
-const KLIPPER_UNIT: &str = "klipper";
+pub const KLIPPER_UNIT: &str = "klipper";
 
 /// A Klipper service state reported by systemd.
 #[derive(Debug, Clone, PartialEq, Eq)]

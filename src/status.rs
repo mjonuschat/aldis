@@ -15,7 +15,12 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
         .klipper_source
         .unwrap_or_else(crate::default_klipper_source);
     let moonraker = MoonrakerAdapter::new(&arguments.moonraker.moonraker);
-    match status_report(&moonraker, &GitCheckoutAdapter, &source) {
+    match status_report(
+        &arguments.moonraker.moonraker,
+        &moonraker,
+        &GitCheckoutAdapter,
+        &source,
+    ) {
         Ok(report) => {
             print!("{report}");
             ExitCode::SUCCESS
@@ -25,13 +30,15 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
 }
 
 fn status_report(
-    moonraker: &impl MoonrakerPort,
+    url: &str,
+    moonraker: &(impl MoonrakerPort + aldis::moonraker::HostPort),
     checkout: &impl CheckoutPort,
     source: &std::path::Path,
 ) -> anyhow::Result<String> {
     tracing::info!("discovering MCUs from Moonraker");
-    let inventory =
+    let mut inventory =
         crate::discovery::discover_mcus_with_retry(moonraker).context("failed to discover MCUs")?;
+    crate::discovery::probe_unreported(url, moonraker, &mut inventory);
     let revision = checkout
         .revision(source)
         .unwrap_or(CheckoutRevision::Indeterminate);
@@ -64,6 +71,18 @@ pub(crate) fn format_status(
             ("connection:", connection_label(mcu.transport.as_ref())),
             ("supported:", supported_label(&status.eligibility)),
             ("needs update:", update_label(status.revision)),
+        ] {
+            output.push_str(&format!("  {label:<13} {value}\n"));
+        }
+    }
+    for unreported in &inventory.unreported {
+        output.push_str(&format!("\n{}\n", unreported.name));
+        for (label, value) in [
+            (
+                "connection:",
+                connection_label(unreported.transport.as_ref()),
+            ),
+            ("supported:", format!("no ({})", unreported.reason)),
         ] {
             output.push_str(&format!("  {label:<13} {value}\n"));
         }
@@ -104,6 +123,9 @@ fn supported_label(eligibility: &Eligibility) -> String {
         Eligibility::Eligible => "yes".to_owned(),
         Eligibility::ExternallyManaged(app) => format!("no (third-party firmware: {app})"),
         Eligibility::Unsupported(reason) => format!("no ({reason})"),
+        Eligibility::UnsupportedMcu(family) => {
+            format!("no ({family} boards have no bootloader aldis can flash)")
+        }
     }
 }
 
@@ -145,6 +167,7 @@ mod tests {
                 "v0.12.0-123-deadbeef",
                 Some("/dev/serial/by-id/mcu"),
             )],
+            unreported: Vec::new(),
         };
 
         assert_eq!(
@@ -193,6 +216,7 @@ mod tests {
                     kconfig: String::new(),
                 },
             ],
+            unreported: Vec::new(),
         };
 
         let output = format_status(
@@ -210,6 +234,33 @@ mod tests {
     }
 
     #[test]
+    fn lists_unreported_mcus_with_their_reason() {
+        use aldis::moonraker::{UnreportedMcu, UnreportedReason};
+
+        let inventory = McuInventory {
+            mcus: Vec::new(),
+            unreported: vec![UnreportedMcu {
+                name: "mcu xiao".to_owned(),
+                transport: None,
+                reason: UnreportedReason::NotResponding,
+            }],
+        };
+
+        let output = format_status(
+            std::path::Path::new("/home/pi/klipper"),
+            &CheckoutRevision::Known("v1".to_owned()),
+            &inventory,
+            None,
+        );
+
+        assert!(output.contains("\nmcu xiao\n"), "{output}");
+        assert!(
+            output.contains("not responding; run `aldis reboot` or power-cycle the board"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn includes_refresh_details_in_the_aligned_checkout_field() {
         let refreshed = RefreshResult {
             before: CheckoutRevision::Known("v0.12.0-123-deadbeef".to_owned()),
@@ -221,7 +272,10 @@ mod tests {
         let output = format_status(
             std::path::Path::new("/home/pi/klipper"),
             &refreshed.after,
-            &McuInventory { mcus: Vec::new() },
+            &McuInventory {
+                mcus: Vec::new(),
+                unreported: Vec::new(),
+            },
             Some(&refreshed),
         );
 
@@ -238,11 +292,17 @@ mod tests {
     fn reports_status_from_injected_moonraker_and_checkout_sources() {
         let moonraker = FakeMoonraker(Ok(McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
+            unreported: Vec::new(),
         }));
         let checkout = FakeCheckout(Ok(CheckoutRevision::Known("v2".to_owned())));
 
-        let report = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
-            .expect("status report should succeed");
+        let report = status_report(
+            "http://127.0.0.1:7125",
+            &moonraker,
+            &checkout,
+            std::path::Path::new("/klipper"),
+        )
+        .expect("status report should succeed");
 
         assert!(report.contains("mcu h723"));
         assert!(report.contains("v2"));
@@ -253,8 +313,13 @@ mod tests {
         let moonraker = FakeMoonraker(Err("no MCU objects were reported".to_owned()));
         let checkout = FakeCheckout(Ok(CheckoutRevision::Indeterminate));
 
-        let error = status_report(&moonraker, &checkout, std::path::Path::new("/klipper"))
-            .expect_err("status report should fail");
+        let error = status_report(
+            "http://127.0.0.1:7125",
+            &moonraker,
+            &checkout,
+            std::path::Path::new("/klipper"),
+        )
+        .expect_err("status report should fail");
 
         assert!(format!("{error:#}").contains("no MCU objects were reported"));
     }
@@ -264,6 +329,25 @@ mod tests {
     impl MoonrakerPort for FakeMoonraker {
         fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
             self.0.clone().map_err(MoonrakerError::InvalidResponse)
+        }
+    }
+
+    impl aldis::moonraker::HostPort for FakeMoonraker {
+        fn klipper_unit(&self) -> Result<Option<String>, MoonrakerError> {
+            Ok(None)
+        }
+
+        fn host_info(&self) -> Result<aldis::moonraker::HostInfo, MoonrakerError> {
+            Ok(aldis::moonraker::HostInfo {
+                state: aldis::moonraker::KlippyState::Ready,
+                state_message: String::new(),
+                software_version: None,
+                klipper_path: None,
+            })
+        }
+
+        fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
+            Ok(None)
         }
     }
 

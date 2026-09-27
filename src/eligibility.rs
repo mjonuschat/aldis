@@ -11,6 +11,9 @@ pub enum Eligibility {
     ExternallyManaged(String),
     /// Legacy or unidentified Klipper-family firmware without required updater metadata.
     Unsupported(UnsupportedReason),
+    /// A Klipper-family MCU whose family has no bootloader this updater can drive, named as
+    /// the embedded configuration reports it (e.g. "ATSAMD").
+    UnsupportedMcu(String),
 }
 
 /// The Klipper-family firmware a version requirement applies to.
@@ -232,11 +235,52 @@ fn classify_known_firmware(
     classify_by_embedded_config(mcu)
 }
 
+/// Families with a bootloader this updater can drive: Katapult builds only for STM32,
+/// RP2040/RP235x, and LPC176x; STM32 and RP parts also carry ROM DFU and PicoBoot; the Linux
+/// host MCU is installed as a process.
+const FLASHABLE_FAMILIES: &[&str] = &["STM32", "RPXXXX", "RP2040", "LPC176X", "LINUX"];
+
+/// The first enabled `CONFIG_MACH_*=y` line of an embedded configuration, or an empty string.
+pub fn kconfig_machine(kconfig: &str) -> String {
+    kconfig
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("CONFIG_MACH_") && line.ends_with("=y"))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+enum FamilySupport {
+    Flashable,
+    Unflashable(String),
+    Unstated,
+}
+
+fn family_support(kconfig: &str) -> FamilySupport {
+    let families: Vec<&str> = kconfig
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("CONFIG_MACH_")?.strip_suffix("=y"))
+        .collect();
+    if families
+        .iter()
+        .any(|family| FLASHABLE_FAMILIES.contains(family))
+    {
+        FamilySupport::Flashable
+    } else if let Some(family) = families.first() {
+        FamilySupport::Unflashable((*family).to_owned())
+    } else {
+        FamilySupport::Unstated
+    }
+}
+
 fn classify_by_embedded_config(mcu: &Mcu) -> Eligibility {
     if mcu.kconfig.trim().is_empty() {
-        Eligibility::Unsupported(UnsupportedReason::NoEmbeddedConfig)
-    } else {
-        Eligibility::Eligible
+        return Eligibility::Unsupported(UnsupportedReason::NoEmbeddedConfig);
+    }
+    match family_support(&mcu.kconfig) {
+        FamilySupport::Unflashable(family) => Eligibility::UnsupportedMcu(family),
+        FamilySupport::Flashable | FamilySupport::Unstated => Eligibility::Eligible,
     }
 }
 

@@ -1,16 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
-use aldis::flash::katapult::system::SystemKatapultOptions;
-use aldis::flash::linux_host::HOST_MCU_UNIT_FILE;
-use aldis::flash::system::{SystemFlashError, SystemFlashOptions};
+use aldis::eligibility::{Eligibility, classify_mcu};
+use aldis::flash::system::SystemFlashError;
 use aldis::logging::LoggingCommandAdapter;
-use aldis::moonraker::MoonrakerAdapter;
+use aldis::moonraker::{McuInventory, MoonrakerAdapter};
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::FlashArgs;
@@ -25,6 +23,8 @@ pub(crate) fn flash(arguments: FlashArgs, mut ui: UpdateUi) -> ExitCode {
 }
 
 fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> {
+    let _lock =
+        aldis::lock::UpdateLock::try_acquire_default().context("could not start the flash")?;
     let firmware = std::fs::read(&arguments.firmware).with_context(|| {
         format!(
             "could not read firmware file {}",
@@ -36,12 +36,19 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         .klipper_source
         .clone()
         .unwrap_or_else(crate::default_klipper_source);
+    let moonraker_url = &arguments.connection.moonraker.moonraker;
+    aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
+        .context("refusing to flash firmware")?;
     ui.action("discovering MCUs from Moonraker");
     let inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
         &arguments.connection.moonraker.moonraker,
     ))
     .context("failed to discover MCUs from Moonraker")?;
     arguments.target = crate::discovery::resolve_target_name(&inventory, &arguments.target);
+    if let Some(reason) = flash_refusal(&inventory, &arguments.target) {
+        ui.action(&format!("error: {reason}"));
+        anyhow::bail!(reason);
+    }
 
     let workspace_root =
         crate::default_run_workspace().context("could not create the run workspace")?;
@@ -67,18 +74,9 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         }
     }
 
-    let options = SystemFlashOptions {
-        katapult: SystemKatapultOptions {
-            baud_rate: 250_000,
-            bootloader_timeout: Duration::from_secs(10),
-            poll_interval: Duration::from_millis(50),
-            read_timeout: Duration::from_secs(5),
-            can_bootloader_settle: Duration::from_millis(100),
-        },
-        host_mcu_unit_file: PathBuf::from(HOST_MCU_UNIT_FILE),
-    };
+    let options = aldis::update_run::standard_flash_options();
     let target_kconfig = pending.kconfig().to_owned();
-    crate::update::ensure_printer_idle(&MoonrakerAdapter::new(
+    aldis::update_run::ensure_printer_idle(&MoonrakerAdapter::new(
         &arguments.connection.moonraker.moonraker,
     ))
     .map_err(|message| {
@@ -157,14 +155,57 @@ fn flash_failure(
     }
 }
 
+fn flash_refusal(inventory: &McuInventory, target: &str) -> Option<String> {
+    let mcu = inventory.mcus.iter().find(|mcu| mcu.name == target)?;
+    match classify_mcu(mcu) {
+        Eligibility::UnsupportedMcu(family) => Some(format!(
+            "refusing to flash {target}: {family} boards have no bootloader aldis can flash"
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use super::{confirmation_prompt, flash_failure};
+    use super::{confirmation_prompt, flash_failure, flash_refusal};
     use aldis::build::{BuildCommand, BuildError, CommandOutput};
     use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
     use aldis::flash::system::SystemFlashError;
+    use aldis::moonraker::{Mcu, McuInventory};
+
+    fn inventory_with(kconfig: &str) -> McuInventory {
+        McuInventory {
+            mcus: vec![Mcu {
+                name: "mcu xiao".to_owned(),
+                app: Some("Klipper".to_owned()),
+                version: Some("v0.13.0-770-gce7002bed".to_owned()),
+                mcu: "samd21g18a".to_owned(),
+                canbus_frequency_hz: None,
+                transport: None,
+                kconfig: kconfig.to_owned(),
+            }],
+            unreported: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn refuses_to_flash_an_mcu_family_without_a_flashable_bootloader() {
+        let reason = flash_refusal(&inventory_with("CONFIG_MACH_ATSAMD=y\n"), "mcu xiao")
+            .expect("SAMD21 has no bootloader aldis can drive");
+
+        assert!(reason.contains("mcu xiao"), "{reason}");
+        assert!(reason.contains("ATSAMD"), "{reason}");
+        assert_eq!(
+            flash_refusal(&inventory_with("CONFIG_MACH_STM32=y\n"), "mcu xiao"),
+            None
+        );
+        assert_eq!(
+            flash_refusal(&inventory_with("CONFIG_MACH_ATSAMD=y\n"), "mcu other"),
+            None
+        );
+    }
 
     #[test]
     fn names_the_firmware_file_target_and_byte_count_in_the_confirmation_prompt() {

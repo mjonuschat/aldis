@@ -124,7 +124,7 @@ fn treats_a_blank_app_with_a_git_describe_version_as_unidentified_legacy_firmwar
 #[test]
 fn accepts_mainline_klipper_metadata_without_an_app_field() {
     let status = assess_mcu(
-        &mcu(None, Some("v0.13.0"), "CONFIG_MACH_ATSAMD=y\n"),
+        &mcu(None, Some("v0.13.0"), "CONFIG_MACH_STM32=y\n"),
         &CheckoutRevision::Known("v0.13.0".to_owned()),
     );
 
@@ -243,4 +243,70 @@ fn selects_only_outdated_eligible_mcus_unless_explicitly_overridden() {
         &UpdateSelection::Force("mcu".to_owned())
     ));
     assert!(!is_selected(&external, &checkout, &UpdateSelection::All));
+}
+
+#[test]
+fn rejects_mcu_families_without_a_flashable_bootloader() {
+    let samd = mcu(
+        Some("Klipper"),
+        Some("v0.13.0-770-gce7002bed"),
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21G18=y\nCONFIG_CLOCK_REF_INTERNAL=y\n",
+    );
+    let status = assess_mcu(
+        &samd,
+        &CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned()),
+    );
+    assert_eq!(
+        status.eligibility,
+        Eligibility::UnsupportedMcu("ATSAMD".to_owned())
+    );
+    assert_eq!(status.revision, None);
+}
+
+#[test]
+fn accepts_every_family_with_a_flashable_bootloader() {
+    for kconfig in [
+        "CONFIG_MACH_STM32=y\nCONFIG_MACH_STM32H723=y\n",
+        "CONFIG_MACH_RPXXXX=y\nCONFIG_MACH_RP2040=y\n",
+        "CONFIG_MACH_RP2040=y\n",
+        "CONFIG_MACH_LPC176X=y\n",
+        "CONFIG_MACH_LINUX=y\n",
+    ] {
+        let status = assess_mcu(
+            &mcu(Some("Klipper"), Some("v0.13.0-770-gce7002bed"), kconfig),
+            &CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned()),
+        );
+        assert_eq!(status.eligibility, Eligibility::Eligible, "{kconfig}");
+    }
+}
+
+#[test]
+fn keeps_a_configuration_naming_no_family_eligible() {
+    let status = assess_mcu(
+        &mcu(
+            Some("Klipper"),
+            Some("v0.13.0-770-gce7002bed"),
+            "CONFIG_TEST=y\n",
+        ),
+        &CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned()),
+    );
+    assert_eq!(status.eligibility, Eligibility::Eligible);
+}
+
+#[test]
+fn never_selects_an_mcu_family_without_a_flashable_bootloader() {
+    let samd = mcu(
+        Some("Klipper"),
+        Some("v0.13.0-753-g8c29c0a8e"),
+        "CONFIG_MACH_ATSAMD=y\n",
+    );
+    let checkout = CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned());
+
+    assert!(!is_selected(&samd, &checkout, &UpdateSelection::Required));
+    assert!(!is_selected(&samd, &checkout, &UpdateSelection::All));
+    assert!(!is_selected(
+        &samd,
+        &checkout,
+        &UpdateSelection::Force(samd.name.clone())
+    ));
 }
