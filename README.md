@@ -46,17 +46,13 @@ installs both. Run `~/aldis/aldis setup --check` to verify they're in place with
 sudo ~/aldis/aldis setup --agent
 ```
 
-installs and starts the `aldis` service for the sudo user, so it keeps running and restarts on boot, and adds it to Moonraker's service list (`moonraker.asvc`) so Moonraker's service menu (in Fluidd and Mainsail) can manage and restart it. Frontends find the running agent itself through Moonraker's `server.extensions.list`, not through `moonraker.asvc`. Run again after a `self-update` or a Moonraker URL change to repair the service in place.
+Installs and starts the `aldis` service under the sudo user, so it survives reboots and keeps running. Adds it to Moonraker's service list (`moonraker.asvc`) so Fluidd and Mainsail can manage and restart it from their service menus.
 
 ```
 sudo ~/aldis/aldis setup --agent --remove
 ```
 
-stops and removes the service and drops it from Moonraker's service list.
-
-`self-update` prints a reminder to restart the service afterwards (`sudo systemctl restart aldis`, or Fluidd's service menu), since the running agent keeps serving the previous version until restarted.
-
-The agent's API is JSON-RPC relayed through Moonraker's websocket (requests via `server.extensions.request`, events via the websocket), documented in [`docs/api/agent.md`](docs/api/agent.md). Fluidd support for showing it in the UI is pending upstream.
+Stops and removes the service and drops it from Moonraker's service list.
 
 ## Usage
 
@@ -78,7 +74,7 @@ The agent's API is JSON-RPC relayed through Moonraker's websocket (requests via 
 - `--pull` can be combined with specific `<mcu>` names too.
 - `--auto` already implies `--pull` and can't be combined with `--pull`, `--force`, `--all`, or explicit MCU names.
 
-`self-update` compares the running binary's version against the latest GitHub release and, unless already current, downloads and installs the matching platform archive over the current binary. No `sudo` is required as long as `~/aldis` is writable by the current user.
+`self-update` compares the running binary's version against the latest GitHub release and, unless already current, downloads and installs the matching platform archive over the current binary. No `sudo` is required as long as `~/aldis` is writable by the current user. If the agent service is running, `self-update` restarts it onto the new binary; otherwise it leaves the service alone.
 
 `status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker instance or a non-default Klipper service, and only one `update`, `flash`, or `reboot` runs at a time — a second concurrent run fails immediately rather than racing the first.
 
