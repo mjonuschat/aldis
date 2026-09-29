@@ -33,9 +33,9 @@ pub const RESTART_COMMAND: [&str; 3] = ["/bin/systemctl", "restart", "klipper-mc
 pub const HOST_MCU_SERIAL_PATH: &str = "/tmp/klipper_host_mcu";
 
 const ELFCLASS64: u8 = 2;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 const ELFCLASS32: u8 = 1;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 const EM_ARM: u16 = 40;
 #[cfg(target_arch = "aarch64")]
 const EM_AARCH64: u16 = 183;
@@ -47,6 +47,8 @@ const EM_X86_64: u16 = 62;
 /// 32-bit Raspberry Pi OS userland, while aldis itself ships as aarch64.
 #[cfg(target_arch = "aarch64")]
 const HOST_ELF_TARGETS: &[(u8, u16)] = &[(ELFCLASS64, EM_AARCH64), (ELFCLASS32, EM_ARM)];
+#[cfg(target_arch = "arm")]
+const HOST_ELF_TARGETS: &[(u8, u16)] = &[(ELFCLASS32, EM_ARM)];
 #[cfg(target_arch = "x86_64")]
 const HOST_ELF_TARGETS: &[(u8, u16)] = &[(ELFCLASS64, EM_X86_64)];
 

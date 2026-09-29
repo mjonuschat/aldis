@@ -128,6 +128,7 @@ pub fn target_platform(arch: &str) -> Result<&'static str, ReleaseError> {
     match arch {
         "x86_64" => Ok("x86_64-linux"),
         "aarch64" => Ok("aarch64-linux"),
+        "arm" => Ok("armv7l-linux"),
         other => Err(ReleaseError::UnsupportedPlatform(other.to_owned())),
     }
 }
@@ -231,6 +232,7 @@ mod tests {
     fn maps_supported_host_architectures_to_release_platform_names() {
         assert_eq!(target_platform("x86_64").unwrap(), "x86_64-linux");
         assert_eq!(target_platform("aarch64").unwrap(), "aarch64-linux");
+        assert_eq!(target_platform("arm").unwrap(), "armv7l-linux");
         assert!(target_platform("riscv64").is_err());
     }
 }

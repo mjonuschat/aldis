@@ -11,13 +11,20 @@ use aldis::flash::linux_host::{
 
 #[cfg(target_arch = "aarch64")]
 const HOST_MACHINE: u16 = 183;
+#[cfg(target_arch = "arm")]
+const HOST_MACHINE: u16 = 40;
 #[cfg(target_arch = "x86_64")]
 const HOST_MACHINE: u16 = 62;
+
+#[cfg(target_arch = "arm")]
+const HOST_CLASS: u8 = 1;
+#[cfg(not(target_arch = "arm"))]
+const HOST_CLASS: u8 = 2;
 
 fn elf_for(machine: u16) -> Vec<u8> {
     let mut image = vec![0; 64];
     image[..4].copy_from_slice(b"\x7fELF");
-    image[4] = 2;
+    image[4] = HOST_CLASS;
     image[5] = 1;
     image[6] = 1;
     image[18..20].copy_from_slice(&machine.to_le_bytes());
@@ -93,7 +100,7 @@ fn refuses_anything_but_a_complete_host_elf_header_before_running_anything() {
     let mut big_endian = host_elf();
     big_endian[5] = 2;
     let mut wrong_class = host_elf();
-    wrong_class[4] = 1;
+    wrong_class[4] = 3 - HOST_CLASS;
     let rejected: [Vec<u8>; 7] = [
         b"\x00\x20\x00\x20binary".to_vec(),
         b"\x7fELF".to_vec(),

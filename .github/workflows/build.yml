@@ -78,12 +78,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: [x86_64-linux, aarch64-linux]
+        build: [x86_64-linux, aarch64-linux, armv7l-linux]
         include:
           - build: x86_64-linux
             target: x86_64-unknown-linux-musl
           - build: aarch64-linux
             target: aarch64-unknown-linux-musl
+          - build: armv7l-linux
+            target: armv7-unknown-linux-musleabihf
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -97,8 +99,8 @@ jobs:
         with:
           tool: cross
       - name: Install ARM binary tools
-        if: matrix.build == 'aarch64-linux'
-        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+        if: matrix.build != 'x86_64-linux'
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu binutils-arm-linux-gnueabihf
       - name: Build binary
         run: cross build --target ${{ matrix.target }} --release --locked
       - name: Verify static binary
@@ -110,10 +112,11 @@ jobs:
           fi
       - name: Strip binary
         run: |
-          STRIP_CMD="strip"
-          if [ "${{ matrix.build }}" = "aarch64-linux" ]; then
-            STRIP_CMD="aarch64-linux-gnu-strip"
-          fi
+          case "${{ matrix.build }}" in
+            aarch64-linux) STRIP_CMD="aarch64-linux-gnu-strip" ;;
+            armv7l-linux) STRIP_CMD="arm-linux-gnueabihf-strip" ;;
+            *) STRIP_CMD="strip" ;;
+          esac
           "$STRIP_CMD" --strip-unneeded "target/${{ matrix.target }}/release/aldis"
       - name: Upload binary
         uses: actions/upload-artifact@v7

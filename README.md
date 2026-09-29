@@ -19,7 +19,7 @@ A tool for updating MCU firmware. `aldis` is named after the Aldis lamp, the sig
 
 ## Installation
 
-Download the latest build for your host's architecture (`aarch64` or `x86_64`) and extract it to `~/aldis`:
+Download the latest build for your host's architecture (`aarch64`, `armv7l` for 32-bit Raspberry Pi OS, or `x86_64`) and extract it to `~/aldis`:
 
 ```
 mkdir -p ~/aldis
