@@ -46,7 +46,7 @@ installs both. Run `~/aldis/aldis setup --check` to verify they're in place with
 sudo ~/aldis/aldis setup --agent
 ```
 
-Installs and starts the `aldis` service under the sudo user, so it survives reboots and keeps running. Adds it to Moonraker's service list (`moonraker.asvc`) so Fluidd and Mainsail can manage and restart it from their service menus.
+Installs and starts the `aldis` service under the sudo user, so it survives reboots and keeps running. Adds it to Moonraker's service list (`moonraker.asvc`) so web UIs can manage and restart it from their service menus. Restart Moonraker once afterwards so it picks up the new entry.
 
 ```
 sudo ~/aldis/aldis setup --agent --remove
@@ -77,36 +77,6 @@ Stops and removes the service and drops it from Moonraker's service list.
 `self-update` compares the running binary's version against the latest GitHub release and, unless already current, downloads and installs the matching platform archive over the current binary. No `sudo` is required as long as `~/aldis` is writable by the current user. If the agent service is running, `self-update` restarts it onto the new binary; otherwise it leaves the service alone.
 
 `status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker instance or a non-default Klipper service, and only one `update`, `flash`, or `reboot` runs at a time — a second concurrent run fails immediately rather than racing the first.
-
-## Fluidd
-
-With the agent installed, Fluidd shows a **Settings → Firmware Updates** card listing every MCU
-with its running firmware version and an Update button where the agent offers one. Install the
-agent with
-
-```
-sudo ~/aldis/aldis setup --agent
-sudo systemctl restart moonraker
-```
-
-The Moonraker restart is needed once so Moonraker picks up the `aldis` service that setup adds
-to `moonraker.asvc`; until then Fluidd only shows the card while the agent is connected, and
-the Services list in Fluidd's Host menu cannot start or stop it.
-
-Progress is shown in the same dialog Fluidd uses for software updates. Turn on "Enable
-notifications" on the card to be told when an MCU falls behind the running Klipper host.
-
-## Mainsail
-
-A Mainsail build with firmware update support shows a **Machine → Firmware Updates** panel
-below the Update Manager, listing every MCU with its running firmware version and an Update
-button where the agent offers one. Setup is the same as for Fluidd: install the agent with
-`sudo ~/aldis/aldis setup --agent` and restart Moonraker once.
-
-Mainsail asks for confirmation before each update, like its software updates, unless "Hide
-update warnings" is enabled in its UI settings. Progress is shown in Mainsail's update dialog.
-When an MCU falls behind the running Klipper host, the notification bell shows an entry that can
-be dismissed until the next reboot or until Klipper is next updated.
 
 ## Supported Flash Backends
 
