@@ -3,9 +3,10 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use aldis::config::{FleetConfig, instance_urls};
 use aldis::flash::linux_host::{INSTALL_COMMAND, RESTART_COMMAND};
 use anyhow::{Context, bail};
 
@@ -22,16 +23,34 @@ pub(crate) const AGENT_STATUS_COMMAND: [&str; 3] = ["/bin/systemctl", "is-active
 /// The privileged command `self-update` uses to restart the agent onto a new binary.
 pub(crate) const AGENT_RESTART_COMMAND: [&str; 3] = ["/bin/systemctl", "restart", AGENT_SERVICE];
 
+fn configured_urls(arguments: &SetupArgs) -> anyhow::Result<Vec<String>> {
+    let file = arguments
+        .config
+        .as_deref()
+        .map(FleetConfig::load)
+        .transpose()?;
+    Ok(instance_urls(file, &arguments.moonraker))
+}
+
 pub(crate) fn setup(arguments: SetupArgs) -> ExitCode {
+    let urls = match configured_urls(&arguments) {
+        Ok(urls) => urls,
+        Err(error) => return fail(format!("{error:#}")),
+    };
     if arguments.check {
-        return check_setup();
+        return check_setup(urls.len());
     }
     let result = if arguments.remove {
-        remove_agent(&arguments.moonraker.moonraker)
+        remove_agent(&urls)
     } else {
         install_setup().and_then(|user| {
             if arguments.agent {
-                install_agent(&user, &arguments.moonraker.moonraker)
+                install_agent(
+                    &user,
+                    &arguments.moonraker,
+                    arguments.config.as_deref(),
+                    &urls,
+                )
             } else {
                 Ok(())
             }
@@ -76,13 +95,26 @@ fn install_setup() -> anyhow::Result<String> {
     Ok(user)
 }
 
-fn agent_unit(user: &str, exe: &Path, moonraker: &str) -> String {
+fn agent_unit(user: &str, exe: &Path, moonrakers: &[String], config: Option<&Path>) -> String {
     let exe = escape_for_systemd_exec(&exe.display().to_string());
+    let mut arguments: String = moonrakers
+        .iter()
+        .map(|url| format!(" --moonraker {url}"))
+        .collect();
+    if let Some(config) = config {
+        arguments.push_str(&format!(" --config {}", config.display()));
+    }
     format!(
         "[Unit]\nDescription=aldis Moonraker agent\nAfter=moonraker.service\nWants=moonraker.service\n\n\
-         [Service]\nType=simple\nUser={user}\nExecStart=\"{exe}\" agent --moonraker {moonraker}\n\
+         [Service]\nType=simple\nUser={user}\nExecStart=\"{exe}\" agent{arguments}\n\
          Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     )
+}
+
+/// `path` made absolute: the service starts in `/`, so a relative `--config` would never be found.
+fn absolute_config(path: &Path) -> anyhow::Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("could not find the configuration file {}", path.display()))
 }
 
 /// Escapes `value` for a double-quoted `ExecStart=` argument: doubles `%` (systemd's specifier
@@ -148,49 +180,67 @@ fn systemctl(arguments: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn install_agent(user: &str, moonraker: &str) -> anyhow::Result<()> {
+fn install_agent(
+    user: &str,
+    flags: &[String],
+    config: Option<&Path>,
+    urls: &[String],
+) -> anyhow::Result<()> {
     let exe = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
         .context("could not resolve the aldis binary path")?;
+    let config = config.map(absolute_config).transpose()?;
+    // Flags go into the unit as given; the config file's own URLs are read by the agent itself.
+    let moonrakers = if flags.is_empty() && config.is_none() {
+        urls.to_vec()
+    } else {
+        flags.to_vec()
+    };
     let unit_action = install_file(
         AGENT_UNIT_PATH,
-        &agent_unit(user, &exe, moonraker),
+        &agent_unit(user, &exe, &moonrakers, config.as_deref()),
         "agent service",
     )?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", AGENT_SERVICE])?;
     // restart rather than start: a repaired unit (new binary path or URL) must take effect.
     systemctl(&["restart", AGENT_SERVICE])?;
-    let asvc_action = match moonraker_asvc(moonraker) {
-        Some(path) if path.exists() => {
-            let current = fs::read_to_string(&path).context("could not read moonraker.asvc")?;
-            match with_service(&current, AGENT_SERVICE) {
-                Some(updated) => {
-                    fs::write(&path, updated).context("could not update moonraker.asvc")?;
-                    format!(
-                        "added aldis to {}; restart Moonraker for it to appear in the service menu",
-                        path.display()
-                    )
+    let mut asvc_actions = String::new();
+    for url in urls {
+        let action = match moonraker_asvc(url) {
+            Some(path) if path.exists() => {
+                let current = fs::read_to_string(&path).context("could not read moonraker.asvc")?;
+                match with_service(&current, AGENT_SERVICE) {
+                    Some(updated) => {
+                        fs::write(&path, updated).context("could not update moonraker.asvc")?;
+                        format!(
+                            "added aldis to {}; restart Moonraker for it to appear in the service menu",
+                            path.display()
+                        )
+                    }
+                    None => format!("already listed in {}", path.display()),
                 }
-                None => format!("already listed in {}", path.display()),
             }
-        }
-        Some(path) => format!("skipped: {} does not exist", path.display()),
-        None => "skipped: could not ask Moonraker for its data directory".to_owned(),
-    };
-    println!(
-        "aldis agent:\n  service: {unit_action}, enabled and restarted\n  Moonraker service list: {asvc_action}"
-    );
+            Some(path) => format!("skipped: {} does not exist", path.display()),
+            None => "skipped: could not ask Moonraker for its data directory".to_owned(),
+        };
+        asvc_actions.push_str(&format!("\n  Moonraker service list ({url}): {action}"));
+    }
+    println!("aldis agent:\n  service: {unit_action}, enabled and restarted{asvc_actions}");
     Ok(())
 }
 
-fn remove_agent(moonraker: &str) -> anyhow::Result<()> {
+fn remove_agent(urls: &[String]) -> anyhow::Result<()> {
     if Path::new(AGENT_UNIT_PATH).exists() {
         systemctl(&["disable", "--now", AGENT_SERVICE])?;
         fs::remove_file(AGENT_UNIT_PATH).context("could not remove the agent service")?;
         systemctl(&["daemon-reload"])?;
     }
-    if let Some(path) = moonraker_asvc(moonraker).filter(|path| path.exists()) {
+    for url in urls {
+        let Some(path) = moonraker_asvc(url).filter(|path| path.exists()) else {
+            println!("skipped {url}: could not find its Moonraker service list");
+            continue;
+        };
         let current = fs::read_to_string(&path).context("could not read moonraker.asvc")?;
         if let Some(updated) = without_service(&current, AGENT_SERVICE) {
             fs::write(&path, updated).context("could not update moonraker.asvc")?;
@@ -266,7 +316,7 @@ fn setup_install_report(rules_action: &str, service_action: &str) -> String {
     )
 }
 
-fn check_setup() -> ExitCode {
+fn check_setup(instances: usize) -> ExitCode {
     tracing::info!("checking aldis setup");
     let rules = fs::read_to_string(UDEV_RULES_PATH).is_ok_and(|contents| contents == udev_rules());
     let service = Command::new("sudo")
@@ -280,6 +330,9 @@ fn check_setup() -> ExitCode {
         .is_ok_and(|output| output.status.success());
     tracing::debug!(rules, service, host_mcu, "setup check results");
     println!("{}", setup_check_report(rules, service, host_mcu));
+    if instances > 1 {
+        println!("{}", sudo_version_report());
+    }
     if rules && service {
         ExitCode::SUCCESS
     } else {
@@ -300,6 +353,47 @@ fn setup_check_report(rules: bool, service: bool, host_mcu: bool) -> String {
     )
 }
 
+fn parse_sudo_version(output: &str) -> Option<(u32, u32, u32)> {
+    let version = output
+        .lines()
+        .find_map(|line| line.strip_prefix("Sudo version "))?;
+    let mut parts = version.split('.').map(|part| {
+        part.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u32>()
+    });
+    Some((
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    ))
+}
+
+/// Whether sudoers regular-expression command arguments work (added in sudo 1.9.10).
+fn sudo_supports_regex(version: (u32, u32, u32)) -> bool {
+    version >= (1, 9, 10)
+}
+
+fn sudo_version_report() -> String {
+    let version = Command::new("sudo")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| parse_sudo_version(&String::from_utf8_lossy(&output.stdout)));
+    match version {
+        Some(version @ (major, minor, patch)) if sudo_supports_regex(version) => {
+            format!("  sudo version: {major}.{minor}.{patch} (extra Klipper instances supported)")
+        }
+        Some((major, minor, patch)) => format!(
+            "  sudo version: {major}.{minor}.{patch} (extra Klipper instances need sudo 1.9.10 or newer)"
+        ),
+        None => {
+            "  sudo version: unknown (extra Klipper instances need sudo 1.9.10 or newer)".to_owned()
+        }
+    }
+}
+
 fn sudo_policy_allows_service_status(stdout: &[u8]) -> bool {
     matches!(
         std::str::from_utf8(stdout).map(str::trim),
@@ -318,10 +412,15 @@ fn udev_rules() -> &'static str {
     UDEV_RULES
 }
 
+/// Additional Klipper instances (`klipper-2`, ...). Regular-expression arguments need sudo 1.9.10;
+/// older sudo reads this as a literal that never matches, so only the literal rules above apply.
+const KLIPPER_UNIT_PATTERN: &str =
+    "/bin/systemctl ^(is-active|start|stop) klipper[A-Za-z0-9_.@-]*$";
+
 fn sudoers_policy(user: &str) -> String {
     format!(
         "{user} ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
-         /bin/systemctl start klipper, {}, {}, {}, {}\n",
+         /bin/systemctl start klipper, {}, {}, {}, {}, {KLIPPER_UNIT_PATTERN}\n",
         AGENT_STATUS_COMMAND.join(" "),
         AGENT_RESTART_COMMAND.join(" "),
         INSTALL_COMMAND.join(" "),
@@ -337,9 +436,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        agent_unit, escape_for_systemd_exec, setup_check_report, setup_install_report,
-        stage_sudoers, sudo_policy_allows_service_status, sudoers_policy, with_service,
-        without_service,
+        absolute_config, agent_unit, escape_for_systemd_exec, parse_sudo_version,
+        setup_check_report, setup_install_report, stage_sudoers, sudo_policy_allows_service_status,
+        sudo_supports_regex, sudoers_policy, with_service, without_service,
     };
 
     #[test]
@@ -360,13 +459,14 @@ mod tests {
     }
 
     #[test]
-    fn grants_exactly_the_fixed_host_mcu_commands() {
+    fn grants_the_fixed_commands_and_the_klipper_unit_pattern() {
         assert_eq!(
             sudoers_policy("pi"),
             "pi ALL=(root) NOPASSWD: /bin/systemctl is-active klipper, /bin/systemctl stop klipper, \
              /bin/systemctl start klipper, /bin/systemctl is-active aldis, /bin/systemctl restart aldis, \
              /usr/bin/install -m 0755 /dev/stdin /usr/local/bin/klipper_mcu, \
-             /bin/systemctl restart klipper-mcu\n"
+             /bin/systemctl restart klipper-mcu, \
+             /bin/systemctl ^(is-active|start|stop) klipper[A-Za-z0-9_.@-]*$\n"
         );
     }
 
@@ -406,7 +506,8 @@ mod tests {
         let unit = agent_unit(
             "pi",
             std::path::Path::new("/home/pi/aldis/aldis"),
-            "http://127.0.0.1:7125",
+            &["http://127.0.0.1:7125".to_owned()],
+            None,
         );
 
         assert!(unit.contains("\nUser=pi\n"), "{unit}");
@@ -421,11 +522,64 @@ mod tests {
     }
 
     #[test]
+    fn renders_every_instance_and_the_config_into_the_agent_unit() {
+        let unit = agent_unit(
+            "pi",
+            std::path::Path::new("/home/pi/aldis/aldis"),
+            &[
+                "http://127.0.0.1:7125".to_owned(),
+                "http://127.0.0.1:7126".to_owned(),
+            ],
+            Some(std::path::Path::new("/etc/aldis.toml")),
+        );
+
+        assert!(
+            unit.contains(
+                "\nExecStart=\"/home/pi/aldis/aldis\" agent --moonraker http://127.0.0.1:7125 \
+                 --moonraker http://127.0.0.1:7126 --config /etc/aldis.toml\n"
+            ),
+            "{unit}"
+        );
+    }
+
+    #[test]
+    fn resolves_a_relative_config_path_for_the_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("aldis.toml");
+        fs::write(&file, "moonraker = []").unwrap();
+
+        assert_eq!(
+            absolute_config(&file).unwrap(),
+            file.canonicalize().unwrap()
+        );
+        assert!(absolute_config(&dir.path().join("absent.toml")).is_err());
+    }
+
+    #[test]
+    fn reads_the_sudo_version_and_knows_when_regex_rules_work() {
+        assert_eq!(
+            parse_sudo_version("Sudo version 1.9.16p2\nSudoers policy plugin version 1.9.16p2\n"),
+            Some((1, 9, 16))
+        );
+        assert_eq!(
+            parse_sudo_version("Sudo version 1.8.31\n"),
+            Some((1, 8, 31))
+        );
+        assert_eq!(parse_sudo_version("not sudo"), None);
+        assert!(sudo_supports_regex((1, 9, 10)));
+        assert!(sudo_supports_regex((1, 9, 16)));
+        assert!(sudo_supports_regex((2, 0, 0)));
+        assert!(!sudo_supports_regex((1, 9, 9)));
+        assert!(!sudo_supports_regex((1, 8, 31)));
+    }
+
+    #[test]
     fn quotes_an_executable_path_containing_a_space() {
         let unit = agent_unit(
             "pi",
             std::path::Path::new("/home/pi/my aldis/aldis"),
-            "http://127.0.0.1:7125",
+            &["http://127.0.0.1:7125".to_owned()],
+            None,
         );
 
         assert!(

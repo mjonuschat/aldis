@@ -146,8 +146,12 @@ pub(crate) struct SetupArgs {
     /// With --agent: stop and remove the agent service instead.
     #[arg(long, requires = "agent")]
     pub(crate) remove: bool,
-    #[command(flatten)]
-    pub(crate) moonraker: MoonrakerArgs,
+    /// With --agent: Moonraker API URL; repeat for each printer on this host.
+    #[arg(long = "moonraker")]
+    pub(crate) moonraker: Vec<String>,
+    /// With --agent: TOML file listing the Moonraker URLs, passed on to the agent.
+    #[arg(long)]
+    pub(crate) config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -225,6 +229,31 @@ mod tests {
             panic!("expected flash command");
         };
         assert_eq!(flash.config, Some(std::path::PathBuf::from("peers.toml")));
+    }
+
+    #[test]
+    fn setup_accepts_repeated_moonraker_urls_and_a_config() {
+        let CliCommand::Setup(arguments) = Cli::try_parse_from([
+            "aldis",
+            "setup",
+            "--agent",
+            "--moonraker",
+            "http://127.0.0.1:7125",
+            "--moonraker",
+            "http://127.0.0.1:7126",
+            "--config",
+            "/etc/aldis.toml",
+        ])
+        .expect("parse setup")
+        .command
+        else {
+            panic!("expected setup command");
+        };
+        assert_eq!(arguments.moonraker.len(), 2);
+        assert_eq!(
+            arguments.config,
+            Some(std::path::PathBuf::from("/etc/aldis.toml"))
+        );
     }
 
     #[test]
