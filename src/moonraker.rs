@@ -232,8 +232,13 @@ impl PrinterStatePort for MoonrakerAdapter {
 
 impl MoonrakerAdapter {
     pub fn new(base_url: impl Into<String>) -> Self {
+        Self::with_timeout(base_url, Duration::from_secs(5))
+    }
+
+    /// Like [`Self::new`] with a custom per-request timeout.
+    pub fn with_timeout(base_url: impl Into<String>, timeout: Duration) -> Self {
         let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(5)))
+            .timeout_global(Some(timeout))
             .build();
 
         Self {

@@ -7,7 +7,7 @@ repository = "https://github.com/mjonuschat/aldis"
 
 [dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.5.58", features = ["derive"] }
+clap = { version = "4.5.58", features = ["derive", "env"] }
 dfu-core = "0.11.1"
 dfu-nusb = "0.2.0"
 nusb = "0.2.7"
@@ -28,6 +28,7 @@ socketcan = { version = "4.0.0", default-features = false }
 semver = "1.0.28"
 flate2 = "1.1.10"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 
 [patch.crates-io]
 dfu-core = { git = "https://github.com/mjonuschat/dfu-core", rev = "e0150206498cbb2b1f06c897ba129b5daa841f7a" }

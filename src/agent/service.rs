@@ -85,10 +85,44 @@ struct ServiceState {
     run_snapshot: Option<StatusBody>,
 }
 
+/// Which instance currently holds the host-wide update lock, shared by every instance in the
+/// process so a `busy` rejection can say who is running.
+#[derive(Clone, Default)]
+pub struct LockHolders(Arc<Mutex<Option<String>>>);
+
+/// Clears the recorded holder when dropped.
+pub struct HolderGuard(Option<Arc<Mutex<Option<String>>>>);
+
+impl LockHolders {
+    /// Records `name` as the holder until the guard drops; an empty name records nothing.
+    pub fn claim(&self, name: &str) -> HolderGuard {
+        if name.is_empty() {
+            return HolderGuard(None);
+        }
+        *self.0.lock().unwrap() = Some(name.to_owned());
+        HolderGuard(Some(Arc::clone(&self.0)))
+    }
+
+    /// The instance that holds the lock, if it is in this process.
+    pub fn current(&self) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl Drop for HolderGuard {
+    fn drop(&mut self) {
+        if let Some(holder) = &self.0 {
+            *holder.lock().unwrap() = None;
+        }
+    }
+}
+
 pub struct AgentService<B: AgentBackend> {
     backend: Arc<B>,
     state: Arc<(Mutex<ServiceState>, Condvar)>,
     events: EventSink,
+    name: String,
+    holders: LockHolders,
 }
 
 impl<B: AgentBackend> Clone for AgentService<B> {
@@ -97,6 +131,8 @@ impl<B: AgentBackend> Clone for AgentService<B> {
             backend: Arc::clone(&self.backend),
             state: Arc::clone(&self.state),
             events: Arc::clone(&self.events),
+            name: self.name.clone(),
+            holders: self.holders.clone(),
         }
     }
 }
@@ -114,6 +150,25 @@ impl<B: AgentBackend> AgentService<B> {
             backend: Arc::new(backend),
             state: Arc::default(),
             events,
+            name: String::new(),
+            holders: LockHolders::default(),
+        }
+    }
+
+    /// Names this instance and shares `holders` with the others in the process, so a rejected
+    /// request can say which instance is running an update.
+    pub fn with_identity(mut self, name: impl Into<String>, holders: LockHolders) -> Self {
+        self.name = name.into();
+        self.holders = holders;
+        self
+    }
+
+    fn busy(&self) -> ApiError {
+        match self.holders.current() {
+            Some(holder) => {
+                ApiError::rejected("busy", format!("an update is already running on {holder}"))
+            }
+            None => ApiError::rejected("busy", "an update is already running"),
         }
     }
 
@@ -138,9 +193,10 @@ impl<B: AgentBackend> AgentService<B> {
 
     pub fn update(&self, request: UpdateRequest) -> Result<Value, ApiError> {
         let lock = self.backend.try_lock().map_err(|error| match error {
-            LockError::Busy => ApiError::rejected("busy", "an update is already running"),
+            LockError::Busy => self.busy(),
             error => ApiError::rejected("unavailable", error.to_string()),
         })?;
+        let holder = self.holders.claim(&self.name);
         // The update lock alone isn't enough: a finishing run drops it before its own state is
         // recorded as `Finished` (see `execute`), so without this check a request landing in that
         // window would overwrite the still-finishing run's record.
@@ -258,7 +314,7 @@ impl<B: AgentBackend> AgentService<B> {
         }
         let service = self.clone();
         let id = run_id.clone();
-        std::thread::spawn(move || service.execute(&id, lock, &snapshot, &targets));
+        std::thread::spawn(move || service.execute(&id, lock, holder, &snapshot, &targets));
         Ok(json!({ "run_id": run_id }))
     }
 
@@ -289,7 +345,14 @@ impl<B: AgentBackend> AgentService<B> {
         }
     }
 
-    fn execute(&self, run_id: &str, lock: UpdateLock, snapshot: &Snapshot, targets: &[String]) {
+    fn execute(
+        &self,
+        run_id: &str,
+        lock: UpdateLock,
+        holder: HolderGuard,
+        snapshot: &Snapshot,
+        targets: &[String],
+    ) {
         let names: Vec<_> = targets.iter().map(|target| display_name(target)).collect();
         self.emit(UpdateResponse {
             run_id: run_id.to_owned(),
@@ -307,6 +370,7 @@ impl<B: AgentBackend> AgentService<B> {
             phase: Phase::Discover,
         };
         let result = self.backend.run(&log, lock, snapshot, targets, &mut hooks);
+        drop(holder);
         let (outcome, updated, failed) = match &result {
             Ok(outcome) => (Outcome::Success, outcome.updated.clone(), None),
             Err(failure) => (Outcome::Failed, failure.updated.clone(), Some(failure)),
@@ -570,6 +634,60 @@ mod tests {
 
     fn reason(error: &ApiError) -> &str {
         error.data["reason"].as_str().unwrap()
+    }
+
+    #[test]
+    fn busy_names_the_instance_that_holds_the_lock() {
+        let holders = LockHolders::default();
+        let backend = FakeBackend::new(snapshot(PrintState::Standby), Ok(RunOutcome::default()));
+        let _held = backend.try_lock().unwrap();
+        let _claim = holders.claim("klipper-2");
+        let service = AgentService::new(backend, sink().0).with_identity("klipper", holders);
+
+        let error = service
+            .update(UpdateRequest::All { all: true })
+            .unwrap_err();
+
+        assert_eq!(reason(&error), "busy");
+        assert_eq!(error.message, "an update is already running on klipper-2");
+    }
+
+    #[test]
+    fn busy_without_a_known_holder_keeps_the_generic_message() {
+        let backend = FakeBackend::new(snapshot(PrintState::Standby), Ok(RunOutcome::default()));
+        let _held = backend.try_lock().unwrap();
+        let service = AgentService::new(backend, sink().0);
+
+        let error = service
+            .update(UpdateRequest::All { all: true })
+            .unwrap_err();
+
+        assert_eq!(error.message, "an update is already running");
+    }
+
+    #[test]
+    fn an_instance_is_the_recorded_holder_only_while_its_run_lasts() {
+        let holders = LockHolders::default();
+        let backend = FakeBackend::new(
+            snapshot(PrintState::Standby),
+            Ok(RunOutcome {
+                updated: vec!["mcu".to_owned()],
+            }),
+        );
+        let (release, gate) = mpsc::channel();
+        *backend.gate.lock().unwrap() = Some(gate);
+        let service =
+            AgentService::new(backend, sink().0).with_identity("klipper", holders.clone());
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["mcu".to_owned()],
+            })
+            .unwrap();
+        assert_eq!(holders.current().as_deref(), Some("klipper"));
+        release.send(()).unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+        assert_eq!(holders.current(), None);
     }
 
     #[test]

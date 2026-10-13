@@ -3,5 +3,6 @@
 pub mod api;
 pub mod connection;
 pub mod protocol;
+pub mod runtime;
 pub mod service;
 pub mod system;

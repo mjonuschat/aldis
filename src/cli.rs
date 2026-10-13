@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
-const DEFAULT_MOONRAKER_URL: &str = "http://127.0.0.1:7125";
+use aldis::config::DEFAULT_MOONRAKER_URL;
 
 /// Safely update Klipper MCU firmware from its embedded configuration.
 #[derive(Debug, Parser)]
@@ -103,6 +103,10 @@ pub(crate) struct UpdateArgs {
     /// Directory retained for generated Kconfigs and firmware artifacts.
     #[arg(long)]
     pub(crate) workspace: Option<PathBuf>,
+    /// Agent configuration naming the other printers on this host, so a CAN bridge is not
+    /// flashed under a printer that is busy.
+    #[arg(long, env = "ALDIS_CONFIG")]
+    pub(crate) config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -118,6 +122,10 @@ pub(crate) struct FlashArgs {
     pub(crate) force: bool,
     #[command(flatten)]
     pub(crate) connection: ConnectionArgs,
+    /// Agent configuration naming the other printers on this host, so a CAN bridge is not
+    /// flashed under a printer that is busy.
+    #[arg(long, env = "ALDIS_CONFIG")]
+    pub(crate) config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -151,14 +159,73 @@ pub(crate) struct SelfUpdateArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct AgentArgs {
-    #[command(flatten)]
-    pub(crate) moonraker: MoonrakerArgs,
+    /// Moonraker API URL; repeat for each printer on this host. Adds to --config.
+    #[arg(long = "moonraker")]
+    pub(crate) moonraker: Vec<String>,
+    /// TOML file listing the Moonraker URLs to serve.
+    #[arg(long)]
+    pub(crate) config: Option<PathBuf>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Cli, CliCommand};
     use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn agent_accepts_repeated_moonraker_urls_and_a_config_path() {
+        let CliCommand::Agent(arguments) = Cli::try_parse_from([
+            "aldis",
+            "agent",
+            "--moonraker",
+            "http://127.0.0.1:7125",
+            "--moonraker",
+            "http://127.0.0.1:7126",
+            "--config",
+            "/etc/aldis.toml",
+        ])
+        .expect("parse agent")
+        .command
+        else {
+            panic!("expected agent command");
+        };
+        assert_eq!(
+            arguments.moonraker,
+            ["http://127.0.0.1:7125", "http://127.0.0.1:7126"]
+        );
+        assert_eq!(
+            arguments.config,
+            Some(std::path::PathBuf::from("/etc/aldis.toml"))
+        );
+
+        let CliCommand::Agent(bare) = Cli::try_parse_from(["aldis", "agent"]).unwrap().command
+        else {
+            panic!("expected agent command");
+        };
+        assert!(bare.moonraker.is_empty());
+        assert_eq!(bare.config, None);
+    }
+
+    #[test]
+    fn update_and_flash_accept_a_config_path() {
+        let CliCommand::Update(update) =
+            Cli::try_parse_from(["aldis", "update", "--config", "peers.toml"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected update command");
+        };
+        assert_eq!(update.config, Some(std::path::PathBuf::from("peers.toml")));
+
+        let CliCommand::Flash(flash) =
+            Cli::try_parse_from(["aldis", "flash", "mcu", "fw.bin", "--config", "peers.toml"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected flash command");
+        };
+        assert_eq!(flash.config, Some(std::path::PathBuf::from("peers.toml")));
+    }
 
     #[test]
     fn top_level_help_describes_the_cli() {
