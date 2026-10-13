@@ -5,6 +5,8 @@ use serde::Serialize;
 use crate::eligibility::{
     CheckoutRevision, Eligibility, RevisionStatus, assess_mcu, revisions_match,
 };
+use crate::flash_order::is_usb_can_bridge;
+use crate::fleet::peer::{PeerState, check_bridge};
 use crate::host::{HostCheckError, check_host};
 use crate::moonraker::{
     HostInfo, KlippyState, McuInventory, McuTransport, PrintState, UnreportedReason,
@@ -29,6 +31,8 @@ pub struct Snapshot {
     pub host: HostSnapshot,
     /// `None` when discovery was skipped or failed.
     pub inventory: Option<McuInventory>,
+    /// The other printers on this host, as last read; only consulted for USB-CAN bridge updates.
+    pub peers: Vec<PeerState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -307,11 +311,19 @@ pub fn assess(snapshot: &Snapshot) -> StatusBody {
                     format!("{family} boards have no bootloader aldis can flash"),
                 ),
             };
-            let actions = if state == McuState::UpdateAvailable && blocker.is_none() {
-                vec![Action::Update]
-            } else {
-                Vec::new()
-            };
+            let mut message = message;
+            let mut actions = Vec::new();
+            if state == McuState::UpdateAvailable && blocker.is_none() {
+                let bridge_refusal = if is_usb_can_bridge(mcu) {
+                    check_bridge(inventory, std::slice::from_ref(&mcu.name), &snapshot.peers).err()
+                } else {
+                    None
+                };
+                match bridge_refusal {
+                    Some(reason) => message = reason,
+                    None => actions.push(Action::Update),
+                }
+            }
             mcus.push(McuEntry {
                 name: display_name(&mcu.name).to_owned(),
                 transport: transport_body(mcu.transport.as_ref()),
@@ -362,6 +374,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::fleet::peer::PeerState;
     use crate::moonraker::{Mcu, McuTransport, UnreportedMcu};
 
     fn mcu(name: &str, version: &str, kconfig: &str) -> Mcu {
@@ -407,6 +420,7 @@ mod tests {
                     reason: UnreportedReason::NotResponding,
                 }],
             }),
+            peers: Vec::new(),
         }
     }
 
@@ -545,5 +559,88 @@ mod tests {
     fn strips_only_the_mcu_prefix_from_display_names() {
         assert_eq!(display_name("mcu"), "mcu");
         assert_eq!(display_name("mcu RP2040"), "RP2040");
+    }
+
+    fn peer_on(name: &str, interface: &str, uuid: u64, print: PrintState) -> PeerState {
+        PeerState {
+            name: name.to_owned(),
+            url: format!("http://{name}.invalid:7125"),
+            unit: Some(name.to_owned()),
+            klippy: Some(KlippyState::Ready),
+            print_state: Some(print),
+            inventory: Some(McuInventory {
+                mcus: vec![Mcu {
+                    transport: Some(McuTransport::Can {
+                        interface: interface.to_owned(),
+                        uuid,
+                    }),
+                    ..mcu("mcu", "v0.13.0-770-gce7002bed", "CONFIG_MACH_STM32=y\n")
+                }],
+                unreported: Vec::new(),
+            }),
+        }
+    }
+
+    fn with_bridge(mut snapshot: Snapshot) -> Snapshot {
+        snapshot.inventory.as_mut().unwrap().mcus.push(Mcu {
+            transport: Some(McuTransport::Can {
+                interface: "can0".to_owned(),
+                uuid: 0x1,
+            }),
+            ..mcu(
+                "mcu bridge",
+                "v0.13.0-753-g8c29c0a8e",
+                "CONFIG_MACH_STM32=y\nCONFIG_USBCANBUS=y\n",
+            )
+        });
+        snapshot
+    }
+
+    fn entry<'a>(body: &'a StatusBody, name: &str) -> &'a McuEntry {
+        body.mcus.iter().find(|entry| entry.name == name).unwrap()
+    }
+
+    #[test]
+    fn gates_only_the_bridge_while_a_peer_on_its_bus_is_printing() {
+        let mut snapshot = with_bridge(ready_snapshot());
+        snapshot.peers = vec![peer_on("klipper-2", "can0", 0xbeef, PrintState::Printing)];
+
+        let body = assess(&snapshot);
+
+        let bridge = entry(&body, "bridge");
+        assert_eq!(bridge.state, McuState::UpdateAvailable);
+        assert!(bridge.actions.is_empty());
+        assert!(bridge.message.contains("klipper-2"), "{}", bridge.message);
+        assert!(bridge.message.contains("printing"), "{}", bridge.message);
+        assert_eq!(entry(&body, "can").actions, vec![Action::Update]);
+    }
+
+    #[test]
+    fn an_idle_peer_or_a_peer_on_another_bus_does_not_gate_the_bridge() {
+        let mut snapshot = with_bridge(ready_snapshot());
+        snapshot.peers = vec![peer_on("klipper-2", "can0", 0xbeef, PrintState::Standby)];
+        assert_eq!(
+            entry(&assess(&snapshot), "bridge").actions,
+            vec![Action::Update]
+        );
+
+        snapshot.peers = vec![peer_on("klipper-2", "can9", 0xbeef, PrintState::Printing)];
+        assert_eq!(
+            entry(&assess(&snapshot), "bridge").actions,
+            vec![Action::Update]
+        );
+    }
+
+    #[test]
+    fn an_unreachable_peer_gates_the_bridge() {
+        let mut snapshot = with_bridge(ready_snapshot());
+        let mut peer = peer_on("klipper-2", "can9", 0xbeef, PrintState::Standby);
+        peer.klippy = None;
+        snapshot.peers = vec![peer];
+
+        let body = assess(&snapshot);
+
+        assert!(entry(&body, "bridge").actions.is_empty());
+        assert!(entry(&body, "bridge").message.contains("unreachable"));
     }
 }

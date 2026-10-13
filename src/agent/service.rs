@@ -523,6 +523,7 @@ mod tests {
     use super::*;
     use crate::agent::api::{HostSnapshot, McuOutcome, Outcome, Phase};
     use crate::eligibility::CheckoutRevision;
+    use crate::fleet::peer::PeerState;
     use crate::moonraker::{HostInfo, Mcu, McuInventory, McuTransport, PrintState};
 
     fn mcu(name: &str, version: &str, kconfig: &str) -> Mcu {
@@ -563,6 +564,7 @@ mod tests {
                 ],
                 unreported: Vec::new(),
             }),
+            peers: Vec::new(),
         }
     }
 
@@ -688,6 +690,49 @@ mod tests {
         release.send(()).unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
         assert_eq!(holders.current(), None);
+    }
+
+    #[test]
+    fn a_bridge_refused_by_the_bus_rule_is_skipped_by_all_and_rejected_by_name() {
+        let mut snap = snapshot(PrintState::Standby);
+        snap.peers = vec![PeerState {
+            name: "klipper-2".to_owned(),
+            url: "http://klipper-2.invalid:7125".to_owned(),
+            unit: Some("klipper-2".to_owned()),
+            klippy: Some(KlippyState::Ready),
+            print_state: Some(PrintState::Printing),
+            inventory: Some(McuInventory {
+                mcus: vec![mcu("mcu", "v1", "CONFIG_MACH_STM32=y\n")],
+                unreported: Vec::new(),
+            }),
+        }];
+        let backend = FakeBackend::new(
+            snap,
+            Ok(RunOutcome {
+                updated: vec!["mcu RP2040".to_owned()],
+            }),
+        );
+        let service = AgentService::new(backend, sink().0);
+
+        service.update(UpdateRequest::All { all: true }).unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+        assert_eq!(
+            *service.backend.seen_targets.lock().unwrap(),
+            vec!["mcu RP2040"]
+        );
+
+        let error = service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["mcu".to_owned()],
+            })
+            .unwrap_err();
+        assert_eq!(reason(&error), "not_updatable");
+        assert!(
+            error.data["mcus"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("klipper-2")
+        );
     }
 
     #[test]

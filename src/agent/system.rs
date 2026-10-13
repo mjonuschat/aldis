@@ -9,6 +9,9 @@ use crate::build::SystemCommandAdapter;
 use crate::checkout;
 use crate::coordinator::BuildCoordinator;
 use crate::eligibility::CheckoutRevision;
+use crate::flash_order::is_usb_can_bridge;
+use crate::fleet::peer::{PeerState, peers_excluding};
+use crate::fleet::system::probe_peer;
 use crate::host::{check_host, is_loopback_url};
 use crate::identify::{SerialIdentify, resolve_unreported, should_probe};
 use crate::lock::{LockError, UpdateLock};
@@ -16,7 +19,7 @@ use crate::logging::{LoggingCommandAdapter, RunLogSink};
 use crate::moonraker::{
     HostInfo, HostPort, KlippyState, MoonrakerAdapter, MoonrakerError, PrinterStatePort,
 };
-use crate::service::{KlipperService, KlipperUnit, ServiceState};
+use crate::service::{DEFAULT_KLIPPER_UNIT, KlipperService, KlipperUnit, ServiceState};
 use crate::update_run::{RunFailure, RunHooks, RunOutcome, RunRequest, run_updates};
 use crate::workspace::RunWorkspace;
 
@@ -24,6 +27,7 @@ pub struct SystemBackend {
     url: String,
     log_sink: RunLogSink,
     used_unit: Mutex<Option<KlipperUnit>>,
+    peer_urls: Vec<String>,
 }
 
 impl SystemBackend {
@@ -32,7 +36,19 @@ impl SystemBackend {
             url,
             log_sink,
             used_unit: Mutex::new(None),
+            peer_urls: Vec::new(),
         }
+    }
+
+    /// Sets the other printers whose state gates a USB-CAN bridge update.
+    pub fn with_peers(mut self, urls: Vec<String>) -> Self {
+        self.peer_urls = urls;
+        self
+    }
+
+    fn peers(&self, own_unit: Option<&str>) -> Vec<PeerState> {
+        let peers = self.peer_urls.iter().map(|url| probe_peer(url)).collect();
+        peers_excluding(own_unit.unwrap_or(DEFAULT_KLIPPER_UNIT), peers)
     }
 
     fn adapter(&self) -> MoonrakerAdapter {
@@ -97,6 +113,7 @@ impl AgentBackend for SystemBackend {
                 config_error: false,
             },
             inventory: None,
+            peers: Vec::new(),
         };
         if snapshot.host.info.state == KlippyState::Disconnected {
             return snapshot;
@@ -107,6 +124,9 @@ impl AgentBackend for SystemBackend {
                     && check_host(&self.url, snapshot.host.klipper_unit.as_deref()).is_ok()
                 {
                     resolve_unreported(&mut inventory, &SerialIdentify::default());
+                }
+                if inventory.mcus.iter().any(is_usb_can_bridge) {
+                    snapshot.peers = self.peers(snapshot.host.klipper_unit.as_deref());
                 }
                 snapshot.inventory = Some(inventory);
             }

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::agent::connection::run_forever;
 use crate::agent::service::{AgentService, LockHolders};
 use crate::agent::system::SystemBackend;
+use crate::fleet::system::other_urls;
 use crate::logging::RunLogSink;
 use crate::moonraker::{HostPort, MoonrakerAdapter};
 use crate::service::DEFAULT_KLIPPER_UNIT;
@@ -61,6 +62,7 @@ pub fn run_instances(urls: Vec<String>, sink: RunLogSink) -> ! {
         );
     }
     let holders = LockHolders::default();
+    let kept_urls: Vec<String> = kept.iter().map(|instance| instance.url.clone()).collect();
     for instance in kept {
         let name = instance
             .unit
@@ -68,7 +70,8 @@ pub fn run_instances(urls: Vec<String>, sink: RunLogSink) -> ! {
             .unwrap_or_else(|| instance.url.clone());
         let events = Arc::new(Mutex::new(None));
         let service = AgentService::new(
-            SystemBackend::new(instance.url.clone(), sink.clone()),
+            SystemBackend::new(instance.url.clone(), sink.clone())
+                .with_peers(other_urls(&instance.url, &kept_urls)),
             Arc::clone(&events),
         )
         .with_identity(name, holders.clone());
