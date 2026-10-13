@@ -54,6 +54,26 @@ sudo ~/aldis/aldis setup --agent --remove
 
 Stops and removes the service and drops it from Moonraker's service list.
 
+### Several printers
+
+One agent can serve every Klipper/Moonraker pair on the host. List the Moonrakers in a TOML file:
+
+```toml
+moonraker = ["http://127.0.0.1:7125", "http://127.0.0.1:7126"]
+```
+
+Pass the file with `--config PATH`, or repeat `--moonraker URL`. Flags add to the file. To install the service for two printers:
+
+```
+sudo ~/aldis/aldis setup --agent --moonraker http://127.0.0.1:7125 --moonraker http://127.0.0.1:7126
+```
+
+Each printer has its own MCU status, firmware updates and history. Updates run one at a time across the host.
+
+Klipper services other than `klipper` (such as `klipper-2` or `klipper@voron`) need sudo 1.9.10 or newer: Debian 12, Raspberry Pi OS Bookworm, Ubuntu 24.04. The default `klipper` service works with any sudo. With several printers configured, `setup --check` prints the sudo version.
+
+Flashing a USB-CAN bridge resets its CAN bus, so aldis refuses while another printer on that bus is printing, starting up, or cannot be checked. It stops nothing on the other printers, and their Klipper may need a `FIRMWARE_RESTART` once the bridge is back. `update` and `flash` run the same check when given `--config PATH` (or `ALDIS_CONFIG`). Without it they look only at the printer named by `--moonraker`.
+
 ## Usage
 
 ```
@@ -76,7 +96,7 @@ Stops and removes the service and drops it from Moonraker's service list.
 
 `self-update` compares the running binary's version against the latest GitHub release and, unless already current, downloads and installs the matching platform archive over the current binary. No `sudo` is required as long as `~/aldis` is writable by the current user. If the agent service is running, `self-update` restarts it onto the new binary; otherwise it leaves the service alone.
 
-`status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker instance or a non-default Klipper service, and only one `update`, `flash`, or `reboot` runs at a time — a second concurrent run fails immediately rather than racing the first.
+`status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker or one whose Klipper service name is not a valid Klipper unit. Only one `update`, `flash`, or `reboot` runs at a time on the host, and a second one fails immediately instead of racing the first.
 
 ## Supported Flash Backends
 

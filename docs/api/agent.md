@@ -82,7 +82,7 @@ first one that applies wins):
 | Reason | Condition |
 | --- | --- |
 | `non_local_moonraker` | The `--moonraker` host is not loopback |
-| `unsupported_instance` | Moonraker's paired Klipper unit is not `klipper` |
+| `unsupported_instance` | Moonraker's paired Klipper unit name is not a valid Klipper service name (`klipper` followed by letters, digits, `_`, `.`, `@` or `-`) |
 | `config_error` | Klippy could not load its config |
 | `klippy_unavailable` | Klippy is `startup` or disconnected (including Klipper stopped) |
 | `restart_pending` | The checkout at `klipper_path` does not match `software_version` (`revisions_match`) |
@@ -100,6 +100,12 @@ first one that applies wins):
 | `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD51); the message names the family | none |
 | `not_identified` | Empty object; fallback not attempted (CAN, host MCU, or port held) | none |
 | `not_responding` | Empty object; no identify reply. Message points to `aldis reboot` or a power cycle | none |
+
+Flashing a USB-CAN bridge resets its CAN bus, so the agent refuses while another printer on that
+bus is busy, starting up, or cannot be checked. The bridge MCU stays `update_available` but has
+empty `actions`, and its `message` says why (e.g. `cannot flash: klipper-2 is printing on can0`).
+The printer's other MCUs stay updatable. `update` with `all` skips the bridge, and naming it
+returns `not_updatable` with the same message.
 
 The UI never re-implements eligibility: buttons follow `actions`, and "Update All" targets every
 MCU whose actions include `update`. Force-updating a `current` MCU remains CLI-only.
@@ -146,7 +152,7 @@ receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole er
 
 | Reason | Code | Meaning |
 | --- | --- | --- |
-| `busy` | -32000 | An update is running (agent or CLI) |
+| `busy` | -32000 | An update is running (agent or CLI). When this agent is running it, the message names the printer (`an update is already running on klipper-2`) |
 | `blocked` | -32000 | A blocker applies; `data.blocker` carries it |
 | `unknown_mcu` | -32000 | A named MCU was not discovered |
 | `not_updatable` | -32000 | A named MCU lacks the `update` action; `data.mcus` gives per-MCU reasons |
@@ -196,6 +202,13 @@ per step; raw build output goes only to the run log.
 
 `klipper_left_stopped: true` means the run deliberately did not restart Klipper (see
 `update-lifecycle.md`'s Error Handling); the final message says so and names the MCU to recover.
+
+## Multiple printers
+
+One `aldis agent` process can serve several local Moonraker/Klipper pairs. It opens one connection
+per Moonraker, and each connection serves only its own printer with this same API, so a frontend
+sees one printer's MCUs, run and history. `api_version` stays 1. Updates run one at a time across
+the host: the agent rejects a second request, from any printer or the CLI, as `busy`.
 
 ## Versioning
 
