@@ -8,10 +8,14 @@ use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
+use aldis::config::{FleetConfig, instance_urls};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
 use aldis::eligibility::{CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected};
+use aldis::fleet::peer::{check_bridge, peers_excluding};
+use aldis::fleet::system::{other_urls, probe_peer};
 use aldis::logging::{self, LoggingCommandAdapter};
 use aldis::moonraker::{McuInventory, MoonrakerAdapter};
+use aldis::service::KlipperUnit;
 use aldis::update_run::{RunHooks, RunRequest, RunStep};
 use aldis::workspace::RunWorkspace;
 
@@ -19,6 +23,34 @@ use crate::cli::UpdateArgs;
 use crate::fail;
 use crate::status::{format_status, refresh_label};
 use crate::ui::UpdateUi;
+
+/// The other printers named by `config`, or none without one.
+pub(crate) fn peer_urls(config: Option<&Path>, own_url: &str) -> anyhow::Result<Vec<String>> {
+    let Some(path) = config else {
+        return Ok(Vec::new());
+    };
+    let file = FleetConfig::load(path)?;
+    Ok(other_urls(own_url, &instance_urls(Some(file), &[])))
+}
+
+/// Refuses a USB-CAN bridge flash while another printer named by `config` is busy or cannot be
+/// checked. Does nothing without a config.
+pub(crate) fn bridge_refusal(
+    config: Option<&Path>,
+    own_url: &str,
+    own_unit: &KlipperUnit,
+    inventory: &McuInventory,
+    targets: &[String],
+) -> anyhow::Result<()> {
+    let urls = peer_urls(config, own_url)?;
+    if urls.is_empty() {
+        return Ok(());
+    }
+    let peers = urls.iter().map(|url| probe_peer(url)).collect();
+    let peers = peers_excluding(own_unit.as_str(), peers);
+    check_bridge(inventory, targets, &peers)
+        .map_err(|message| anyhow::anyhow!("refusing to flash: {message}"))
+}
 
 pub(crate) fn update(arguments: UpdateArgs, verbose: u8, mut ui: UpdateUi) -> ExitCode {
     match update_and_report_run_log(arguments, verbose, &mut ui) {
@@ -134,6 +166,13 @@ fn run_update(
         ui.action("run completed successfully: no eligible MCUs require an update");
         return Ok(());
     }
+    bridge_refusal(
+        arguments.config.as_deref(),
+        moonraker_url,
+        &unit,
+        &inventory,
+        &offered,
+    )?;
     let coordinator = BuildCoordinator::with_unit(
         &source,
         LoggingCommandAdapter::new(SystemCommandAdapter),
@@ -258,6 +297,33 @@ fn confirm_pull() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{mcu_count_label, selection_for, unknown_targets};
+
+    #[test]
+    fn without_a_config_there_are_no_peers_and_nothing_to_check() {
+        assert_eq!(
+            super::peer_urls(None, "http://127.0.0.1:7125").unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_config_supplies_every_other_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aldis.toml");
+        std::fs::write(
+            &path,
+            r#"moonraker = ["http://127.0.0.1:7125", "http://127.0.0.1:7126/"]"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::peer_urls(Some(path.as_path()), "http://127.0.0.1:7125").unwrap(),
+            ["http://127.0.0.1:7126"]
+        );
+        let missing = dir.path().join("missing.toml");
+        assert!(super::peer_urls(Some(missing.as_path()), "http://127.0.0.1:7125").is_err());
+    }
+
     use aldis::moonraker::{Mcu, McuInventory};
 
     #[test]

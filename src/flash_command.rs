@@ -50,6 +50,14 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         anyhow::bail!(reason);
     }
 
+    crate::update::bridge_refusal(
+        arguments.config.as_deref(),
+        moonraker_url,
+        &unit,
+        &inventory,
+        std::slice::from_ref(&arguments.target),
+    )?;
+
     let workspace_root =
         crate::default_run_workspace().context("could not create the run workspace")?;
     let workspace = RunWorkspace::adopt(workspace_root);
