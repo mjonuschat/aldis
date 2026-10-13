@@ -99,10 +99,13 @@ fn agent_unit(user: &str, exe: &Path, moonrakers: &[String], config: Option<&Pat
     let exe = escape_for_systemd_exec(&exe.display().to_string());
     let mut arguments: String = moonrakers
         .iter()
-        .map(|url| format!(" --moonraker {url}"))
+        .map(|url| format!(" --moonraker {}", exec_argument(url)))
         .collect();
     if let Some(config) = config {
-        arguments.push_str(&format!(" --config {}", config.display()));
+        arguments.push_str(&format!(
+            " --config {}",
+            exec_argument(&config.display().to_string())
+        ));
     }
     format!(
         "[Unit]\nDescription=aldis Moonraker agent\nAfter=moonraker.service\nWants=moonraker.service\n\n\
@@ -115,6 +118,21 @@ fn agent_unit(user: &str, exe: &Path, moonrakers: &[String], config: Option<&Pat
 fn absolute_config(path: &Path) -> anyhow::Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("could not find the configuration file {}", path.display()))
+}
+
+fn exec_argument(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/:._-@+=,".contains(&byte));
+    if plain {
+        value.to_owned()
+    } else {
+        format!(
+            "\"{}\"",
+            escape_for_systemd_exec(&value.replace(['\n', '\r'], " "))
+        )
+    }
 }
 
 /// Escapes `value` for a double-quoted `ExecStart=` argument: doubles `%` (systemd's specifier
@@ -538,6 +556,23 @@ mod tests {
                 "\nExecStart=\"/home/pi/aldis/aldis\" agent --moonraker http://127.0.0.1:7125 \
                  --moonraker http://127.0.0.1:7126 --config /etc/aldis.toml\n"
             ),
+            "{unit}"
+        );
+    }
+
+    #[test]
+    fn quotes_a_config_path_containing_spaces_or_percent_signs() {
+        let unit = agent_unit(
+            "pi",
+            std::path::Path::new("/home/pi/aldis/aldis"),
+            &["http://127.0.0.1:7125".to_owned()],
+            Some(std::path::Path::new(
+                "/home/pi/printer configs/100%/aldis.toml",
+            )),
+        );
+
+        assert!(
+            unit.contains(" --config \"/home/pi/printer configs/100%%/aldis.toml\"\n"),
             "{unit}"
         );
     }
