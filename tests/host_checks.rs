@@ -33,13 +33,23 @@ fn rejects_a_remote_moonraker_before_checking_the_instance() {
 }
 
 #[test]
-fn rejects_a_non_default_klipper_unit_and_accepts_default_or_unknown() {
+fn accepts_any_valid_klipper_unit_and_rejects_other_names() {
+    use aldis::service::KlipperUnit;
+
+    let url = "http://127.0.0.1:7125";
     assert_eq!(
-        check_host("http://127.0.0.1:7125", Some("klipper-1")),
-        Err(HostCheckError::UnsupportedInstance("klipper-1".to_owned()))
+        check_host(url, Some("klipper-1")),
+        Ok(KlipperUnit::parse("klipper-1").unwrap())
     );
-    assert_eq!(check_host("http://127.0.0.1:7125", Some("klipper")), Ok(()));
-    assert_eq!(check_host("http://127.0.0.1:7125", None), Ok(()));
+    assert_eq!(check_host(url, Some("klipper")), Ok(KlipperUnit::default()));
+    assert_eq!(check_host(url, None), Ok(KlipperUnit::default()));
+    for bad in ["moonraker", "klipper; reboot", "Klipper"] {
+        assert_eq!(
+            check_host(url, Some(bad)),
+            Err(HostCheckError::UnsupportedInstance(bad.to_owned())),
+            "{bad}"
+        );
+    }
 }
 
 #[test]

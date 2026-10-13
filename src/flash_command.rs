@@ -37,7 +37,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         .clone()
         .unwrap_or_else(crate::default_klipper_source);
     let moonraker_url = &arguments.connection.moonraker.moonraker;
-    aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
+    let unit = aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
         .context("refusing to flash firmware")?;
     ui.action("discovering MCUs from Moonraker");
     let inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
@@ -53,10 +53,11 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     let workspace_root =
         crate::default_run_workspace().context("could not create the run workspace")?;
     let workspace = RunWorkspace::adopt(workspace_root);
-    let coordinator = BuildCoordinator::new(
+    let coordinator = BuildCoordinator::with_unit(
         &source,
         LoggingCommandAdapter::new(SystemCommandAdapter),
         LoggingCommandAdapter::new(SystemCommandAdapter),
+        unit,
     );
     let pending = coordinator
         .prepare(&inventory, &workspace, &arguments.target, false)

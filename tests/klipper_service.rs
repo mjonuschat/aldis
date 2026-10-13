@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use aldis::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
-use aldis::service::{KlipperService, ServiceState};
+use aldis::service::{KlipperService, KlipperUnit, ServiceState};
 
 #[test]
 fn checks_then_stops_klipper_with_explicit_systemctl_commands() {
@@ -75,4 +75,55 @@ fn command_output(success: bool, stdout: &[u8]) -> CommandOutput {
         stdout: stdout.to_vec(),
         stderr: Vec::new(),
     }
+}
+
+#[test]
+fn accepts_only_klipper_shaped_unit_names() {
+    for name in [
+        "klipper",
+        "klipper-2",
+        "klipper_2",
+        "klipper.1",
+        "klipper@voron",
+    ] {
+        assert_eq!(KlipperUnit::parse(name).unwrap().as_str(), name, "{name}");
+    }
+    let too_long = format!("klipper{}", "x".repeat(60));
+    for name in [
+        "",
+        "Klipper",
+        "moonraker",
+        "klipper evil.service",
+        "klipper;reboot",
+        "klipper/../x",
+        "klipper\n",
+        "-klipper",
+        too_long.as_str(),
+    ] {
+        assert!(KlipperUnit::parse(name).is_err(), "{name:?}");
+    }
+}
+
+#[test]
+fn controls_the_configured_unit() {
+    let runner = FakeRunner::new([
+        command_output(true, b"inactive\n"),
+        command_output(true, b""),
+        command_output(true, b""),
+    ]);
+    let service =
+        KlipperService::with_unit(runner.clone(), KlipperUnit::parse("klipper-2").unwrap());
+
+    service.state().unwrap();
+    service.start().unwrap();
+    service.stop().unwrap();
+
+    let commands = runner.commands.lock().expect("runner lock");
+    for (command, verb) in commands.iter().zip(["is-active", "start", "stop"]) {
+        assert_eq!(
+            command.arguments,
+            ["-n", "/bin/systemctl", verb, "klipper-2"]
+        );
+    }
+    assert_eq!(service.unit().as_str(), "klipper-2");
 }

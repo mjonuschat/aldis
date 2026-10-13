@@ -10,7 +10,7 @@ use crate::flash::system::{
 };
 use crate::moonraker::McuInventory;
 use crate::prepare::{PreparationError, PreparedBuild, prepare_build};
-use crate::service::{KlipperService, ServiceError, ServiceState};
+use crate::service::{KlipperService, KlipperUnit, ServiceError, ServiceState};
 use crate::workspace::{RunWorkspace, WorkspaceError};
 
 /// A prepared build that is not yet authorized to stop Klipper or run Make.
@@ -151,9 +151,24 @@ where
 {
     /// Creates a coordinator rooted at a checked-out Klipper source tree.
     pub fn new(klipper_source_dir: impl Into<PathBuf>, build_runner: B, service_runner: S) -> Self {
+        Self::with_unit(
+            klipper_source_dir,
+            build_runner,
+            service_runner,
+            KlipperUnit::default(),
+        )
+    }
+
+    /// Creates a coordinator that controls the Klipper service `unit`.
+    pub fn with_unit(
+        klipper_source_dir: impl Into<PathBuf>,
+        build_runner: B,
+        service_runner: S,
+        unit: KlipperUnit,
+    ) -> Self {
         Self {
             builder: KlipperBuilder::new(klipper_source_dir, build_runner),
-            service: KlipperService::new(service_runner),
+            service: KlipperService::with_unit(service_runner, unit),
             first_observed_active: Cell::new(None),
         }
     }
@@ -368,6 +383,7 @@ mod tests {
     use crate::flash::katapult::system::SystemKatapultOptions;
     use crate::flash::system::{SystemFlashError, SystemFlashOptions};
     use crate::prepare::PreparedBuild;
+    use crate::service::KlipperUnit;
 
     #[test]
     fn allows_restoring_klipper_after_a_host_mcu_failure_but_not_a_bootloader_failure() {
@@ -494,6 +510,37 @@ mod tests {
         assert_eq!(
             service_runner.commands.lock().expect("runner lock").len(),
             3
+        );
+    }
+
+    #[test]
+    fn stops_the_configured_klipper_unit() {
+        let service_runner = FakeRunner::new([
+            state_output(true, b"active\n"),
+            success_output(),
+            state_output(false, b"inactive\n"),
+        ]);
+        let coordinator = BuildCoordinator::with_unit(
+            "/nonexistent",
+            FakeRunner::new([]),
+            service_runner.clone(),
+            KlipperUnit::parse("klipper-2").unwrap(),
+        );
+
+        let _ = coordinator.flash_firmware_system_with_progress(
+            pending_without_transport().approve(),
+            b"firmware",
+            flash_options(),
+            false,
+            |_| {},
+        );
+
+        let commands = service_runner.commands.lock().expect("runner lock");
+        assert_eq!(commands.len(), 3);
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.arguments.last().map(String::as_str) == Some("klipper-2"))
         );
     }
 }

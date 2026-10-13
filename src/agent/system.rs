@@ -1,6 +1,7 @@
 //! The real [`AgentBackend`]: Moonraker over HTTP, the local checkout, systemd, and MCUs.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::agent::api::{HostSnapshot, Snapshot};
 use crate::agent::service::AgentBackend;
@@ -15,18 +16,23 @@ use crate::logging::{LoggingCommandAdapter, RunLogSink};
 use crate::moonraker::{
     HostInfo, HostPort, KlippyState, MoonrakerAdapter, MoonrakerError, PrinterStatePort,
 };
-use crate::service::{KlipperService, ServiceState};
+use crate::service::{KlipperService, KlipperUnit, ServiceState};
 use crate::update_run::{RunFailure, RunHooks, RunOutcome, RunRequest, run_updates};
 use crate::workspace::RunWorkspace;
 
 pub struct SystemBackend {
     url: String,
     log_sink: RunLogSink,
+    used_unit: Mutex<Option<KlipperUnit>>,
 }
 
 impl SystemBackend {
     pub fn new(url: String, log_sink: RunLogSink) -> Self {
-        Self { url, log_sink }
+        Self {
+            url,
+            log_sink,
+            used_unit: Mutex::new(None),
+        }
     }
 
     fn adapter(&self) -> MoonrakerAdapter {
@@ -141,7 +147,13 @@ impl AgentBackend for SystemBackend {
     }
 
     fn klipper_active(&self) -> Option<bool> {
-        KlipperService::new(SystemCommandAdapter)
+        let unit = self
+            .used_unit
+            .lock()
+            .ok()
+            .and_then(|unit| unit.clone())
+            .unwrap_or_default();
+        KlipperService::with_unit(SystemCommandAdapter, unit)
             .state()
             .ok()
             .map(|state| state == ServiceState::Active)
@@ -187,10 +199,20 @@ impl SystemBackend {
             .map_err(|error| {
                 setup_failure(format!("could not create the run workspace: {error}"))
             })?;
-        let coordinator = BuildCoordinator::new(
+        let unit = match snapshot.host.klipper_unit.as_deref() {
+            Some(name) => {
+                KlipperUnit::parse(name).map_err(|error| setup_failure(error.to_string()))?
+            }
+            None => KlipperUnit::default(),
+        };
+        if let Ok(mut used) = self.used_unit.lock() {
+            *used = Some(unit.clone());
+        }
+        let coordinator = BuildCoordinator::with_unit(
             source,
             LoggingCommandAdapter::new(SystemCommandAdapter),
             LoggingCommandAdapter::new(SystemCommandAdapter),
+            unit,
         );
         let result = run_updates(
             &coordinator,

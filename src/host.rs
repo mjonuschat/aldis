@@ -1,8 +1,8 @@
-//! Checks that the Moonraker aldis talks to fronts the local, default Klipper service that
-//! aldis's service control and sudoers policy are fixed to.
+//! Checks that the Moonraker aldis talks to is local and fronts a Klipper service whose name
+//! aldis's service control and sudoers policy allow.
 
 use crate::moonraker::HostPort;
-use crate::service::KLIPPER_UNIT;
+use crate::service::KlipperUnit;
 
 /// Why aldis refuses to touch hardware for a Moonraker instance.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -10,9 +10,9 @@ pub enum HostCheckError {
     /// The Moonraker URL does not point at this machine.
     #[error("Moonraker at {0} is not on this machine; firmware changes require a local Moonraker")]
     NonLocal(String),
-    /// Moonraker manages a Klipper service other than the default one.
+    /// Moonraker manages a service whose name is not a valid Klipper service name.
     #[error(
-        "Moonraker manages the Klipper service {0:?}; aldis only controls the \"klipper\" service"
+        "Moonraker manages the Klipper service {0:?}, which is not a valid Klipper service name"
     )]
     UnsupportedInstance(String),
     /// Moonraker could not be asked which Klipper service it manages.
@@ -35,23 +35,23 @@ pub fn is_loopback_url(url: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-/// Checks the URL and Moonraker's reported unit; an unreported unit is assumed to be the default.
-pub fn check_host(url: &str, klipper_unit: Option<&str>) -> Result<(), HostCheckError> {
+/// Checks the URL and Moonraker's reported unit and returns the unit to control; an unreported unit
+/// is assumed to be the default.
+pub fn check_host(url: &str, klipper_unit: Option<&str>) -> Result<KlipperUnit, HostCheckError> {
     if !is_loopback_url(url) {
         return Err(HostCheckError::NonLocal(url.to_owned()));
     }
     match klipper_unit {
-        Some(unit) if unit != KLIPPER_UNIT => {
-            Err(HostCheckError::UnsupportedInstance(unit.to_owned()))
-        }
-        _ => Ok(()),
+        Some(unit) => KlipperUnit::parse(unit)
+            .map_err(|_| HostCheckError::UnsupportedInstance(unit.to_owned())),
+        None => Ok(KlipperUnit::default()),
     }
 }
 
 /// [`check_host`] with the unit fetched from Moonraker. The URL is checked first so a remote
 /// Moonraker is never queried. A response without the field counts as the default unit; a failed
 /// query does not.
-pub fn verify_host(url: &str, moonraker: &impl HostPort) -> Result<(), HostCheckError> {
+pub fn verify_host(url: &str, moonraker: &impl HostPort) -> Result<KlipperUnit, HostCheckError> {
     check_host(url, None)?;
     let unit = moonraker
         .klipper_unit()

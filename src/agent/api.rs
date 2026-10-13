@@ -217,9 +217,7 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
     {
         return block(
             BlockerReason::UnsupportedInstance,
-            format!(
-                "Moonraker manages the Klipper service {unit:?}; aldis only controls \"klipper\""
-            ),
+            format!("Moonraker manages the Klipper service {unit:?}, which aldis cannot control"),
         );
     }
     if host.config_error {
@@ -482,7 +480,7 @@ mod tests {
             Some(BlockerReason::RestartPending)
         );
 
-        snapshot.host.klipper_unit = Some("klipper-1".to_owned());
+        snapshot.host.klipper_unit = Some("moonraker".to_owned());
         assert_eq!(
             assess(&snapshot).blocker.map(|b| b.reason),
             Some(BlockerReason::UnsupportedInstance)

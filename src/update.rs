@@ -80,7 +80,7 @@ fn run_update(
             None
         };
     let moonraker_url = &arguments.connection.moonraker.moonraker;
-    aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
+    let unit = aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
         .context("refusing to update firmware")?;
     ui.action("discovering MCUs from Moonraker");
     let mut inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
@@ -134,10 +134,11 @@ fn run_update(
         ui.action("run completed successfully: no eligible MCUs require an update");
         return Ok(());
     }
-    let coordinator = BuildCoordinator::new(
+    let coordinator = BuildCoordinator::with_unit(
         &source,
         LoggingCommandAdapter::new(SystemCommandAdapter),
         LoggingCommandAdapter::new(SystemCommandAdapter),
+        unit,
     );
     let moonraker = MoonrakerAdapter::new(moonraker_url);
     let mut hooks = CliHooks {

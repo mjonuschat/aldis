@@ -1,6 +1,56 @@
 use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 
-pub const KLIPPER_UNIT: &str = "klipper";
+/// The Klipper unit used when Moonraker does not report one.
+pub const DEFAULT_KLIPPER_UNIT: &str = "klipper";
+
+const MAX_UNIT_LEN: usize = 64;
+
+/// A name that is not a valid Klipper service name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} is not a valid Klipper service name")]
+pub struct InvalidKlipperUnit(pub String);
+
+/// A validated Klipper systemd unit name: `klipper` followed by `[A-Za-z0-9_.@-]`, at most 64
+/// bytes. `klipper@voron` is valid.
+///
+/// The name is validated before any command is built from it, and the check matches the sudoers
+/// rule that `setup` installs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KlipperUnit(String);
+
+impl KlipperUnit {
+    /// Validates `name` as a Klipper unit name.
+    pub fn parse(name: &str) -> Result<Self, InvalidKlipperUnit> {
+        let valid = name.len() <= MAX_UNIT_LEN
+            && name.strip_prefix(DEFAULT_KLIPPER_UNIT).is_some_and(|rest| {
+                rest.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-' | b'@')
+                })
+            });
+        if valid {
+            Ok(Self(name.to_owned()))
+        } else {
+            Err(InvalidKlipperUnit(name.to_owned()))
+        }
+    }
+
+    /// The unit name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for KlipperUnit {
+    fn default() -> Self {
+        Self(DEFAULT_KLIPPER_UNIT.to_owned())
+    }
+}
+
+impl std::fmt::Display for KlipperUnit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 /// A Klipper service state reported by systemd.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,15 +92,26 @@ pub enum ServiceError {
 /// A testable systemd controller for Klipper's service lifecycle.
 pub struct KlipperService<R> {
     runner: R,
+    unit: KlipperUnit,
 }
 
 impl<R> KlipperService<R>
 where
     R: CommandPort,
 {
-    /// Creates a controller using `runner` to invoke systemctl.
+    /// Creates a controller for the default `klipper` unit using `runner` to invoke systemctl.
     pub fn new(runner: R) -> Self {
-        Self { runner }
+        Self::with_unit(runner, KlipperUnit::default())
+    }
+
+    /// Creates a controller for `unit` using `runner` to invoke systemctl.
+    pub fn with_unit(runner: R, unit: KlipperUnit) -> Self {
+        Self { runner, unit }
+    }
+
+    /// Returns the unit this controller manages.
+    pub fn unit(&self) -> &KlipperUnit {
+        &self.unit
     }
 
     /// Returns the runner used for privileged host commands.
@@ -60,7 +121,7 @@ where
 
     /// Returns systemd's current Klipper state without changing it.
     pub fn state(&self) -> Result<ServiceState, ServiceError> {
-        let (_, output) = self.run_systemctl(["is-active", KLIPPER_UNIT])?;
+        let (_, output) = self.run_systemctl(["is-active", self.unit.as_str()])?;
         let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
 
         Ok(match state.as_str() {
@@ -83,7 +144,7 @@ where
     }
 
     fn run_state_change(&self, action: &str) -> Result<(), ServiceError> {
-        let (command, output) = self.run_systemctl([action, KLIPPER_UNIT])?;
+        let (command, output) = self.run_systemctl([action, self.unit.as_str()])?;
         if output.success {
             Ok(())
         } else {
