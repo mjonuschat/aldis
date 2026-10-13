@@ -1,4 +1,4 @@
-use aldis::lock::{LockError, UpdateLock, default_lock_path};
+use aldis::lock::{LockError, UpdateLock};
 
 #[test]
 fn refuses_a_second_holder_until_the_first_releases() {
@@ -13,28 +13,6 @@ fn refuses_a_second_holder_until_the_first_releases() {
 
     drop(first);
     assert!(UpdateLock::try_acquire(&path).is_ok());
-}
-
-#[test]
-fn shares_one_lock_between_a_user_and_their_sudo_runs() {
-    use aldis::lock::lock_path_for;
-
-    assert_eq!(
-        lock_path_for(1000, None),
-        std::path::PathBuf::from("/tmp/aldis-1000.lock")
-    );
-    assert_eq!(
-        lock_path_for(0, Some("1000")),
-        std::path::PathBuf::from("/tmp/aldis-1000.lock")
-    );
-    assert_eq!(
-        lock_path_for(0, None),
-        std::path::PathBuf::from("/tmp/aldis-0.lock")
-    );
-    assert_eq!(
-        lock_path_for(1000, Some("0")),
-        std::path::PathBuf::from("/tmp/aldis-1000.lock")
-    );
 }
 
 #[test]
@@ -56,13 +34,22 @@ fn locks_an_existing_file_it_can_only_read() {
 }
 
 #[test]
-fn uses_a_fixed_per_user_path_under_tmp() {
-    let path = default_lock_path().expect("lock path");
-    let name = path.file_name().unwrap().to_string_lossy().into_owned();
-
-    assert_eq!(path.parent(), Some(std::path::Path::new("/tmp")));
-    assert!(
-        name.starts_with("aldis-") && name.ends_with(".lock"),
-        "{name}"
+fn uses_one_fixed_path_for_every_user() {
+    assert_eq!(
+        aldis::lock::default_lock_path(),
+        std::path::PathBuf::from("/tmp/aldis.lock")
     );
+}
+
+#[test]
+fn creates_the_lock_file_readable_by_other_users() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("aldis.lock");
+
+    let _held = UpdateLock::try_acquire(&path).expect("holder");
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644);
 }

@@ -1,9 +1,14 @@
 //! The host-wide lock serializing every operation that flashes firmware or touches a bootloader.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions, Permissions, TryLockError};
 use std::io;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+/// The one lock file shared by every user, `sudo` run, CLI invocation and agent instance. It is
+/// not under `$TMPDIR` or `$XDG_RUNTIME_DIR`, because an SSH session and the systemd agent see
+/// different values for both.
+pub const LOCK_PATH: &str = "/tmp/aldis.lock";
 
 /// Held for the duration of one firmware operation; dropping it releases the lock.
 #[derive(Debug)]
@@ -35,18 +40,24 @@ impl UpdateLock {
             path: path.to_owned(),
             source,
         };
-        // A sudo run and the invoking user share this file, so whichever creates it, the other must
-        // still open it: open read-only (flock needs no write access) and without O_CREAT, which
+        // Every account shares this file, and whichever creates it, the others must still open it.
+        // So open it read-only (flock needs no write access) and without O_CREAT, which
         // fs.protected_regular forbids even to root for another user's file in sticky /tmp.
         let file = match OpenOptions::new().read(true).open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)
-                .map_err(io_error)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .map_err(io_error)?;
+                // The umask may have cleared bits. Other users only need read access.
+                file.set_permissions(Permissions::from_mode(0o644))
+                    .map_err(io_error)?;
+                file
+            }
             Err(error) => return Err(io_error(error)),
         };
         match file.try_lock() {
@@ -58,30 +69,11 @@ impl UpdateLock {
 
     /// Takes the lock at [`default_lock_path`] without waiting.
     pub fn try_acquire_default() -> Result<Self, LockError> {
-        let path = default_lock_path().map_err(|source| LockError::Io {
-            path: PathBuf::from("/proc/self"),
-            source,
-        })?;
-        Self::try_acquire(&path)
+        Self::try_acquire(&default_lock_path())
     }
 }
 
-/// `/tmp/aldis-<uid>.lock`, where a root process started through sudo uses the invoking user's
-/// uid so `sudo aldis …` contends with that user's agent. Deliberately not `$TMPDIR` or
-/// `$XDG_RUNTIME_DIR`: an SSH session and the systemd agent see different values for both.
-pub fn default_lock_path() -> io::Result<PathBuf> {
-    let euid = std::fs::metadata("/proc/self")?.uid();
-    Ok(lock_path_for(
-        euid,
-        std::env::var("SUDO_UID").ok().as_deref(),
-    ))
-}
-
-/// The lock path for effective uid `euid`, honoring `SUDO_UID` only when running as root.
-pub fn lock_path_for(euid: u32, sudo_uid: Option<&str>) -> PathBuf {
-    let uid = match (euid, sudo_uid.and_then(|uid| uid.parse::<u32>().ok())) {
-        (0, Some(invoking)) => invoking,
-        _ => euid,
-    };
-    PathBuf::from(format!("/tmp/aldis-{uid}.lock"))
+/// [`LOCK_PATH`] as a path.
+pub fn default_lock_path() -> PathBuf {
+    PathBuf::from(LOCK_PATH)
 }
