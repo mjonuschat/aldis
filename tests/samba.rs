@@ -12,6 +12,7 @@ const FLASH_PAGES: u32 = 4096;
 const PAGE_SIZE_64_BYTES: u32 = 3 << 16;
 const STAGING_ADDRESS: u32 = 0x2000_4000;
 const APPLICATION_START: u32 = 0x2000;
+const UNPROTECTED_USER_ROW: u32 = 0xD8E0_C7FF;
 
 struct FakeMonitor {
     command: Vec<u8>,
@@ -21,6 +22,7 @@ struct FakeMonitor {
     copy_source: u32,
     flash: Vec<u8>,
     device_id: u32,
+    user_row: u32,
     corrupt_first_write: bool,
     copy_ack: &'static [u8],
     reset_requested: bool,
@@ -37,6 +39,7 @@ impl FakeMonitor {
             copy_source: 0,
             flash: vec![0xff; 0x40000],
             device_id: SAMD21_DEVICE_ID,
+            user_row: UNPROTECTED_USER_ROW,
             corrupt_first_write: false,
             copy_ack: b"Y\n\r",
             reset_requested: false,
@@ -63,6 +66,7 @@ impl FakeMonitor {
                 let word = match Self::hex(address) {
                     0x4100_2018 => self.device_id,
                     0x4100_4008 => FLASH_PAGES | PAGE_SIZE_64_BYTES,
+                    0x0080_4000 => self.user_row,
                     other => panic!("unexpected word read at {other:#x}"),
                 };
                 self.outbox.extend(word.to_le_bytes());
@@ -282,4 +286,67 @@ fn derives_the_application_address_from_the_bootloader_offset() {
 #[test]
 fn computes_the_xmodem_crc_the_monitor_reports() {
     assert_eq!(crc16_xmodem(b"123456789"), 0x31c3);
+}
+
+fn protected_by(bootprot: u32) -> FakeMonitor {
+    let mut monitor = FakeMonitor::new();
+    monitor.user_row = (UNPROTECTED_USER_ROW & !0x7) | bootprot;
+    monitor
+}
+
+#[test]
+fn flashes_when_the_bootprot_fuse_matches_the_application_address() {
+    let mut adapter = SambaAdapter::new(protected_by(2), target());
+
+    adapter.flash(&firmware(64)).unwrap();
+
+    assert!(adapter.into_port().reset_requested);
+}
+
+#[test]
+fn refuses_before_writing_when_the_bootprot_fuse_disagrees_with_the_application_address() {
+    for (bootprot, protected_size) in [(1, 0x4000), (3, 0x1000)] {
+        let mut adapter = SambaAdapter::new(protected_by(bootprot), target());
+
+        let error = adapter.flash(&firmware(64)).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                SambaError::BootloaderSizeMismatch {
+                    application_start: 0x2000,
+                    protected_size: size,
+                } if size == protected_size
+            ),
+            "{error:?}"
+        );
+        let monitor = adapter.into_port();
+        assert!(monitor.flash.iter().all(|byte| *byte == 0xff));
+        assert!(
+            !monitor
+                .commands
+                .iter()
+                .any(|command| command.starts_with('S'))
+        );
+    }
+}
+
+#[test]
+fn skips_the_bootloader_size_check_when_the_bootprot_fuse_is_unset() {
+    let mut adapter = SambaAdapter::new(
+        FakeMonitor::new(),
+        SambaTarget {
+            application_start: 0x4000,
+        },
+    );
+
+    adapter.flash(&firmware(64)).unwrap();
+}
+
+#[test]
+fn refuses_the_samd21e15_whose_ram_cannot_hold_the_staging_buffer() {
+    assert!(matches!(
+        target_from_kconfig("CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21E15=y\n"),
+        Err(SambaError::InsufficientRam)
+    ));
 }

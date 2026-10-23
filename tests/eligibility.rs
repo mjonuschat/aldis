@@ -264,6 +264,22 @@ fn rejects_mcu_families_without_a_flashable_bootloader() {
 }
 
 #[test]
+fn rejects_the_samd21e15_whose_ram_cannot_stage_a_transfer() {
+    let status = assess_mcu(
+        &mcu(
+            Some("Klipper"),
+            Some("v0.13.0-770-gce7002bed"),
+            "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21E15=y\n",
+        ),
+        &CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned()),
+    );
+    assert_eq!(
+        status.eligibility,
+        Eligibility::UnsupportedMcu("ATSAMD".to_owned())
+    );
+}
+
+#[test]
 fn accepts_every_family_with_a_flashable_bootloader() {
     for kconfig in [
         "CONFIG_MACH_STM32=y\nCONFIG_MACH_STM32H723=y\n",

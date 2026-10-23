@@ -13,6 +13,7 @@ use super::{FlashPort, FlashResult};
 
 const DSU_DEVICE_ID: u32 = 0x4100_2018;
 const NVMCTRL_PARAM: u32 = 0x4100_4008;
+const NVM_USER_ROW: u32 = 0x0080_4000;
 const AIRCR: u32 = 0xE000_ED0C;
 const AIRCR_SYSRESETREQ: u32 = 0x05FA_0004;
 
@@ -42,6 +43,9 @@ pub fn target_from_kconfig(kconfig: &str) -> Result<SambaTarget, SambaError> {
     if enabled("CONFIG_SAMD_FLASH_START_0000=y") {
         return Err(SambaError::NoBootloaderOffset);
     }
+    if enabled("CONFIG_MACH_SAMD21E15=y") {
+        return Err(SambaError::InsufficientRam);
+    }
     let application_start = if enabled("CONFIG_SAMD_FLASH_START_4000=y") {
         0x4000
     } else {
@@ -58,6 +62,19 @@ pub enum SambaError {
         "the firmware is built without a bootloader offset, so it would overwrite the bootloader"
     )]
     NoBootloaderOffset,
+    /// The part's RAM cannot hold the staging buffer the transfer uses.
+    #[error("the SAMD21E15 has too little RAM to stage firmware through the SAM-BA bootloader")]
+    InsufficientRam,
+    /// The bootloader's write protection disagrees with the firmware's application address.
+    #[error(
+        "the firmware starts at {application_start:#x} but the bootloader protects the first {protected_size:#x} bytes of flash; rebuild with the matching bootloader offset"
+    )]
+    BootloaderSizeMismatch {
+        /// The application address the firmware was built for.
+        application_start: u32,
+        /// The size the chip's BOOTPROT fuse protects.
+        protected_size: u32,
+    },
     /// Serial communication with the bootloader failed or timed out.
     #[error("serial communication with the SAM-BA bootloader failed: {0}")]
     Io(#[from] io::Error),
@@ -252,6 +269,11 @@ impl<P: SambaPort> Monitor<P> {
         Ok(pages * page_size)
     }
 
+    fn protected_bootloader_size(&mut self) -> Result<Option<u32>, SambaError> {
+        let bootprot = self.read_word(NVM_USER_ROW)? & 0x7;
+        Ok((bootprot != 0x7).then(|| 0x8000 >> bootprot))
+    }
+
     fn reset(&mut self) -> Result<(), SambaError> {
         self.write_word(AIRCR, AIRCR_SYSRESETREQ)?;
         self.port.flush()?;
@@ -294,8 +316,17 @@ impl<P: SambaPort> FlashPort for SambaAdapter<P> {
             return Err(SambaError::UnsupportedChip(device_id));
         }
 
-        let padded_bytes = firmware.len().div_ceil(CHUNK_SIZE) * CHUNK_SIZE;
         let start = self.target.application_start;
+        if let Some(protected_size) = self.monitor.protected_bootloader_size()?
+            && protected_size != start
+        {
+            return Err(SambaError::BootloaderSizeMismatch {
+                application_start: start,
+                protected_size,
+            });
+        }
+
+        let padded_bytes = firmware.len().div_ceil(CHUNK_SIZE) * CHUNK_SIZE;
         let end = u64::from(start) + padded_bytes as u64;
         let flash_size = self.monitor.flash_size()?;
         if end > flash_size {

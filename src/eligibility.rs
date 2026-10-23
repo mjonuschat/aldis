@@ -240,9 +240,8 @@ fn classify_known_firmware(
 /// host MCU is installed as a process.
 const FLASHABLE_FAMILIES: &[&str] = &["STM32", "RPXXXX", "RP2040", "LPC176X", "LINUX"];
 
-/// ATSAMD is flashable only for the SAMD21 parts, whose SAM-BA bootloaders aldis can drive.
 fn is_flashable_samd(family: &str) -> bool {
-    family.starts_with("SAMD21")
+    family.starts_with("SAMD21") && family != "SAMD21E15"
 }
 
 /// The first enabled `CONFIG_MACH_*=y` line of an embedded configuration, or an empty string.
