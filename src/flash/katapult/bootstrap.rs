@@ -8,7 +8,7 @@ use std::time::Duration;
 use super::adapter::KatapultAdapter;
 use super::can::{CanError, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport};
 use super::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
-use super::session::{KatapultSession, SessionError};
+use super::session::{KatapultSession, SessionError, Transport};
 use crate::flash::usb_bootloader::{
     SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
 };
@@ -83,6 +83,16 @@ pub fn bootstrap_system_serial(
     let io = SystemSerialIo::open(&bootloader_device, baud_rate, read_timeout)
         .map_err(SerialBootstrapError::Open)?;
     Ok(KatapultAdapter::new(KatapultSerialTransport::new(io)))
+}
+
+/// Confirms Katapult answers on `transport`, sending nothing but its connect command.
+pub fn confirm_bootloader<T: Transport>(transport: T) -> Result<KatapultAdapter<T>, SessionError>
+where
+    T::Error: fmt::Debug,
+{
+    let mut session = KatapultSession::new(transport);
+    session.connect()?;
+    Ok(KatapultAdapter::new(session.into_transport()))
 }
 
 /// A failure while leaving an already-detected Katapult bootloader.

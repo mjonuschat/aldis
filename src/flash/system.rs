@@ -11,11 +11,14 @@ use crate::eligibility::kconfig_machine;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
 use crate::flash::katapult::adapter::KatapultFlashError;
-use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloader};
+use crate::flash::katapult::bootstrap::{
+    CanBootstrapError, confirm_bootloader, request_can_bootloader,
+};
 use crate::flash::katapult::can::SocketCanIo;
 use crate::flash::katapult::serial::{
     KatapultSerialTransport, SystemSerialIo, UsbBootloaderError, is_tty_without_usb_device,
 };
+use crate::flash::katapult::session::SessionError;
 use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
 use crate::flash::linux_host::{HostMcuInstaller, LinuxHostError, is_linux_host};
 use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
@@ -119,6 +122,8 @@ pub enum SystemFlashError {
     Stm32MismatchRecovery(Stm32DfuError),
     /// The request for a UART-attached Klipper to enter Katapult could not be sent.
     UartBootloaderRequest(serialport::Error),
+    /// The MCU on a UART never answered Katapult's connect command after the request.
+    UartKatapultNotEntered(SessionError),
     /// The Katapult USB serial device could not be opened.
     KatapultOpen(serialport::Error),
     /// Katapult rejected or could not verify its USB serial transfer.
@@ -146,7 +151,6 @@ pub enum SystemFlashError {
 impl fmt::Display for SystemFlashError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::flash::katapult::Command;
-        use crate::flash::katapult::session::SessionError;
 
         match self {
             Self::CanFlash(KatapultFlashError::Session(SessionError::RetriesExhausted {
@@ -183,6 +187,11 @@ impl fmt::Display for SystemFlashError {
             Self::UsbAccess(error) => {
                 write!(f, "the USB bootloader was not accessible: {error}")
             }
+            Self::UartKatapultNotEntered(_) => write!(
+                f,
+                "the MCU did not enter Katapult after the serial bootloader request; check that \
+                 Katapult is built for this UART and baud rate and that the wiring is correct"
+            ),
             Self::UartBootloaderRequest(error) => write!(
                 f,
                 "could not ask the MCU on its serial port to enter Katapult: {error}"
@@ -250,6 +259,7 @@ impl std::error::Error for SystemFlashError {
             | Self::Stm32Dfu(error)
             | Self::Stm32Probe(error)
             | Self::Stm32MismatchRecovery(error) => Some(error),
+            Self::UartKatapultNotEntered(error) => Some(error),
             Self::UartBootloaderRequest(error) | Self::KatapultOpen(error) => Some(error),
             Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
             Self::PicoBoot(error) => Some(error),
@@ -359,6 +369,13 @@ fn resolve_serial_route(
     }
 }
 
+fn kconfig_serial_baud(kconfig: &str) -> Option<u32> {
+    kconfig
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("CONFIG_SERIAL_BAUD=")?.parse().ok())
+}
+
 fn kconfig_flash_start_symbols(kconfig: &str) -> Vec<String> {
     kconfig
         .lines()
@@ -423,7 +440,13 @@ fn flash_serial_system(
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     if is_tty_without_usb_device(Path::new(running_device)) {
-        return flash_uart_katapult(Path::new(running_device), firmware, options, progress);
+        return flash_uart_katapult(
+            Path::new(running_device),
+            kconfig,
+            firmware,
+            options,
+            progress,
+        );
     }
     progress(SystemFlashProgress::EnteringBootloader);
     let started = Instant::now();
@@ -442,25 +465,29 @@ fn flash_serial_system(
 
 fn flash_uart_katapult(
     serial_device: &Path,
+    kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    let baud_rate = kconfig_serial_baud(kconfig).unwrap_or(options.katapult.baud_rate);
     progress(SystemFlashProgress::EnteringBootloader);
-    SystemSerialIo::request_serial_bootloader(serial_device, options.katapult.baud_rate)
+    SystemSerialIo::request_serial_bootloader(serial_device, baud_rate)
         .map_err(SystemFlashError::UartBootloaderRequest)?;
     thread::sleep(UART_BOOTLOADER_SETTLE);
-    progress(SystemFlashProgress::BootloaderReady);
-    progress(SystemFlashProgress::Flashing);
     let io = open_katapult_serial_when_ready(
         serial_device,
-        options.katapult.baud_rate,
+        baud_rate,
         options.katapult.read_timeout,
         options.katapult.bootloader_timeout,
         options.katapult.poll_interval,
     )
     .map_err(SystemFlashError::KatapultOpen)?;
-    KatapultAdapter::new(KatapultSerialTransport::new(io))
+    let mut backend = confirm_bootloader(KatapultSerialTransport::new(io))
+        .map_err(SystemFlashError::UartKatapultNotEntered)?;
+    progress(SystemFlashProgress::BootloaderReady);
+    progress(SystemFlashProgress::Flashing);
+    backend
         .flash(firmware)
         .map_err(SystemFlashError::KatapultFlash)
 }
@@ -512,7 +539,13 @@ fn flash_serial_firmware_file(
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     if is_tty_without_usb_device(Path::new(running_device)) {
-        return flash_uart_katapult(Path::new(running_device), firmware, options, progress);
+        return flash_uart_katapult(
+            Path::new(running_device),
+            kconfig,
+            firmware,
+            options,
+            progress,
+        );
     }
     progress(SystemFlashProgress::EnteringBootloader);
     let started = Instant::now();
@@ -812,7 +845,7 @@ mod tests {
 
     use super::{
         SystemFlashError, UsbBootloaderError, kconfig_flash_start_symbols, kconfig_machine,
-        usb_can_bridge, usb_device_node,
+        kconfig_serial_baud, usb_can_bridge, usb_device_node,
     };
     use crate::flash::katapult::Command;
     use crate::flash::katapult::adapter::KatapultFlashError;
@@ -848,6 +881,16 @@ mod tests {
             "CONFIG_MACH_STM32H723=y"
         );
         assert_eq!(kconfig_machine("CONFIG_OTHER=y\n"), "");
+    }
+
+    #[test]
+    fn reads_a_non_default_serial_baud_from_the_embedded_kconfig() {
+        assert_eq!(
+            kconfig_serial_baud("CONFIG_MACH_STM32H723=y\nCONFIG_SERIAL_BAUD=115200\n"),
+            Some(115_200)
+        );
+        assert_eq!(kconfig_serial_baud("CONFIG_MACH_STM32H723=y\n"), None);
+        assert_eq!(kconfig_serial_baud("CONFIG_SERIAL_BAUD=fast\n"), None);
     }
 
     #[test]
