@@ -240,10 +240,6 @@ fn classify_known_firmware(
 /// host MCU is installed as a process.
 const FLASHABLE_FAMILIES: &[&str] = &["STM32", "RPXXXX", "RP2040", "LPC176X", "LINUX"];
 
-fn is_flashable_samd(family: &str) -> bool {
-    family.starts_with("SAMD21") && family != "SAMD21E15"
-}
-
 /// The first enabled `CONFIG_MACH_*=y` line of an embedded configuration, or an empty string.
 pub fn kconfig_machine(kconfig: &str) -> String {
     kconfig
@@ -266,10 +262,9 @@ fn family_support(kconfig: &str) -> FamilySupport {
         .map(str::trim)
         .filter_map(|line| line.strip_prefix("CONFIG_MACH_")?.strip_suffix("=y"))
         .collect();
-    if families
-        .iter()
-        .any(|family| FLASHABLE_FAMILIES.contains(family) || is_flashable_samd(family))
-    {
+    if families.iter().any(|family| {
+        FLASHABLE_FAMILIES.contains(family) || crate::flash::samba::is_flashable_part(family)
+    }) {
         FamilySupport::Flashable
     } else if let Some(family) = families.first() {
         FamilySupport::Unflashable((*family).to_owned())

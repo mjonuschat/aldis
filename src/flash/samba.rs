@@ -22,6 +22,7 @@ const SAMD21_DEVICE_ID: u32 = 0x1001_0000;
 
 const STAGING_ADDRESS: u32 = 0x2000_4000;
 const CHUNK_SIZE: usize = 0x1000;
+const PART_WITHOUT_STAGING_RAM: &str = "SAMD21E15";
 
 const COPY_ACK: &[u8; 3] = b"Y\n\r";
 const CRC_REPLY_LEN: usize = 12;
@@ -34,6 +35,11 @@ pub struct SambaTarget {
     pub application_start: u32,
 }
 
+/// Whether a `CONFIG_MACH_*` family name is a SAMD21 part this backend can flash.
+pub fn is_flashable_part(family: &str) -> bool {
+    family.starts_with("SAMD21") && family != PART_WITHOUT_STAGING_RAM
+}
+
 /// Derives the SAMD21 application address from Klipper's embedded Kconfig.
 ///
 /// The embedded Kconfig is a defconfig, so the 8KiB bootloader offset, being the SAMD21 default,
@@ -43,7 +49,7 @@ pub fn target_from_kconfig(kconfig: &str) -> Result<SambaTarget, SambaError> {
     if enabled("CONFIG_SAMD_FLASH_START_0000=y") {
         return Err(SambaError::NoBootloaderOffset);
     }
-    if enabled("CONFIG_MACH_SAMD21E15=y") {
+    if enabled(&format!("CONFIG_MACH_{PART_WITHOUT_STAGING_RAM}=y")) {
         return Err(SambaError::InsufficientRam);
     }
     let application_start = if enabled("CONFIG_SAMD_FLASH_START_4000=y") {
@@ -194,7 +200,6 @@ impl<P: SambaPort> Monitor<P> {
         // The banner ends "\n\r" and some monitors append a NUL; neither is guaranteed.
         for _ in 0..2 {
             match self.port.read(&mut byte) {
-                Ok(0) => break,
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::TimedOut => break,
                 Err(error) => return Err(error.into()),
@@ -255,7 +260,7 @@ impl<P: SambaPort> Monitor<P> {
             .ok()
             .filter(|_| reply[0] == b'Z' && reply[9] == b'#')
             .and_then(|digits| u32::from_str_radix(digits, 16).ok())
-            .map(|crc| crc as u16)
+            .and_then(|crc| u16::try_from(crc).ok())
             .ok_or_else(|| SambaError::UnexpectedReply {
                 command: 'Z',
                 reply: reply.to_vec(),
