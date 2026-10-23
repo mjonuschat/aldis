@@ -82,7 +82,7 @@ Stops and removes the service and drops it from Moonraker's service list.
 
 These bootloaders are entered and flashed unattended, directly from the running Klipper application:
 
-- **Katapult**, over USB serial, a plain UART (such as a Pi's GPIO UART, at 250000 baud), or CAN
+- **Katapult**, over USB serial, a plain UART (such as a Pi's GPIO UART), or CAN
 - **STM32 ROM DFU** (`0483:df11`)
 - **PicoBoot** (RP2040/RP2350, `2e8a:0003`/`2e8a:000f`)
 - **SAM-BA** on SAMD21 (the Seeed XIAO SAMD21's UF2 bootloader, `2886:002f`)
@@ -95,6 +95,24 @@ update; SAMD51 and other non-SAMD21 ATSAMD boards are the common case.
 A SAMD21 board must have been built with a bootloader offset and, for UF2 bootloaders such as the
 XIAO's, with the matching `Bootloader type` (Kalico) so that the 1200-baud request lands in the
 bootloader rather than rebooting into the application.
+
+Only the XIAO's bootloader USB ID is recognised. Other SAMD21 boards are reported as an
+unsupported bootloader until their ID is added and the flash is tested on that board.
+
+### Katapult over a UART
+
+When an MCU's `serial:` is a plain tty with no USB device behind it (for example `/dev/ttyAMA5`),
+`aldis` sends Klipper's serial bootloader request, waits for Katapult to answer on the same tty, and
+flashes only after it has. Requirements:
+
+- Katapult must be built for the same UART and baud rate as the running firmware. `aldis` reads the
+  baud rate from the firmware's embedded configuration (`CONFIG_SERIAL_BAUD`, 250000 when absent) and
+  cannot read Katapult's own setting. If they differ, `aldis` stops with "the MCU did not enter
+  Katapult" before sending any flash command, leaving the MCU waiting in Katapult.
+- The host user needs access to the tty (typically the `dialout` group), and the UART must be enabled
+  on the host and not used as a console.
+- `aldis reboot` finds stuck bootloaders by scanning USB, so a Katapult left waiting on a UART is not
+  listed. Run `flash` against the MCU again to recover it.
 
 ## License
 
