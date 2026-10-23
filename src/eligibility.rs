@@ -240,6 +240,11 @@ fn classify_known_firmware(
 /// host MCU is installed as a process.
 const FLASHABLE_FAMILIES: &[&str] = &["STM32", "RPXXXX", "RP2040", "LPC176X", "LINUX"];
 
+/// ATSAMD is flashable only for the SAMD21 parts, whose SAM-BA bootloaders aldis can drive.
+fn is_flashable_samd(family: &str) -> bool {
+    family.starts_with("SAMD21")
+}
+
 /// The first enabled `CONFIG_MACH_*=y` line of an embedded configuration, or an empty string.
 pub fn kconfig_machine(kconfig: &str) -> String {
     kconfig
@@ -264,7 +269,7 @@ fn family_support(kconfig: &str) -> FamilySupport {
         .collect();
     if families
         .iter()
-        .any(|family| FLASHABLE_FAMILIES.contains(family))
+        .any(|family| FLASHABLE_FAMILIES.contains(family) || is_flashable_samd(family))
     {
         FamilySupport::Flashable
     } else if let Some(family) = families.first() {

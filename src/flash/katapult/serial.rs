@@ -28,23 +28,27 @@ pub fn is_katapult_usb(usb_id: &str, manufacturer: &str) -> bool {
     )
 }
 
-/// Returns whether a re-enumerated Katapult USB identity is still missing its tty.
+/// Returns whether a re-enumerated serial bootloader USB identity is still missing its tty.
 ///
-/// Katapult's CDC-ACM interface enumerates after its USB identity, so callers
+/// Katapult's and SAM-BA's CDC-ACM interfaces enumerate after their USB identity, so callers
 /// must keep waiting rather than treat the bootloader as observed yet.
-fn awaiting_katapult_serial(
+fn awaiting_serial_device(
     usb_id: &str,
     manufacturer: &str,
     serial_device: &Option<PathBuf>,
 ) -> bool {
-    is_katapult_usb(usb_id, manufacturer) && serial_device.is_none()
+    serial_device.is_none()
+        && matches!(
+            crate::flash::usb_bootloader::classify_usb_identity(usb_id, manufacturer),
+            Some(UsbBootloaderKind::Katapult | UsbBootloaderKind::SamBa)
+        )
 }
 
 /// Builds the observed bootloader at `usb_path`, unless it's a Katapult
 /// identity still waiting on its CDC-ACM tty to enumerate.
 fn observed_if_ready(usb_path: &Path, identity: &UsbIdentity) -> Option<ObservedUsbBootloader> {
     let serial_device = usb_tty(usb_path);
-    if awaiting_katapult_serial(&identity.usb_id, &identity.manufacturer, &serial_device) {
+    if awaiting_serial_device(&identity.usb_id, &identity.manufacturer, &serial_device) {
         return None;
     }
     Some(ObservedUsbBootloader {

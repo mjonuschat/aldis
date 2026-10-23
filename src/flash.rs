@@ -4,6 +4,7 @@ pub mod katapult;
 pub mod linux_host;
 pub mod picoboot;
 pub mod reboot;
+pub mod samba;
 pub mod stm32_dfu;
 pub mod system;
 pub mod usb_bootloader;

@@ -42,6 +42,19 @@ fn routes_each_supported_serial_bootloader_from_its_observed_identity() {
 }
 
 #[test]
+fn routes_a_samd21_sam_ba_bootloader_with_the_application_address_from_kconfig() {
+    assert!(matches!(
+        route("2886:002f", "CONFIG_MACH_SAMD21G18=y\n"),
+        Ok(SerialFlashRoute::SamBa { serial_device, target })
+            if serial_device == Path::new("/dev/ttyACM0") && target.application_start == 0x2000
+    ));
+    assert!(matches!(
+        route("2886:002f", "CONFIG_SAMD_FLASH_START_0000=y\n"),
+        Err(SystemFlashError::SamBa(_))
+    ));
+}
+
+#[test]
 fn rejects_unknown_observed_bootloaders_before_selecting_a_route() {
     assert!(matches!(
         route("1234:5678", "CONFIG_STM32_FLASH_START_2000=y\n"),

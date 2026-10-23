@@ -17,6 +17,9 @@ use crate::flash::katapult::serial::{KatapultSerialTransport, SystemSerialIo, Us
 use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
 use crate::flash::linux_host::{HostMcuInstaller, LinuxHostError, is_linux_host};
 use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
+use crate::flash::samba::{
+    SambaAdapter, SambaError, SambaTarget, SystemSambaPort, target_from_kconfig as samba_target,
+};
 use crate::flash::stm32_dfu::{
     ApplicationProbeResult, Stm32DfuAdapter, Stm32DfuDevice, Stm32DfuError, Stm32DfuTarget,
     expected_application_start, leave_system_at_path, probe_application_start_at_path,
@@ -45,6 +48,13 @@ pub enum SerialFlashRoute {
     },
     /// RP2040/RP2350 PicoBoot at one USB topology.
     PicoBoot { sysfs_path: PathBuf },
+    /// A SAMD21 SAM-BA monitor and its Kconfig-derived application target.
+    SamBa {
+        /// SAM-BA's serial device.
+        serial_device: PathBuf,
+        /// Application placement derived from the prepared Kconfig.
+        target: SambaTarget,
+    },
 }
 
 /// Settings for topology-scoped native flashing backends.
@@ -111,6 +121,10 @@ pub enum SystemFlashError {
     Stm32Dfu(Stm32DfuError),
     /// PicoBoot flashing failed.
     PicoBoot(PicoBootError),
+    /// The SAM-BA serial device could not be opened.
+    SamBaOpen(serialport::Error),
+    /// SAM-BA flashing failed, or the firmware configuration has no usable application address.
+    SamBa(SambaError),
     /// The CAN socket could not be opened.
     CanSocket(io::Error),
     /// A USB-CAN bridge could not be related to its USB topology.
@@ -152,7 +166,7 @@ impl fmt::Display for SystemFlashError {
                 reset_error,
             }) => write!(
                 f,
-                "no bootloader appeared at {}: it still had its application's USB identity when the wait timed out{}; aldis can flash Katapult, STM32 DFU, and RP2040/RP2350 PicoBoot only",
+                "no bootloader appeared at {}: it still had its application's USB identity when the wait timed out{}; aldis can flash Katapult, STM32 DFU, RP2040/RP2350 PicoBoot, and SAMD21 SAM-BA only",
                 device.display(),
                 reset_error
                     .as_deref()
@@ -172,6 +186,10 @@ impl fmt::Display for SystemFlashError {
             ),
             Self::Stm32Dfu(_) => write!(f, "STM32 DFU flashing failed"),
             Self::PicoBoot(_) => write!(f, "RP PicoBoot flashing failed"),
+            Self::SamBaOpen(error) => {
+                write!(f, "could not open the SAM-BA bootloader: {error}")
+            }
+            Self::SamBa(error) => write!(f, "SAM-BA flashing failed: {error}"),
             Self::Stm32Target(_) => write!(
                 f,
                 "the STM32 firmware configuration has no valid flash address"
@@ -225,6 +243,8 @@ impl std::error::Error for SystemFlashError {
             Self::KatapultOpen(error) => Some(error),
             Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
             Self::PicoBoot(error) => Some(error),
+            Self::SamBaOpen(error) => Some(error),
+            Self::SamBa(error) => Some(error),
             Self::LinuxHost(error) => std::error::Error::source(error),
             Self::CanSocket(error) => Some(error),
             Self::CanUsbTopology(error) => Some(error),
@@ -305,6 +325,10 @@ fn resolve_serial_route(
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
         }
+        Ok(SelectedUsbBootloader::SamBa { serial_device, .. }) => Ok(SerialFlashRoute::SamBa {
+            serial_device,
+            target: samba_target(kconfig).map_err(SystemFlashError::SamBa)?,
+        }),
         Err(error @ UsbBootloaderSelectionError::Unsupported(_)) => {
             tracing::debug!(
                 transport = %context.transport,
@@ -535,6 +559,22 @@ fn dispatch_serial_route(
                 .flash(firmware)
                 .map_err(SystemFlashError::Stm32Dfu)
         }
+        SerialFlashRoute::SamBa {
+            serial_device,
+            target,
+        } => {
+            progress(SystemFlashProgress::Flashing);
+            let port = open_samba_serial_when_ready(
+                &serial_device,
+                options.katapult.read_timeout,
+                options.katapult.bootloader_timeout,
+                options.katapult.poll_interval,
+            )
+            .map_err(SystemFlashError::SamBaOpen)?;
+            SambaAdapter::new(port, target)
+                .flash(firmware)
+                .map_err(SystemFlashError::SamBa)
+        }
         SerialFlashRoute::PicoBoot { sysfs_path } => {
             wait_for_usb_access(
                 &sysfs_path,
@@ -585,6 +625,19 @@ fn open_katapult_serial_when_ready(
     retry_until_available(timeout, poll_interval, || {
         SystemSerialIo::open(serial_device, baud_rate, read_timeout).inspect_err(|error| {
             tracing::debug!(error = %error, "katapult serial device not yet ready, still waiting");
+        })
+    })
+}
+
+fn open_samba_serial_when_ready(
+    serial_device: &Path,
+    read_timeout: Duration,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> serialport::Result<SystemSambaPort> {
+    retry_until_available(timeout, poll_interval, || {
+        SystemSambaPort::open(serial_device, read_timeout).inspect_err(|error| {
+            tracing::debug!(error = %error, "sam-ba serial device not yet ready, still waiting");
         })
     })
 }
@@ -778,7 +831,7 @@ mod tests {
             message.contains("still had its application's USB identity"),
             "{message}"
         );
-        assert!(message.contains("Katapult, STM32 DFU, and RP2040/RP2350 PicoBoot"));
+        assert!(message.contains("Katapult, STM32 DFU, RP2040/RP2350 PicoBoot, and SAMD21 SAM-BA"));
         assert!(!message.contains("serial request reported"));
 
         let with_reset_error = SystemFlashError::Bootloader(UsbBootloaderError::NoEffect {

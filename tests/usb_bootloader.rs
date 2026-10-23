@@ -30,6 +30,10 @@ fn classifies_supported_usb_bootloaders_case_insensitively() {
         classify_usb_identity("2e8a:000f", "Raspberry Pi"),
         Some(UsbBootloaderKind::PicoBoot)
     );
+    assert_eq!(
+        classify_usb_identity("2886:002F", "Seeed Studio"),
+        Some(UsbBootloaderKind::SamBa)
+    );
 }
 
 #[test]
@@ -53,6 +57,11 @@ fn selects_supported_bootloaders_only_at_the_observed_topology() {
     assert!(matches!(
         select_usb_bootloader(observed("1d50:6177")),
         Ok(SelectedUsbBootloader::Katapult { sysfs_path: path, .. }) if path == sysfs_path
+    ));
+    assert!(matches!(
+        select_usb_bootloader(observed("2886:002f")),
+        Ok(SelectedUsbBootloader::SamBa { sysfs_path: path, serial_device })
+            if path == sysfs_path && serial_device == std::path::Path::new("/dev/ttyACM0")
     ));
     assert!(matches!(
         select_usb_bootloader(observed("0483:df11")),

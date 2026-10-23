@@ -8,6 +8,7 @@ use aldis::flash::picoboot;
 use aldis::flash::reboot::{
     DetectedBootloader, detect_bootloaders, wait_for_any_bootloader, wait_until_absent,
 };
+use aldis::flash::samba::{SystemSambaPort, reboot_into_application};
 use aldis::flash::stm32_dfu::{
     ApplicationProbeResult, Stm32DfuDevice, leave_system_at_path, probe_application_start_at_path,
 };
@@ -82,6 +83,19 @@ fn leave_one(bootloader: &DetectedBootloader, skip_prompt: bool, ui: &mut Update
             report_leave_result(result, &observed.sysfs_path, ui)
         }
         UsbBootloaderKind::Stm32Dfu => leave_stm32_dfu(&observed.sysfs_path, skip_prompt, ui),
+        UsbBootloaderKind::SamBa => {
+            let Some(serial_device) = &observed.serial_device else {
+                ui.block("  no unique serial device at this topology; power-cycle the board\n");
+                return false;
+            };
+            if !confirm(ui, "Reboot into application?", skip_prompt) {
+                return true;
+            }
+            let result = SystemSambaPort::open(serial_device, READ_TIMEOUT)
+                .map_err(|error| error.to_string())
+                .and_then(|port| reboot_into_application(port).map_err(|error| error.to_string()));
+            report_leave_result(result, &observed.sysfs_path, ui)
+        }
     }
 }
 

@@ -250,7 +250,7 @@ fn rejects_mcu_families_without_a_flashable_bootloader() {
     let samd = mcu(
         Some("Klipper"),
         Some("v0.13.0-770-gce7002bed"),
-        "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21G18=y\nCONFIG_CLOCK_REF_INTERNAL=y\n",
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD51G19=y\nCONFIG_CLOCK_REF_INTERNAL=y\n",
     );
     let status = assess_mcu(
         &samd,
@@ -271,6 +271,7 @@ fn accepts_every_family_with_a_flashable_bootloader() {
         "CONFIG_MACH_RP2040=y\n",
         "CONFIG_MACH_LPC176X=y\n",
         "CONFIG_MACH_LINUX=y\n",
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21G18=y\n",
     ] {
         let status = assess_mcu(
             &mcu(Some("Klipper"), Some("v0.13.0-770-gce7002bed"), kconfig),

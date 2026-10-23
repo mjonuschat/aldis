@@ -7,6 +7,7 @@ use crate::flash::usb_sysfs;
 const KATAPULT_USB_ID: &str = "1d50:6177";
 const STM32_DFU_USB_ID: &str = "0483:df11";
 const PICOBOOT_USB_IDS: &[&str] = &["2e8a:0003", "2e8a:000f"];
+const SAMBA_USB_IDS: &[&str] = &["2886:002f"];
 
 /// A USB bootloader supported by the native flashing backends.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,6 +18,8 @@ pub enum UsbBootloaderKind {
     Stm32Dfu,
     /// Raspberry Pi's RP2040 or RP2350 PicoBoot ROM bootloader.
     PicoBoot,
+    /// A SAMD21 bootloader speaking the SAM-BA monitor protocol over USB CDC.
+    SamBa,
 }
 
 /// A bootloader observed at the configured MCU's re-enumerated USB topology.
@@ -59,6 +62,13 @@ pub enum SelectedUsbBootloader {
         /// Linux sysfs path identifying the physical USB topology.
         sysfs_path: PathBuf,
     },
+    /// A SAM-BA monitor's serial device.
+    SamBa {
+        /// Linux sysfs path identifying the physical USB topology.
+        sysfs_path: PathBuf,
+        /// SAM-BA's serial device at that topology.
+        serial_device: PathBuf,
+    },
 }
 
 /// Diagnostic identity of a USB bootloader no supported backend recognizes.
@@ -99,6 +109,9 @@ pub enum UsbBootloaderSelectionError {
     /// Katapult appeared without a unique serial device at its topology.
     #[error("Katapult bootloader at {} has no unique serial device", .0.display())]
     KatapultSerialDeviceMissing(PathBuf),
+    /// A SAM-BA bootloader appeared without a unique serial device at its topology.
+    #[error("SAM-BA bootloader at {} has no unique serial device", .0.display())]
+    SamBaSerialDeviceMissing(PathBuf),
 }
 
 /// Selects a native backend only from one observed USB bootloader identity.
@@ -123,6 +136,16 @@ pub fn select_usb_bootloader(
         Some(UsbBootloaderKind::PicoBoot) => Ok(SelectedUsbBootloader::PicoBoot {
             sysfs_path: observed.sysfs_path,
         }),
+        Some(UsbBootloaderKind::SamBa) => {
+            let sysfs_path = observed.sysfs_path;
+            let serial_device = observed.serial_device.ok_or_else(|| {
+                UsbBootloaderSelectionError::SamBaSerialDeviceMissing(sysfs_path.clone())
+            })?;
+            Ok(SelectedUsbBootloader::SamBa {
+                sysfs_path,
+                serial_device,
+            })
+        }
         None => {
             let snapshot = usb_sysfs::usb_topology_snapshot(&sysfs_path);
             Err(UsbBootloaderSelectionError::Unsupported(Box::new(
@@ -191,6 +214,11 @@ pub fn classify_usb_identity(usb_id: &str, manufacturer: &str) -> Option<UsbBoot
         .any(|id| usb_id.eq_ignore_ascii_case(id))
     {
         Some(UsbBootloaderKind::PicoBoot)
+    } else if SAMBA_USB_IDS
+        .iter()
+        .any(|id| usb_id.eq_ignore_ascii_case(id))
+    {
+        Some(UsbBootloaderKind::SamBa)
     } else {
         None
     }
