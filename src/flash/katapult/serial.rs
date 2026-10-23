@@ -180,6 +180,14 @@ impl SystemSerialIo {
         Ok(Self { port })
     }
 
+    /// Asks a running Klipper on a plain UART to reboot into Katapult.
+    pub fn request_serial_bootloader(path: &Path, baud_rate: u32) -> serialport::Result<()> {
+        let mut port = serialport::new(path.to_string_lossy(), baud_rate).open()?;
+        port.write_all(BOOTLOADER_ENTRY_REQUEST)?;
+        port.flush()?;
+        Ok(())
+    }
+
     /// Requests USB CDC bootloader entry using Klipper's 1200-baud DTR pulse.
     pub fn request_usb_bootloader(path: &Path) -> serialport::Result<()> {
         let mut port = serialport::new(path.to_string_lossy(), 1200).open()?;
@@ -403,10 +411,24 @@ pub enum UsbBootloaderError {
     },
 }
 
-fn usb_device_path(device: &Path) -> Option<PathBuf> {
+const TTY_SYSFS_ROOT: &str = "/sys/class/tty";
+
+fn tty_sysfs_path(tty_root: &Path, device: &Path) -> Option<PathBuf> {
     let tty = fs::canonicalize(device).ok()?.file_name()?.to_owned();
-    let tty_path = fs::canonicalize(Path::new("/sys/class/tty").join(tty)).ok()?;
-    usb_device_ancestor(&tty_path)
+    fs::canonicalize(tty_root.join(tty)).ok()
+}
+
+fn usb_device_path(device: &Path) -> Option<PathBuf> {
+    usb_device_ancestor(&tty_sysfs_path(Path::new(TTY_SYSFS_ROOT), device)?)
+}
+
+/// Returns whether `device` is a real tty with no USB device behind it, such as a Pi's UART.
+pub fn is_tty_without_usb_device(device: &Path) -> bool {
+    is_tty_without_usb_device_in(Path::new(TTY_SYSFS_ROOT), device)
+}
+
+fn is_tty_without_usb_device_in(tty_root: &Path, device: &Path) -> bool {
+    tty_sysfs_path(tty_root, device).is_some_and(|tty| usb_device_ancestor(&tty).is_none())
 }
 
 impl SerialIo for SystemSerialIo {
@@ -552,6 +574,57 @@ mod tests {
         ));
         let tty_dir = interface.join("tty").join(tty);
         fs::create_dir_all(tty_dir).expect("create tty fixture");
+    }
+
+    fn tty_fixture(root: &std::path::Path, sysfs_leaf: &str, tty: &str) -> (PathBuf, PathBuf) {
+        let leaf = root.join("devices").join(sysfs_leaf).join(tty);
+        fs::create_dir_all(&leaf).expect("create sysfs leaf");
+        let tty_root = root.join("class-tty");
+        fs::create_dir_all(&tty_root).expect("create tty class root");
+        std::os::unix::fs::symlink(&leaf, tty_root.join(tty)).expect("link tty class entry");
+        let device = root.join("dev").join(tty);
+        fs::create_dir_all(device.parent().expect("device has a parent")).expect("create dev");
+        fs::write(&device, "").expect("create device node stand-in");
+        (tty_root, device)
+    }
+
+    #[test]
+    fn treats_a_tty_without_a_usb_ancestor_as_a_uart() {
+        let root = unique_temporary_path();
+        let (tty_root, device) = tty_fixture(&root, "platform/serial-5", "ttyAMA5");
+
+        assert!(super::is_tty_without_usb_device_in(&tty_root, &device));
+
+        fs::remove_dir_all(root).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn does_not_treat_a_usb_backed_tty_as_a_uart() {
+        let root = unique_temporary_path();
+        let (tty_root, device) = tty_fixture(&root, "usb1/1-1/1-1:1.0/tty", "ttyACM0");
+        let usb_device = root.join("devices").join("usb1").join("1-1");
+        for (name, value) in [
+            ("idVendor", "1d50"),
+            ("idProduct", "614e"),
+            ("busnum", "1"),
+            ("devnum", "5"),
+        ] {
+            fs::write(usb_device.join(name), value).expect("write usb identity");
+        }
+
+        assert!(!super::is_tty_without_usb_device_in(&tty_root, &device));
+
+        fs::remove_dir_all(root).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn does_not_treat_an_unresolvable_device_as_a_uart() {
+        let root = unique_temporary_path();
+
+        assert!(!super::is_tty_without_usb_device_in(
+            &root.join("class-tty"),
+            &root.join("dev").join("ttyAMA9")
+        ));
     }
 
     fn unique_temporary_path() -> PathBuf {

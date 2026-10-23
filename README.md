@@ -82,7 +82,7 @@ Stops and removes the service and drops it from Moonraker's service list.
 
 These bootloaders are entered and flashed unattended, directly from the running Klipper application:
 
-- **Katapult**, over USB serial or CAN
+- **Katapult**, over USB serial, a plain UART (such as a Pi's GPIO UART, at 250000 baud), or CAN
 - **STM32 ROM DFU** (`0483:df11`)
 - **PicoBoot** (RP2040/RP2350, `2e8a:0003`/`2e8a:000f`)
 - **SAM-BA** on SAMD21 (the Seeed XIAO SAMD21's UF2 bootloader, `2886:002f`)

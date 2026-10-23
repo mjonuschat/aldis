@@ -13,7 +13,9 @@ use crate::flash::FlashResult;
 use crate::flash::katapult::adapter::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{CanBootstrapError, request_can_bootloader};
 use crate::flash::katapult::can::SocketCanIo;
-use crate::flash::katapult::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
+use crate::flash::katapult::serial::{
+    KatapultSerialTransport, SystemSerialIo, UsbBootloaderError, is_tty_without_usb_device,
+};
 use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
 use crate::flash::linux_host::{HostMcuInstaller, LinuxHostError, is_linux_host};
 use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
@@ -33,6 +35,8 @@ use crate::flash::usb_sysfs::usb_device_ancestor;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
+
+const UART_BOOTLOADER_SETTLE: Duration = Duration::from_millis(500);
 
 /// A selected USB transfer route bound to the observed USB topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +117,8 @@ pub enum SystemFlashError {
     /// Rebooting the device back to its existing application, after refusing
     /// a mismatched firmware file, itself failed.
     Stm32MismatchRecovery(Stm32DfuError),
+    /// The request for a UART-attached Klipper to enter Katapult could not be sent.
+    UartBootloaderRequest(serialport::Error),
     /// The Katapult USB serial device could not be opened.
     KatapultOpen(serialport::Error),
     /// Katapult rejected or could not verify its USB serial transfer.
@@ -177,6 +183,10 @@ impl fmt::Display for SystemFlashError {
             Self::UsbAccess(error) => {
                 write!(f, "the USB bootloader was not accessible: {error}")
             }
+            Self::UartBootloaderRequest(error) => write!(
+                f,
+                "could not ask the MCU on its serial port to enter Katapult: {error}"
+            ),
             Self::KatapultOpen(error) => {
                 write!(f, "could not open the Katapult bootloader: {error}")
             }
@@ -240,7 +250,7 @@ impl std::error::Error for SystemFlashError {
             | Self::Stm32Dfu(error)
             | Self::Stm32Probe(error)
             | Self::Stm32MismatchRecovery(error) => Some(error),
-            Self::KatapultOpen(error) => Some(error),
+            Self::UartBootloaderRequest(error) | Self::KatapultOpen(error) => Some(error),
             Self::KatapultFlash(error) | Self::CanFlash(error) => Some(error),
             Self::PicoBoot(error) => Some(error),
             Self::SamBaOpen(error) => Some(error),
@@ -412,6 +422,9 @@ fn flash_serial_system(
     options: SystemFlashOptions,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    if is_tty_without_usb_device(Path::new(running_device)) {
+        return flash_uart_katapult(Path::new(running_device), firmware, options, progress);
+    }
     progress(SystemFlashProgress::EnteringBootloader);
     let started = Instant::now();
     let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
@@ -425,6 +438,31 @@ fn flash_serial_system(
         reset_elapsed: Some(started.elapsed()),
     };
     flash_observed_usb(observed, kconfig, firmware, options, progress, &context)
+}
+
+fn flash_uart_katapult(
+    serial_device: &Path,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    progress: &mut impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    progress(SystemFlashProgress::EnteringBootloader);
+    SystemSerialIo::request_serial_bootloader(serial_device, options.katapult.baud_rate)
+        .map_err(SystemFlashError::UartBootloaderRequest)?;
+    thread::sleep(UART_BOOTLOADER_SETTLE);
+    progress(SystemFlashProgress::BootloaderReady);
+    progress(SystemFlashProgress::Flashing);
+    let io = open_katapult_serial_when_ready(
+        serial_device,
+        options.katapult.baud_rate,
+        options.katapult.read_timeout,
+        options.katapult.bootloader_timeout,
+        options.katapult.poll_interval,
+    )
+    .map_err(SystemFlashError::KatapultOpen)?;
+    KatapultAdapter::new(KatapultSerialTransport::new(io))
+        .flash(firmware)
+        .map_err(SystemFlashError::KatapultFlash)
 }
 
 /// Flashes an explicit firmware file, skipping the Kconfig-derived STM32
@@ -473,6 +511,9 @@ fn flash_serial_firmware_file(
     force: bool,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
+    if is_tty_without_usb_device(Path::new(running_device)) {
+        return flash_uart_katapult(Path::new(running_device), firmware, options, progress);
+    }
     progress(SystemFlashProgress::EnteringBootloader);
     let started = Instant::now();
     let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
