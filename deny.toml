@@ -3,6 +3,7 @@
 
 [advisories]
 version = 2
+unsound = "all"
 
 [licenses]
 version = 2
