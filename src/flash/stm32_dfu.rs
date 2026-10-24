@@ -1,10 +1,11 @@
 //! STM32 USB-DFU backend boundaries backed by `dfu-nusb`.
 
 use std::path::Path;
+use std::time::Duration;
 
 use dfu_nusb::{DfuNusb, DfuSync};
 use nusb::MaybeFuture;
-use nusb::transfer::TransferError;
+use nusb::transfer::{ControlOut, ControlType, Recipient, TransferError};
 
 use crate::flash::{FlashPort, FlashResult};
 
@@ -288,6 +289,9 @@ pub fn probe_application_start_at_path(
                             error = %Stm32DfuError::Transport(error),
                             "could not read candidate application offset, skipping"
                         );
+                        if let Err(error) = clear_dfu_error(&interface).await {
+                            tracing::debug!(%error, "could not clear the dfu error state");
+                        }
                     }
                 }
             }
@@ -298,6 +302,28 @@ pub fn probe_application_start_at_path(
                     .map(|(_, bytes)| *bytes)
             }))
         })
+}
+
+const DFU_CLRSTATUS: u8 = 4;
+
+/// Returns a device left in `dfuERROR` by a failed request to `dfuIDLE`.
+///
+/// A fresh DFU session does not do this itself, so without it every request after one failed
+/// read stalls.
+async fn clear_dfu_error(interface: &nusb::Interface) -> Result<(), TransferError> {
+    interface
+        .control_out(
+            ControlOut {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: DFU_CLRSTATUS,
+                value: 0,
+                index: u16::from(interface.interface_number()),
+                data: &[],
+            },
+            Duration::from_secs(1),
+        )
+        .await
 }
 
 /// Determines the flash-start offset a firmware image expects to run at, by
