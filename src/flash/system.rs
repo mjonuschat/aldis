@@ -35,6 +35,7 @@ use crate::flash::usb_bootloader::{
     select_usb_bootloader,
 };
 use crate::flash::usb_sysfs::usb_device_ancestor;
+use crate::flash_order::kconfig_selects_usb_can_bridge;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
 use crate::retry::retry_until_available;
@@ -788,7 +789,7 @@ fn flash_can_system(
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::EnteringBootloader);
-    let usb_bridge = usb_can_bridge(kconfig);
+    let usb_bridge = kconfig_selects_usb_can_bridge(kconfig);
     let usb_path = usb_bridge
         .then(|| usb_device_path_for_can_interface(interface))
         .transpose()
@@ -825,12 +826,6 @@ fn flash_can_system(
     backend.flash(firmware).map_err(SystemFlashError::CanFlash)
 }
 
-fn usb_can_bridge(kconfig: &str) -> bool {
-    kconfig
-        .lines()
-        .any(|line| line.trim() == "CONFIG_USBCANBUS=y")
-}
-
 fn usb_device_path_for_can_interface(interface: &str) -> io::Result<PathBuf> {
     let interface_path = std::fs::canonicalize(Path::new("/sys/class/net").join(interface))?;
     usb_device_ancestor(&interface_path).ok_or_else(|| {
@@ -861,17 +856,11 @@ mod tests {
 
     use super::{
         SystemFlashError, UsbBootloaderError, kconfig_flash_start_symbols, kconfig_machine,
-        kconfig_serial_baud, usb_can_bridge, usb_device_node,
+        kconfig_serial_baud, usb_device_node,
     };
     use crate::flash::katapult::Command;
     use crate::flash::katapult::adapter::KatapultFlashError;
     use crate::flash::katapult::session::SessionError;
-
-    #[test]
-    fn recognizes_a_usb_can_bridge_from_embedded_kconfig() {
-        assert!(usb_can_bridge("CONFIG_USBCANBUS=y\n"));
-        assert!(!usb_can_bridge("# CONFIG_USBCANBUS is not set\n"));
-    }
 
     #[test]
     fn explains_an_unresponsive_can_bootloader_without_a_debug_dump() {

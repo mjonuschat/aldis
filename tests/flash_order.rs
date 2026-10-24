@@ -1,3 +1,4 @@
+use aldis::flash_order::kconfig_selects_usb_can_bridge;
 use aldis::flash_order::{flash_order, is_usb_can_bridge};
 use aldis::moonraker::{Mcu, McuInventory, McuTransport};
 
@@ -48,4 +49,28 @@ fn flashes_the_bridge_after_every_other_selected_mcu() {
     );
     assert!(is_usb_can_bridge(&inventory.mcus[0]));
     assert!(!is_usb_can_bridge(&inventory.mcus[1]));
+}
+
+#[test]
+fn recognizes_the_bridge_symbol_each_architecture_puts_in_its_embedded_kconfig() {
+    for kconfig in [
+        "CONFIG_MACH_RPXXXX=y\nCONFIG_RPXXXX_USBCANBUS=y\n",
+        "CONFIG_MACH_STM32=y\nCONFIG_STM32_USBCANBUS_PA11_PA12=y\n",
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_ATSAMD_USBCANBUS=y\n",
+        "CONFIG_USBCANBUS=y\n",
+    ] {
+        assert!(kconfig_selects_usb_can_bridge(kconfig), "{kconfig}");
+    }
+}
+
+#[test]
+fn does_not_mistake_other_configurations_for_a_bridge() {
+    for kconfig in [
+        "# CONFIG_USBCANBUS is not set\n",
+        "CONFIG_HAVE_STM32_USBCANBUS=y\n",
+        "CONFIG_MACH_STM32=y\nCONFIG_STM32_USB_PA11_PA12=y\n",
+        "CONFIG_RPXXXX_USBCANBUS=n\n",
+    ] {
+        assert!(!kconfig_selects_usb_can_bridge(kconfig), "{kconfig}");
+    }
 }

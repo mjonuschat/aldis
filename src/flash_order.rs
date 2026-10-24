@@ -5,9 +5,20 @@ use crate::moonraker::{Mcu, McuInventory};
 /// Whether this MCU is a USB-to-CAN bridge; flashing one resets its CAN interface, cutting off
 /// every CAN MCU behind it.
 pub fn is_usb_can_bridge(mcu: &Mcu) -> bool {
-    mcu.kconfig
-        .lines()
-        .any(|line| line.trim() == "CONFIG_USBCANBUS=y")
+    kconfig_selects_usb_can_bridge(&mcu.kconfig)
+}
+
+/// Whether an embedded Kconfig selects a USB-to-CAN bridge build.
+///
+/// The embedded configuration is a defconfig, so it names the architecture's own choice (for
+/// example `RPXXXX_USBCANBUS`) and never the generic `USBCANBUS` that choice selects.
+pub fn kconfig_selects_usb_can_bridge(kconfig: &str) -> bool {
+    kconfig.lines().any(|line| {
+        line.trim()
+            .strip_prefix("CONFIG_")
+            .and_then(|symbol| symbol.strip_suffix("=y"))
+            .is_some_and(|symbol| symbol.contains("USBCANBUS") && !symbol.starts_with("HAVE_"))
+    })
 }
 
 /// Orders `targets` for flashing: bridges last, everything else in its given order.
