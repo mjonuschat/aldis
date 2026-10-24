@@ -27,8 +27,8 @@ use crate::flash::samba::{
 };
 use crate::flash::stm32_dfu::{
     ApplicationProbeResult, Stm32DfuAdapter, Stm32DfuDevice, Stm32DfuError, Stm32DfuTarget,
-    expected_application_start, leave_system_at_path, probe_application_start_at_path,
-    target_from_kconfig,
+    expected_application_start, leave_system_at_path, plausible_application_starts,
+    probe_application_start_at_path, select_application_start, target_from_kconfig,
 };
 use crate::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderSelectionError,
@@ -337,7 +337,7 @@ fn resolve_serial_route(
                     target_from_kconfig(kconfig).map_err(SystemFlashError::Stm32Target)?
                 }
                 Stm32TargetSource::FirmwareFile { firmware, force } => {
-                    resolve_stm32_firmware_file_target(&sysfs_path, firmware, force)?
+                    resolve_stm32_firmware_file_target(&sysfs_path, kconfig, firmware, force)?
                 }
             };
             Ok(SerialFlashRoute::Stm32Dfu { sysfs_path, target })
@@ -656,15 +656,31 @@ fn dispatch_serial_route(
 
 fn resolve_stm32_firmware_file_target(
     sysfs_path: &Path,
+    kconfig: &str,
     firmware: &[u8],
     force: bool,
 ) -> Result<Stm32DfuTarget, SystemFlashError> {
     let firmware_offset =
         expected_application_start(firmware).ok_or(SystemFlashError::UnrecognizedFirmwareTarget)?;
     wait_for_usb_device_access(sysfs_path)?;
-    if let ApplicationProbeResult::Found(device_offset) =
-        probe_application_start_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path)
+    let installed =
+        match probe_application_start_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path)
             .map_err(SystemFlashError::Stm32Probe)?
+        {
+            ApplicationProbeResult::Found(device_offset) => Some(device_offset),
+            _ => None,
+        };
+    let configured = target_from_kconfig(kconfig)
+        .ok()
+        .map(|target| target.application_start);
+    if let Some(application_start) = select_application_start(
+        &plausible_application_starts(firmware),
+        installed,
+        configured,
+    ) {
+        return Ok(Stm32DfuTarget { application_start });
+    }
+    if let Some(device_offset) = installed
         && device_offset != firmware_offset
         && !force
     {

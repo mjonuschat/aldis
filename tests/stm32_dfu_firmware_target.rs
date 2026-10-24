@@ -1,4 +1,6 @@
-use aldis::flash::stm32_dfu::expected_application_start;
+use aldis::flash::stm32_dfu::{
+    expected_application_start, plausible_application_starts, select_application_start,
+};
 
 fn image_with_vector_table(stack_pointer: u32, reset_vector: u32) -> Vec<u8> {
     let mut image = Vec::new();
@@ -35,4 +37,59 @@ fn rejects_an_implausible_stack_pointer_outside_sram() {
 #[test]
 fn rejects_firmware_shorter_than_one_vector_table() {
     assert_eq!(expected_application_start(&[0u8; 4]), None);
+}
+
+fn image_with_handlers(handlers: &[u32], length: usize) -> Vec<u8> {
+    let mut image = Vec::new();
+    image.extend_from_slice(&0x2002_4000_u32.to_le_bytes());
+    for handler in handlers {
+        image.extend_from_slice(&handler.to_le_bytes());
+    }
+    image.resize(length, 0xAA);
+    image
+}
+
+#[test]
+fn names_every_start_consistent_with_startup_code_far_into_the_image() {
+    let image = image_with_handlers(&[0x0800_7765, 0x0800_7779, 0x0800_777D], 0xAF14);
+    let starts = plausible_application_starts(&image);
+
+    assert!(starts.contains(&0x0800_0000));
+    assert!(starts.contains(&0x0800_7000));
+    assert!(!starts.contains(&0x0800_8000));
+    assert_eq!(expected_application_start(&image), Some(0x0800_7000));
+}
+
+#[test]
+fn names_a_single_start_when_the_handlers_sit_near_the_image_start() {
+    let image = image_with_handlers(&[0x0800_20C1, 0x0800_20C5], 0x200);
+    assert_eq!(plausible_application_starts(&image), vec![0x0800_2000]);
+}
+
+#[test]
+fn names_no_start_for_an_implausible_vector_table() {
+    let image = image_with_handlers(&[0x0800_20C0], 0x40);
+    assert!(plausible_application_starts(&image).is_empty());
+}
+
+#[test]
+fn prefers_the_installed_application_then_the_configured_one() {
+    let plausible = [0x0800_0000, 0x0800_7000];
+
+    assert_eq!(
+        select_application_start(&plausible, Some(0x0800_0000), Some(0x0800_7000)),
+        Some(0x0800_0000)
+    );
+    assert_eq!(
+        select_application_start(&plausible, None, Some(0x0800_7000)),
+        Some(0x0800_7000)
+    );
+    assert_eq!(
+        select_application_start(&plausible, Some(0x0802_0000), Some(0x0800_0000)),
+        Some(0x0800_0000)
+    );
+    assert_eq!(
+        select_application_start(&plausible, Some(0x0802_0000), None),
+        None
+    );
 }

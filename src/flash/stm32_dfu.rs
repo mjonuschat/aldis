@@ -351,6 +351,60 @@ pub fn expected_application_start(firmware: &[u8]) -> Option<u32> {
         .max()
 }
 
+const CORE_VECTORS: usize = 16;
+
+/// Lists every candidate application start the firmware's core vector table is consistent with:
+/// each flash pointer in it lies within the image if it were written there.
+///
+/// A vector table cannot say where its image belongs when startup code sits well past the start
+/// of the image, so this usually names several candidates.
+pub fn plausible_application_starts(firmware: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = firmware
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(CORE_VECTORS)
+        .map(|word| u32::from_le_bytes(*word))
+        .collect();
+    let (Some(&stack_pointer), Some(&reset_vector)) = (words.first(), words.get(1)) else {
+        return Vec::new();
+    };
+    if !is_plausible_vector_table(stack_pointer, reset_vector) {
+        return Vec::new();
+    }
+    let length = u32::try_from(firmware.len()).unwrap_or(u32::MAX);
+    let handlers: Vec<u32> = words[1..]
+        .iter()
+        .copied()
+        .filter(|word| (FLASH_START..FLASH_END).contains(word))
+        .collect();
+    FLASH_START_OFFSETS_HEX
+        .iter()
+        .map(|offset| {
+            FLASH_START
+                + u32::from_str_radix(offset, 16).expect("FLASH_START_OFFSETS_HEX is valid hex")
+        })
+        .filter(|&base| {
+            handlers
+                .iter()
+                .all(|handler| (base..base.saturating_add(length)).contains(handler))
+        })
+        .collect()
+}
+
+/// Chooses where a firmware file belongs among its plausible starts: where the device already
+/// has an application, otherwise where the MCU's Kconfig puts it.
+pub fn select_application_start(
+    plausible: &[u32],
+    installed: Option<u32>,
+    configured: Option<u32>,
+) -> Option<u32> {
+    [installed, configured]
+        .into_iter()
+        .flatten()
+        .find(|start| plausible.contains(start))
+}
+
 fn is_plausible_vector_table(stack_pointer: u32, reset_vector: u32) -> bool {
     (SRAM_START..SRAM_END).contains(&stack_pointer)
         && stack_pointer.is_multiple_of(4)
