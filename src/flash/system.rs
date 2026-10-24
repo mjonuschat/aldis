@@ -622,12 +622,7 @@ fn dispatch_serial_route(
                 .map_err(SystemFlashError::KatapultFlash)
         }
         SerialFlashRoute::Stm32Dfu { sysfs_path, target } => {
-            wait_for_usb_access(
-                &sysfs_path,
-                Duration::from_secs(5),
-                Duration::from_millis(50),
-            )
-            .map_err(SystemFlashError::UsbAccess)?;
+            wait_for_usb_device_access(&sysfs_path)?;
             progress(SystemFlashProgress::Flashing);
             Stm32DfuAdapter::new(Stm32DfuDevice::ROM_BOOTLOADER, &sysfs_path, target)
                 .flash(firmware)
@@ -650,12 +645,7 @@ fn dispatch_serial_route(
                 .map_err(SystemFlashError::SamBa)
         }
         SerialFlashRoute::PicoBoot { sysfs_path } => {
-            wait_for_usb_access(
-                &sysfs_path,
-                Duration::from_secs(5),
-                Duration::from_millis(50),
-            )
-            .map_err(SystemFlashError::UsbAccess)?;
+            wait_for_usb_device_access(&sysfs_path)?;
             progress(SystemFlashProgress::Flashing);
             PicoBootAdapter::new(&sysfs_path)
                 .flash(firmware)
@@ -671,6 +661,7 @@ fn resolve_stm32_firmware_file_target(
 ) -> Result<Stm32DfuTarget, SystemFlashError> {
     let firmware_offset =
         expected_application_start(firmware).ok_or(SystemFlashError::UnrecognizedFirmwareTarget)?;
+    wait_for_usb_device_access(sysfs_path)?;
     if let ApplicationProbeResult::Found(device_offset) =
         probe_application_start_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path)
             .map_err(SystemFlashError::Stm32Probe)?
@@ -714,6 +705,15 @@ fn open_samba_serial_when_ready(
             tracing::debug!(error = %error, "sam-ba serial device not yet ready, still waiting");
         })
     })
+}
+
+fn wait_for_usb_device_access(sysfs_path: &Path) -> Result<(), SystemFlashError> {
+    wait_for_usb_access(
+        sysfs_path,
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+    )
+    .map_err(SystemFlashError::UsbAccess)
 }
 
 fn wait_for_usb_access(
