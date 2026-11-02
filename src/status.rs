@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use aldis::checkout::{CheckoutPort, GitCheckoutAdapter, RefreshResult};
+use aldis::checkout::RefreshResult;
 use aldis::eligibility::{CheckoutRevision, Eligibility, RevisionStatus, assess_mcu};
 use aldis::moonraker::{McuInventory, McuTransport, MoonrakerAdapter, MoonrakerPort};
 use anyhow::Context;
@@ -15,10 +15,12 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
         .klipper_source
         .unwrap_or_else(crate::default_klipper_source);
     let moonraker = MoonrakerAdapter::new(&arguments.moonraker.moonraker);
+    let revision = aldis::checkout::revision(&source).unwrap_or(CheckoutRevision::Indeterminate);
+    tracing::debug!(?revision, "checkout revision resolved");
     match status_report(
         &arguments.moonraker.moonraker,
         &moonraker,
-        &GitCheckoutAdapter,
+        revision,
         &source,
     ) {
         Ok(report) => {
@@ -32,17 +34,13 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
 fn status_report(
     url: &str,
     moonraker: &(impl MoonrakerPort + aldis::moonraker::HostPort),
-    checkout: &impl CheckoutPort,
+    revision: CheckoutRevision,
     source: &std::path::Path,
 ) -> anyhow::Result<String> {
     tracing::info!("discovering MCUs from Moonraker");
     let mut inventory =
         crate::discovery::discover_mcus_with_retry(moonraker).context("failed to discover MCUs")?;
     crate::discovery::probe_unreported(url, moonraker, &mut inventory);
-    let revision = checkout
-        .revision(source)
-        .unwrap_or(CheckoutRevision::Indeterminate);
-    tracing::debug!(?revision, "checkout revision resolved");
     Ok(format_status(source, &revision, &inventory, None))
 }
 
@@ -155,7 +153,7 @@ pub(crate) fn refresh_label(refreshed: &RefreshResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::{format_status, status_report};
-    use aldis::checkout::{CheckoutError, CheckoutPort, RefreshResult};
+    use aldis::checkout::RefreshResult;
     use aldis::eligibility::CheckoutRevision;
     use aldis::moonraker::{Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort};
 
@@ -289,17 +287,15 @@ mod tests {
     }
 
     #[test]
-    fn reports_status_from_injected_moonraker_and_checkout_sources() {
+    fn reports_status_from_an_injected_moonraker_and_a_known_revision() {
         let moonraker = FakeMoonraker(Ok(McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
             unreported: Vec::new(),
         }));
-        let checkout = FakeCheckout(Ok(CheckoutRevision::Known("v2".to_owned())));
-
         let report = status_report(
             "http://127.0.0.1:7125",
             &moonraker,
-            &checkout,
+            CheckoutRevision::Known("v2".to_owned()),
             std::path::Path::new("/klipper"),
         )
         .expect("status report should succeed");
@@ -311,12 +307,10 @@ mod tests {
     #[test]
     fn reports_the_moonraker_error_when_discovery_fails() {
         let moonraker = FakeMoonraker(Err("no MCU objects were reported".to_owned()));
-        let checkout = FakeCheckout(Ok(CheckoutRevision::Indeterminate));
-
         let error = status_report(
             "http://127.0.0.1:7125",
             &moonraker,
-            &checkout,
+            CheckoutRevision::Indeterminate,
             std::path::Path::new("/klipper"),
         )
         .expect_err("status report should fail");
@@ -348,20 +342,6 @@ mod tests {
 
         fn logs_root(&self) -> Result<Option<std::path::PathBuf>, MoonrakerError> {
             Ok(None)
-        }
-    }
-
-    struct FakeCheckout(Result<CheckoutRevision, String>);
-
-    impl CheckoutPort for FakeCheckout {
-        fn revision(&self, _path: &std::path::Path) -> Result<CheckoutRevision, CheckoutError> {
-            self.0
-                .clone()
-                .map_err(|_| CheckoutError::UpstreamNotConfigured)
-        }
-
-        fn refresh(&self, _path: &std::path::Path) -> Result<RefreshResult, CheckoutError> {
-            unimplemented!("not exercised by these tests")
         }
     }
 
