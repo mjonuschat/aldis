@@ -289,6 +289,7 @@ impl<T: CanIo> Transport for KatapultCanTransport<T> {
 /// transmit a frame. Call [`KatapultCanTransport::assign_node`] explicitly.
 pub struct SocketCanIo {
     socket: CanSocket,
+    read_timeout: Duration,
 }
 
 impl SocketCanIo {
@@ -301,8 +302,23 @@ impl SocketCanIo {
         );
         let socket = CanSocket::open(interface)?;
         socket.set_read_timeout(read_timeout)?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            read_timeout,
+        })
     }
+}
+
+/// The classic 11-bit data frame in `frame`, or `None` for what Katapult never sends: remote and
+/// error frames, and 29-bit identifiers from other devices sharing the bus.
+fn standard_data_frame(frame: &socketcan::CanFrame) -> Option<CanFrame> {
+    let socketcan::CanFrame::Data(frame) = frame else {
+        return None;
+    };
+    let Id::Standard(id) = frame.id() else {
+        return None;
+    };
+    CanFrame::new(id.as_raw(), frame.data()).ok()
 }
 
 impl CanIo for SocketCanIo {
@@ -316,24 +332,45 @@ impl CanIo for SocketCanIo {
         self.socket.write_frame(&socket_frame)
     }
 
+    /// Returns the next standard data frame. Other traffic on a shared bus (remote or error
+    /// frames, 29-bit identifiers) is skipped rather than failing the exchange, for at most the
+    /// socket's read timeout so the caller's deadline is still honoured.
     fn read(&mut self) -> Result<CanFrame, Self::Error> {
-        let socketcan::CanFrame::Data(frame) = self.socket.read_frame()? else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Katapult only accepts CAN data frames",
-            ));
-        };
-        let Id::Standard(id) = frame.id() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Katapult only accepts standard CAN frames",
-            ));
-        };
-        CanFrame::new(id.as_raw(), frame.data()).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid classic CAN frame received: {error:?}"),
-            )
-        })
+        let deadline = Instant::now() + self.read_timeout;
+        loop {
+            let frame = self.socket.read_frame()?;
+            if let Some(frame) = standard_data_frame(&frame) {
+                return Ok(frame);
+            }
+            tracing::trace!(?frame, "skipping a CAN frame Katapult never sends");
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "only CAN frames Katapult never sends arrived within the read timeout",
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use socketcan::{CanDataFrame, CanRemoteFrame, EmbeddedFrame, ExtendedId, StandardId};
+
+    use super::standard_data_frame;
+
+    #[test]
+    fn keeps_only_standard_data_frames() {
+        let standard = StandardId::new(0x203).unwrap();
+        let data = socketcan::CanFrame::Data(CanDataFrame::new(standard, &[1, 2, 3]).unwrap());
+        let remote = socketcan::CanFrame::Remote(CanRemoteFrame::new_remote(standard, 4).unwrap());
+        let extended = socketcan::CanFrame::Data(
+            CanDataFrame::new(ExtendedId::new(0x203).unwrap(), &[1, 2, 3]).unwrap(),
+        );
+
+        let kept = standard_data_frame(&data).unwrap();
+        assert_eq!((kept.id(), kept.data()), (0x203, &[1, 2, 3][..]));
+        assert!(standard_data_frame(&remote).is_none());
+        assert!(standard_data_frame(&extended).is_none());
     }
 }
