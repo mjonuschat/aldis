@@ -90,6 +90,27 @@ fn git(path: &Path, action: &'static str, args: &[&str]) -> Result<String, Check
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// Runs a `git` query that answers yes or no through its exit status: 0 is yes, 1 is no, and
+/// anything else (a missing repository, an unknown ref, a failed spawn) is an error rather than
+/// a no.
+fn git_check(path: &Path, action: &'static str, args: &[&str]) -> Result<bool, CheckoutError> {
+    let output: Output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(CheckoutError::Spawn)?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(CheckoutError::Command {
+            action,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }),
+    }
+}
+
 /// Returns the checkout revision, including a dirty suffix for tracked changes.
 pub fn revision(path: &Path) -> Result<CheckoutRevision, CheckoutError> {
     let description = git(
@@ -123,12 +144,11 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
 
     git(path, "fetch the configured upstream", &["fetch", &remote])?;
 
-    let is_ancestor = git(
+    let is_ancestor = git_check(
         path,
         "check whether the checkout can fast-forward",
         &["merge-base", "--is-ancestor", "HEAD", &upstream],
-    )
-    .is_ok();
+    )?;
     if !is_ancestor {
         return Err(CheckoutError::NotFastForward { branch, upstream });
     }
@@ -173,4 +193,65 @@ pub fn refresh(path: &Path) -> Result<RefreshResult, CheckoutError> {
         advanced: true,
         commits_advanced,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::{CheckoutError, git_check};
+
+    fn git(path: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .env("LC_ALL", "C")
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn tells_a_negative_answer_apart_from_a_failed_git_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = [
+            "-c",
+            "user.name=aldis",
+            "-c",
+            "user.email=aldis@example.invalid",
+        ];
+        git(dir.path(), &["init", "-q"]);
+        for message in ["one", "two"] {
+            let mut args = identity.to_vec();
+            args.extend(["commit", "-q", "--allow-empty", "-m", message]);
+            git(dir.path(), &args);
+        }
+        let ancestry = |older: &str, newer: &str| {
+            git_check(
+                dir.path(),
+                "check ancestry",
+                &["merge-base", "--is-ancestor", older, newer],
+            )
+        };
+
+        assert!(matches!(ancestry("HEAD~1", "HEAD"), Ok(true)));
+        assert!(matches!(ancestry("HEAD", "HEAD~1"), Ok(false)));
+        assert!(matches!(
+            ancestry("HEAD", "no-such-ref"),
+            Err(CheckoutError::Command {
+                action: "check ancestry",
+                ..
+            })
+        ));
+        assert!(matches!(
+            git_check(
+                Path::new("/nonexistent/aldis-checkout"),
+                "check ancestry",
+                &["merge-base", "--is-ancestor", "HEAD", "HEAD"],
+            ),
+            Err(CheckoutError::Command { .. })
+        ));
+    }
 }
