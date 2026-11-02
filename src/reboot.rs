@@ -155,6 +155,5 @@ fn confirm(ui: &mut UpdateUi, text: &str, skip_prompt: bool) -> bool {
     if skip_prompt {
         return true;
     }
-    ui.prompt(text);
-    crate::ui::confirmed()
+    ui.confirm(text)
 }

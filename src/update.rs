@@ -1,6 +1,6 @@
 //! The interactive build-and-flash update command.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -98,7 +98,7 @@ fn run_update(
         source.display()
     ));
     let refreshed =
-        if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull()) {
+        if arguments.auto || arguments.pull || (io::stdin().is_terminal() && confirm_pull(ui)) {
             ui.action("refreshing configured Klipper upstream");
             let refreshed = refresh_checkout(&source)
                 .inspect_err(|error| {
@@ -112,22 +112,17 @@ fn run_update(
             None
         };
     let moonraker_url = &arguments.connection.moonraker.moonraker;
-    let unit = aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
+    let moonraker = MoonrakerAdapter::new(moonraker_url);
+    let unit = aldis::host::verify_host(moonraker_url, &moonraker)
         .context("refusing to update firmware")?;
     ui.action("discovering MCUs from Moonraker");
-    let mut inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
-        &arguments.connection.moonraker.moonraker,
-    ))
-    .inspect_err(|error| {
-        tracing::debug!(?error, "Moonraker discovery failed");
-        ui.action(&format!("error: {}", aldis::error_chain(error)));
-    })
-    .context("failed to discover MCUs from Moonraker")?;
-    crate::discovery::probe_unreported(
-        moonraker_url,
-        &MoonrakerAdapter::new(moonraker_url),
-        &mut inventory,
-    );
+    let mut inventory = crate::discovery::discover_mcus_with_retry(&moonraker)
+        .inspect_err(|error| {
+            tracing::debug!(?error, "Moonraker discovery failed");
+            ui.action(&format!("error: {}", aldis::error_chain(error)));
+        })
+        .context("failed to discover MCUs from Moonraker")?;
+    crate::discovery::probe_unreported(moonraker_url, &moonraker, &mut inventory);
     for target in &mut arguments.targets {
         *target = crate::discovery::resolve_target_name(&inventory, target);
     }
@@ -174,7 +169,6 @@ fn run_update(
         LoggingCommandAdapter::new(SystemCommandAdapter),
         unit,
     );
-    let moonraker = MoonrakerAdapter::new(moonraker_url);
     let mut hooks = CliHooks {
         ui,
         auto: arguments.auto,
@@ -221,8 +215,7 @@ impl RunHooks for CliHooks<'_> {
             true
         } else {
             self.ui
-                .prompt(&format!("Update {name} from {current} to {next}?"));
-            crate::ui::confirmed()
+                .confirm(&format!("Update {name} from {current} to {next}?"))
         }
     }
 
@@ -283,10 +276,8 @@ fn selection_for(every_eligible: bool) -> UpdateSelection {
     }
 }
 
-fn confirm_pull() -> bool {
-    eprint!("Pull the configured Klipper upstream before updating? [Y/n] ");
-    let _ = io::stderr().flush();
-    crate::ui::confirmed()
+fn confirm_pull(ui: &mut UpdateUi) -> bool {
+    ui.confirm("Pull the configured Klipper upstream before updating?")
 }
 
 #[cfg(test)]

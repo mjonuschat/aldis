@@ -62,6 +62,12 @@ impl UpdateUi {
         let _ = io::stderr().flush();
     }
 
+    /// Asks `text` as a `[Y/n]` question and reads the answer, defaulting to yes.
+    pub(crate) fn confirm(&mut self, text: &str) -> bool {
+        self.prompt(text);
+        confirmed()
+    }
+
     pub(crate) fn begin(&mut self, label: impl Into<String>) {
         self.clear_active();
         let label = label.into();
@@ -115,20 +121,8 @@ impl UpdateUi {
     }
 
     fn success_line(&self, message: &str) -> String {
-        if self.interactive {
-            format!("  {} {message}", self.style("32", "✓"))
-        } else {
-            let marker = if self.color {
-                self.style("32", "[ok]")
-            } else {
-                "[ok]".to_owned()
-            };
-            if self.color {
-                format!("  {marker} {message}")
-            } else {
-                plain_success_line(message)
-            }
-        }
+        let marker = if self.interactive { "✓" } else { "[ok]" };
+        format!("  {} {message}", self.style("32", marker))
     }
 
     fn failure_line(&self, message: &str) -> String {
@@ -242,10 +236,6 @@ pub(crate) fn colors_enabled(mode: ColorMode, is_terminal: bool) -> bool {
     }
 }
 
-pub(crate) fn plain_success_line(message: &str) -> String {
-    format!("  [ok] {message}")
-}
-
 /// Reads one line from stdin, trimmed and lowercased.
 pub(crate) fn read_confirmation() -> Result<String, io::Error> {
     let mut input = String::new();
@@ -258,13 +248,13 @@ pub(crate) fn confirmed_by_default(response: &str) -> bool {
 }
 
 /// Reads a `[Y/n]`-style confirmation from stdin, defaulting to yes.
-pub(crate) fn confirmed() -> bool {
+fn confirmed() -> bool {
     read_confirmation().is_ok_and(|response| confirmed_by_default(&response))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{colors_enabled, confirmed_by_default, plain_success_line};
+    use super::{UpdateUi, colors_enabled, confirmed_by_default};
     use crate::cli::ColorMode;
 
     #[test]
@@ -286,7 +276,7 @@ mod tests {
         assert!(colors_enabled(ColorMode::Auto, true));
         assert!(!colors_enabled(ColorMode::Auto, false));
         assert_eq!(
-            plain_success_line("compiled firmware"),
+            UpdateUi::new(ColorMode::Never, true).success_line("compiled firmware"),
             "  [ok] compiled firmware"
         );
     }

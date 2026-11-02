@@ -37,13 +37,12 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         .clone()
         .unwrap_or_else(crate::default_klipper_source);
     let moonraker_url = &arguments.connection.moonraker.moonraker;
-    let unit = aldis::host::verify_host(moonraker_url, &MoonrakerAdapter::new(moonraker_url))
+    let moonraker = MoonrakerAdapter::new(moonraker_url);
+    let unit = aldis::host::verify_host(moonraker_url, &moonraker)
         .context("refusing to flash firmware")?;
     ui.action("discovering MCUs from Moonraker");
-    let inventory = crate::discovery::discover_mcus_with_retry(&MoonrakerAdapter::new(
-        &arguments.connection.moonraker.moonraker,
-    ))
-    .context("failed to discover MCUs from Moonraker")?;
+    let inventory = crate::discovery::discover_mcus_with_retry(&moonraker)
+        .context("failed to discover MCUs from Moonraker")?;
     arguments.target = crate::discovery::resolve_target_name(&inventory, &arguments.target);
     if let Some(reason) = flash_refusal(&inventory, &arguments.target) {
         ui.action(&format!("error: {reason}"));
@@ -71,16 +70,15 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         .prepare(&inventory, &workspace, &arguments.target, false)
         .with_context(|| format!("failed to prepare {} for flashing", arguments.target))?;
 
-    if !arguments.force {
-        ui.prompt(&confirmation_prompt(
+    if !arguments.force
+        && !ui.confirm(&confirmation_prompt(
             &arguments.target,
             &arguments.firmware,
             firmware.len(),
-        ));
-        if !crate::ui::confirmed() {
-            ui.block("\nflash cancelled\n");
-            return Ok(());
-        }
+        ))
+    {
+        ui.block("\nflash cancelled\n");
+        return Ok(());
     }
 
     let options = aldis::update_run::standard_flash_options();
@@ -90,10 +88,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         .iter()
         .find(|mcu| mcu.name == arguments.target)
         .context("the prepared MCU is missing from the inventory")?;
-    aldis::update_run::ensure_printer_idle(&MoonrakerAdapter::new(
-        &arguments.connection.moonraker.moonraker,
-    ))
-    .map_err(|message| {
+    aldis::update_run::ensure_printer_idle(&moonraker).map_err(|message| {
         ui.action(&format!("error: {message}"));
         anyhow::anyhow!(message)
     })?;
@@ -155,7 +150,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     ui.begin("waiting for the MCU to reconnect");
     // An explicit firmware file may be any revision, so only reconnection is verified.
     if let Err(message) = aldis::update_run::wait_for_mcus(
-        &MoonrakerAdapter::new(moonraker_url),
+        &moonraker,
         std::slice::from_ref(&arguments.target),
         &CheckoutRevision::Indeterminate,
     ) {
