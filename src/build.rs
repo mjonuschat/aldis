@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+use crate::kconfig::{self, InvalidKconfig};
+
 /// The inputs and output location for one Klipper firmware build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildRequest {
@@ -153,6 +155,10 @@ pub enum BuildError {
     /// A required path has no parent directory or is not valid UTF-8 for Make.
     #[error("invalid build request: {0}")]
     InvalidRequest(String),
+    /// `request.kconfig` is not purely Kconfig settings. Klipper's Makefile `-include`s the
+    /// config file, so anything else in it would run as make (or shell) code on the host.
+    #[error("refusing to pass the reported Kconfig to make")]
+    UntrustedKconfig(#[source] InvalidKconfig),
     /// The host filesystem operation failed.
     #[error("could not {action}")]
     Io {
@@ -210,6 +216,8 @@ where
         request: &BuildRequest,
         mut progress: impl FnMut(BuildProgress),
     ) -> Result<BuildArtifact, BuildError> {
+        // Before anything is written: the checkout's .config is what make will `-include`.
+        kconfig::validate(&request.kconfig).map_err(BuildError::UntrustedKconfig)?;
         let config_parent = request.config_path.parent().ok_or_else(|| {
             BuildError::InvalidRequest("config_path must have a parent directory".to_owned())
         })?;

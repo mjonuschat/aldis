@@ -14,6 +14,7 @@ pub mod flash_order;
 pub mod fleet;
 pub mod host;
 pub mod identify;
+pub mod kconfig;
 pub mod lock;
 pub mod logging;
 pub mod moonraker;
