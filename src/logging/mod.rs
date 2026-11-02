@@ -15,22 +15,36 @@ fn stderr_level_for(verbosity: u8) -> tracing::Level {
     }
 }
 
+/// What a run log records: everything, except the chattiest dependencies.
+const RUN_LOG_FILTER: &str = "debug,dfu_core=info,ureq=warn,ureq::run=debug";
+
+/// The operator-facing layer: plain text to `writer`, at the level `verbosity` (or `RUST_LOG`)
+/// selects.
+fn console_layer<S, W>(verbosity: u8, writer: W) -> impl Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + 'static,
+{
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity).to_string()));
+    tracing_subscriber::fmt::layer()
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_filter(filter)
+}
+
 /// Installs the global tracing subscriber: a verbosity/`RUST_LOG`-controlled
 /// stderr layer plus a file layer pinned to DEBUG for the run log,
 /// regardless of `verbosity` or `RUST_LOG`. The caller must hold the
 /// returned `WorkerGuard` for the process lifetime, or buffered log lines
 /// can be dropped when the guard (and its flush-on-drop) runs early.
 pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
-    let stderr_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity).to_string()));
     // tracing-subscriber caches a span's formatted fields on the span itself,
     // keyed by field-formatter type; whichever fmt layer formats the span
     // first (here, stderr) would otherwise poison the file layer's cached
-    // copy with ANSI codes even though the file layer sets with_ansi(false).
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_filter(stderr_filter);
+    // copy with ANSI codes even though the file layer sets with_ansi(false),
+    // which is why every console layer is plain text.
+    let stderr_layer = console_layer(verbosity, std::io::stderr);
 
     let file = std::fs::OpenOptions::new()
         .create_new(true)
@@ -40,9 +54,7 @@ pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)
         .with_ansi(false)
-        .with_filter(EnvFilter::new(
-            "debug,dfu_core=info,ureq=warn,ureq::run=debug",
-        ));
+        .with_filter(EnvFilter::new(RUN_LOG_FILTER));
 
     tracing_subscriber::registry()
         .with(stderr_layer)
@@ -57,15 +69,8 @@ pub fn init(verbosity: u8, run_log_path: &Path) -> anyhow::Result<WorkerGuard> {
 /// layer's log path (e.g. permission errors on a shared temp directory) but
 /// still need `RUST_LOG`/verbosity-controlled diagnostics on stderr.
 pub fn init_stderr_only(verbosity: u8) -> anyhow::Result<()> {
-    let stderr_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity).to_string()));
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_filter(stderr_filter);
-
     tracing_subscriber::registry()
-        .with(stderr_layer)
+        .with(console_layer(verbosity, std::io::stderr))
         .try_init()
         .map_err(|error| anyhow::anyhow!("failed to install tracing subscriber: {error}"))
 }
@@ -120,19 +125,12 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RunLogSink {
 /// Installs the agent's subscriber: operational logs to stdout (journald), and full debug detail
 /// to whichever run log is currently started on the returned sink.
 pub fn init_agent(verbosity: u8) -> anyhow::Result<RunLogSink> {
-    let stdout_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(stderr_level_for(verbosity.max(1)).to_string()));
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stdout)
-        .with_ansi(false)
-        .with_filter(stdout_filter);
+    let stdout_layer = console_layer(verbosity.max(1), std::io::stdout);
     let sink = RunLogSink::default();
     let run_layer = tracing_subscriber::fmt::layer()
         .with_writer(sink.clone())
         .with_ansi(false)
-        .with_filter(EnvFilter::new(
-            "debug,dfu_core=info,ureq=warn,ureq::run=debug",
-        ));
+        .with_filter(EnvFilter::new(RUN_LOG_FILTER));
     tracing_subscriber::registry()
         .with(stdout_layer)
         .with(run_layer)
