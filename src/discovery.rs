@@ -47,32 +47,38 @@ pub(crate) fn probe_unreported_with(
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
-const MAX_RETRIES: u32 = 3;
 
 pub(crate) fn discover_mcus_with_retry(
     client: &impl MoonrakerPort,
 ) -> Result<McuInventory, MoonrakerError> {
-    discover_mcus_with_retry_params(client, TIMEOUT, POLL_INTERVAL, MAX_RETRIES)
+    discover_mcus_with_retry_params(client, TIMEOUT, POLL_INTERVAL)
+}
+
+/// How many attempts `retry_until_available` makes with these timings: one at once, then one
+/// per poll interval, the deadline being checked after each failure.
+fn max_attempts(timeout: Duration, poll_interval: Duration) -> u32 {
+    let poll_interval = poll_interval.max(Duration::from_millis(10));
+    (timeout.as_millis() / poll_interval.as_millis()) as u32 + 1
 }
 
 fn discover_mcus_with_retry_params(
     client: &impl MoonrakerPort,
     timeout: Duration,
     poll_interval: Duration,
-    max_retries: u32,
 ) -> Result<McuInventory, MoonrakerError> {
     let interactive = stderr().is_terminal();
-    let mut retries = 0u32;
+    let max_attempts = max_attempts(timeout, poll_interval);
+    let mut attempts = 0u32;
     let outcome = retry_until_available(timeout, poll_interval, || match client.discover_mcus() {
         Ok(inventory) => Ok(Ok(inventory)),
         Err(error) if is_klipper_not_ready(&error) => {
-            retries += 1;
-            print_waiting(interactive, retries, max_retries);
+            attempts += 1;
+            print_waiting(interactive, attempts, max_attempts);
             Err(error)
         }
         Err(error) => Ok(Err(error)),
     });
-    clear_waiting_line(interactive, retries > 0);
+    clear_waiting_line(interactive, attempts > 0);
     outcome.unwrap_or_else(Err)
 }
 
@@ -124,7 +130,21 @@ mod tests {
 
     use aldis::moonraker::{McuInventory, MoonrakerError};
 
-    use super::discover_mcus_with_retry_params;
+    use super::{discover_mcus_with_retry_params, max_attempts};
+
+    #[test]
+    fn counts_the_attempts_the_retry_helper_actually_makes() {
+        // One attempt at once, then one every poll interval until the deadline.
+        assert_eq!(
+            max_attempts(Duration::from_secs(15), Duration::from_secs(5)),
+            4
+        );
+        assert_eq!(
+            max_attempts(Duration::from_millis(30), Duration::from_millis(10)),
+            4
+        );
+        assert_eq!(max_attempts(Duration::from_secs(1), Duration::ZERO), 101);
+    }
 
     struct FakeMoonraker {
         responses: RefCell<Vec<Result<McuInventory, MoonrakerError>>>,
@@ -151,7 +171,6 @@ mod tests {
             &client,
             Duration::from_millis(30),
             Duration::from_millis(10),
-            3,
         );
 
         assert!(matches!(result, Err(MoonrakerError::InvalidResponse(_))));
@@ -176,7 +195,6 @@ mod tests {
             &client,
             Duration::from_millis(60),
             Duration::from_millis(10),
-            3,
         );
 
         assert!(result.is_ok());
@@ -197,7 +215,6 @@ mod tests {
             &NeverReady,
             Duration::from_millis(30),
             Duration::from_millis(10),
-            3,
         );
 
         assert!(matches!(result, Err(MoonrakerError::KlippyStarting(_))));
