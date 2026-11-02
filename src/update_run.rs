@@ -37,7 +37,9 @@ pub fn ensure_printer_idle(printer: &(impl PrinterStatePort + HostPort)) -> Resu
 
 const NET_SYSFS_ROOT: &str = "/sys/class/net";
 
-fn wait_for_application(mcu: &crate::moonraker::Mcu) -> Result<(), String> {
+/// Waits for a freshly flashed MCU's device (serial node, or a USB-CAN bridge's CAN interface)
+/// to re-enumerate. MCUs without such a device are not waited for.
+pub fn wait_for_application(mcu: &crate::moonraker::Mcu) -> Result<(), String> {
     wait_for_application_in(mcu, Duration::from_secs(15), Path::new(NET_SYSFS_ROOT))
 }
 
@@ -64,7 +66,9 @@ fn wait_for_application_in(
     .map_err(|()| format!("{} did not come back at {description}", mcu.name))
 }
 
-fn wait_for_mcus(
+/// Waits for Klipper to report every MCU in `selected` again, at `checkout`'s revision when it is
+/// known; with an indeterminate revision only reconnection is verified.
+pub fn wait_for_mcus(
     client: &(impl MoonrakerPort + HostPort),
     selected: &[String],
     checkout: &CheckoutRevision,

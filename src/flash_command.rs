@@ -5,7 +5,7 @@ use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
-use aldis::eligibility::{Eligibility, classify_mcu};
+use aldis::eligibility::{CheckoutRevision, Eligibility, classify_mcu};
 use aldis::flash::system::SystemFlashError;
 use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::{McuInventory, MoonrakerAdapter};
@@ -85,6 +85,11 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
 
     let options = aldis::update_run::standard_flash_options();
     let target_kconfig = pending.kconfig().to_owned();
+    let mcu = inventory
+        .mcus
+        .iter()
+        .find(|mcu| mcu.name == arguments.target)
+        .context("the prepared MCU is missing from the inventory")?;
     aldis::update_run::ensure_printer_idle(&MoonrakerAdapter::new(
         &arguments.connection.moonraker.moonraker,
     ))
@@ -116,6 +121,20 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         }
     }
 
+    // The same post-flash steps as `update`: Klipper must not start before the device is back,
+    // and success is only reported once Klipper sees the MCU again.
+    ui.begin("waiting for the MCU to restart");
+    if let Err(message) = aldis::update_run::wait_for_application(mcu) {
+        ui.finish_failure();
+        let message = format!(
+            "{} successfully but {message}. Klipper may still be stopped; fix the issue, then restart it manually",
+            crate::ui::transfer_verb(&target_kconfig),
+        );
+        ui.action(&format!("error: {message}"));
+        return Err(anyhow::anyhow!(message));
+    }
+    ui.finish_success("MCU restarted");
+
     ui.begin("starting Klipper");
     if let Err(error) = coordinator.start_after_batch() {
         ui.finish_failure();
@@ -123,6 +142,23 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
             "{} successfully but Klipper failed to restart: {}",
             crate::ui::transfer_verb(&target_kconfig),
             aldis::error_chain(&error)
+        );
+        ui.action(&format!("error: {message}"));
+        return Err(anyhow::anyhow!(message));
+    }
+    ui.finish_success("Klipper started");
+
+    ui.begin("waiting for the MCU to reconnect");
+    // An explicit firmware file may be any revision, so only reconnection is verified.
+    if let Err(message) = aldis::update_run::wait_for_mcus(
+        &MoonrakerAdapter::new(moonraker_url),
+        std::slice::from_ref(&arguments.target),
+        &CheckoutRevision::Indeterminate,
+    ) {
+        ui.finish_failure();
+        let message = format!(
+            "{} successfully and Klipper started, but {message}",
+            crate::ui::transfer_verb(&target_kconfig),
         );
         ui.action(&format!("error: {message}"));
         return Err(anyhow::anyhow!(message));
