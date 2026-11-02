@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aldis::identify::{
-    FrameDecoder, IdentifyData, IdentifyError, decode_vlq, encode_frame, encode_vlq, identify_over,
-    identify_request, parse_identify_response,
+    FrameDecoder, IdentifyData, IdentifyError, MAX_DICTIONARY_BYTES, MAX_INFLATED_BYTES,
+    decode_vlq, encode_frame, encode_vlq, identify_over, identify_request, parse_identify_response,
 };
 
 #[test]
@@ -146,6 +146,116 @@ fn reads_the_whole_dictionary_after_resyncing_from_a_nak() {
     let data = identify_over(&mut mcu, Duration::from_secs(2)).expect("identify");
 
     assert_eq!(data, dictionary());
+}
+
+/// Answers every request with a full chunk at the requested offset, forever.
+struct EndlessMcu {
+    pending: VecDeque<u8>,
+    decoder: FrameDecoder,
+}
+
+impl Write for EndlessMcu {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.decoder.push(bytes);
+        while let Some(frame) = self.decoder.next_frame() {
+            let mut pos = 1;
+            let offset = decode_vlq(&frame.payload, &mut pos).unwrap();
+            let count = decode_vlq(&frame.payload, &mut pos).unwrap() as u8;
+            let mut payload = vec![0x00];
+            encode_vlq(&mut payload, offset);
+            payload.push(count);
+            payload.extend(std::iter::repeat_n(0xaa, usize::from(count)));
+            self.pending
+                .extend(encode_frame(frame.seq & 0x0f, &payload));
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for EndlessMcu {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.pending.is_empty() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let n = out.len().min(self.pending.len());
+        for slot in out.iter_mut().take(n) {
+            *slot = self.pending.pop_front().unwrap();
+        }
+        Ok(n)
+    }
+}
+
+#[test]
+fn stops_once_the_dictionary_exceeds_the_size_cap() {
+    let mut mcu = EndlessMcu {
+        pending: VecDeque::new(),
+        decoder: FrameDecoder::new(),
+    };
+
+    let error = identify_over(&mut mcu, Duration::from_secs(60)).unwrap_err();
+
+    assert!(
+        matches!(error, IdentifyError::DictionaryTooLarge(limit) if limit == MAX_DICTIONARY_BYTES as u64),
+        "{error:?}"
+    );
+}
+
+/// Never blocks: every read returns valid frames that are not identify responses.
+struct FloodingMcu;
+
+impl Write for FloodingMcu {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for FloodingMcu {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let frame = encode_frame(0, &[]);
+        let n = out.len().min(frame.len());
+        out[..n].copy_from_slice(&frame[..n]);
+        Ok(n)
+    }
+}
+
+#[test]
+fn gives_up_on_an_mcu_that_floods_frames_without_ever_answering() {
+    let started = Instant::now();
+
+    let error = identify_over(&mut FloodingMcu, Duration::from_millis(50)).unwrap_err();
+
+    assert!(
+        matches!(error, IdentifyError::Timeout(timeout) if timeout == Duration::from_millis(50)),
+        "{error:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn refuses_a_dictionary_that_inflates_past_the_cap() {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    let spaces = vec![b' '; 1024 * 1024];
+    for _ in 0..9 {
+        encoder.write_all(&spaces).unwrap();
+    }
+    let bomb = encoder.finish().unwrap();
+    assert!(
+        bomb.len() < 64 * 1024,
+        "the fixture must be small on the wire"
+    );
+
+    let error = IdentifyData::from_compressed(&bomb).unwrap_err();
+
+    assert!(
+        matches!(error, IdentifyError::DictionaryTooLarge(limit) if limit == MAX_INFLATED_BYTES),
+        "{error:?}"
+    );
 }
 
 #[test]

@@ -16,6 +16,11 @@ const MESSAGE_SYNC: u8 = 0x7e;
 const IDENTIFY_RESPONSE_ID: u32 = 0;
 const IDENTIFY_ID: u32 = 1;
 const IDENTIFY_CHUNK: u8 = 40;
+/// The most compressed dictionary `identify_over` will accumulate. Klipper's is a few tens of KiB;
+/// the cap stops a faulty or hostile MCU that keeps answering from growing the buffer forever.
+pub const MAX_DICTIONARY_BYTES: usize = 1024 * 1024;
+/// The most a dictionary may inflate to. Klipper's is around 100 KiB of JSON.
+pub const MAX_INFLATED_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Failure while identifying an MCU directly.
 #[derive(Debug, thiserror::Error)]
@@ -26,6 +31,13 @@ pub enum IdentifyError {
     /// The MCU never answered.
     #[error("the MCU did not answer identify requests")]
     NoResponse,
+    /// The MCU kept sending frames, but the exchange did not finish within the timeout.
+    #[error("the identify exchange did not finish within {0:?}")]
+    Timeout(Duration),
+    /// The MCU kept returning dictionary data past [`MAX_DICTIONARY_BYTES`], or the dictionary
+    /// inflated past [`MAX_INFLATED_BYTES`].
+    #[error("the MCU data dictionary is larger than the {0} bytes aldis accepts")]
+    DictionaryTooLarge(u64),
     /// Reading or writing the port failed.
     #[error("MCU port I/O failed")]
     Io(#[source] io::Error),
@@ -180,9 +192,14 @@ impl IdentifyData {
     /// Decodes the zlib-compressed JSON dictionary returned by `identify`.
     pub fn from_compressed(data: &[u8]) -> Result<Self, IdentifyError> {
         let mut json = String::new();
+        // One byte past the cap is enough to tell "exactly at the cap" from "exceeds it".
         flate2::read::ZlibDecoder::new(data)
+            .take(MAX_INFLATED_BYTES + 1)
             .read_to_string(&mut json)
             .map_err(|error| IdentifyError::Decode(error.to_string()))?;
+        if json.len() as u64 > MAX_INFLATED_BYTES {
+            return Err(IdentifyError::DictionaryTooLarge(MAX_INFLATED_BYTES));
+        }
         let json: Value = serde_json::from_str(&json)
             .map_err(|error| IdentifyError::Decode(error.to_string()))?;
         let text = |pointer: &str| {
@@ -207,6 +224,9 @@ impl IdentifyData {
 ///
 /// Starts at sequence 0 and adopts whatever sequence the MCU reports in each reply (including a
 /// NAK), since firmware that talked to Klippy earlier expects a sequence number other than 0.
+///
+/// `timeout` bounds the whole exchange, whether the MCU is silent or answering, and the
+/// dictionary may not exceed [`MAX_DICTIONARY_BYTES`].
 pub fn identify_over<P: Read + Write>(
     port: &mut P,
     timeout: Duration,
@@ -218,6 +238,16 @@ pub fn identify_over<P: Read + Write>(
     let mut data = Vec::new();
     let mut buffer = [0u8; MESSAGE_MAX];
     loop {
+        // The inner loop only sees the deadline while waiting for bytes; an MCU that floods
+        // frames (or keeps returning chunks) would otherwise never let it be checked.
+        if Instant::now() >= deadline {
+            return Err(IdentifyError::Timeout(timeout));
+        }
+        if data.len() >= MAX_DICTIONARY_BYTES {
+            return Err(IdentifyError::DictionaryTooLarge(
+                MAX_DICTIONARY_BYTES as u64,
+            ));
+        }
         port.write_all(&identify_request(seq, data.len() as u32, IDENTIFY_CHUNK))
             .map_err(IdentifyError::Io)?;
         let frame = loop {
