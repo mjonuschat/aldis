@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::build::BuildRequest;
+use crate::kconfig::{self, InvalidKconfig};
 use crate::moonraker::{McuInventory, McuTransport};
 
 /// A selected MCU paired with the exact build request derived from Moonraker.
@@ -22,6 +23,16 @@ pub enum PreparationError {
     /// The requested MCU is not present in the current Moonraker inventory.
     #[error("MCU target {0:?} is not present in Moonraker inventory")]
     TargetNotDiscovered(String),
+    /// The MCU's reported Kconfig contains something other than Kconfig settings, which `make`
+    /// would evaluate on the host; flash it by hand to bring it back under aldis.
+    #[error("refusing to build {target:?} from the Kconfig its firmware reports")]
+    UntrustedKconfig {
+        /// Moonraker's configured MCU object name.
+        target: String,
+        /// The offending line.
+        #[source]
+        source: InvalidKconfig,
+    },
 }
 
 /// Prepares a build request without writing files or invoking Klipper.
@@ -37,6 +48,13 @@ pub fn prepare_build(
         .iter()
         .find(|mcu| mcu.name == target_name)
         .ok_or_else(|| PreparationError::TargetNotDiscovered(target_name.to_owned()))?;
+    // Refuse here, before Klipper is stopped for the build, as well as in the builder itself.
+    kconfig::validate(&discovered_mcu.kconfig).map_err(|source| {
+        PreparationError::UntrustedKconfig {
+            target: target_name.to_owned(),
+            source,
+        }
+    })?;
 
     Ok(PreparedBuild {
         target_name: target_name.to_owned(),

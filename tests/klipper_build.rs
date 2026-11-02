@@ -277,6 +277,47 @@ fn preserves_make_stderr_when_kconfig_expansion_fails() {
     fs::remove_dir_all(root).expect("test directory cleanup");
 }
 
+#[test]
+fn refuses_to_write_a_reported_kconfig_that_make_would_evaluate() {
+    let root = temporary_directory("untrusted");
+    let source_dir = root.join("klipper");
+    let config_path = root.join("run/mcu/.config");
+    let artifact_path = root.join("artifacts/mcu.bin");
+    fs::create_dir_all(&source_dir).expect("source checkout directory should exist");
+    let runner = FakeRunner::success();
+    let builder = KlipperBuilder::new(&source_dir, runner.clone());
+
+    for kconfig in [
+        "CONFIG_MACH_STM32=y\nCONFIG_MCU=\"$(shell id > /tmp/pwned)\"\n",
+        "CONFIG_MACH_STM32=y\nCONFIG_BOARD_DIRECTORY=\"stm32 /tmp/uploaded.gcode tail\"\n",
+    ] {
+        let error = builder
+            .build(&BuildRequest {
+                kconfig: kconfig.to_owned(),
+                config_path: config_path.clone(),
+                artifact_path: artifact_path.clone(),
+                clean: false,
+            })
+            .expect_err("an unsafe Kconfig must not reach make");
+
+        assert!(
+            matches!(error, BuildError::UntrustedKconfig(_)),
+            "expected an untrusted Kconfig error, got {error:?}"
+        );
+        assert!(
+            runner.commands.lock().expect("runner lock").is_empty(),
+            "make must not run"
+        );
+        assert!(!config_path.exists(), "the audit copy must not be written");
+        assert!(
+            !source_dir.join(".config").exists(),
+            "the checkout's .config must not be written"
+        );
+    }
+
+    fs::remove_dir_all(root).expect("test directory cleanup");
+}
+
 #[derive(Clone)]
 struct FakeRunner {
     commands: Arc<Mutex<Vec<BuildCommand>>>,

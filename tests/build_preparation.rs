@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aldis::moonraker::{McuTransport, parse_inventory};
+use aldis::kconfig::InvalidKconfig;
+use aldis::moonraker::{Mcu, McuInventory, McuTransport, parse_inventory};
 use aldis::prepare::{PreparationError, prepare_build};
 
 #[test]
@@ -55,6 +56,49 @@ fn rejects_a_target_absent_from_the_discovered_inventory() {
         Err(PreparationError::TargetNotDiscovered(
             "mcu missing".to_owned()
         ))
+    );
+}
+
+#[test]
+fn refuses_a_reported_kconfig_that_make_would_evaluate() {
+    let inventory = McuInventory {
+        mcus: vec![Mcu {
+            name: "mcu".to_owned(),
+            app: Some("Klipper".to_owned()),
+            version: Some("v0.13.0-770-gce7002bed".to_owned()),
+            mcu: "stm32h723xx".to_owned(),
+            canbus_frequency_hz: None,
+            transport: None,
+            kconfig: "CONFIG_MACH_STM32=y\nCROSS_PREFIX=/tmp/evil/\n".to_owned(),
+        }],
+        unreported: Vec::new(),
+    };
+
+    let error = prepare_build(
+        &inventory,
+        "mcu",
+        PathBuf::from("mcu/.config"),
+        PathBuf::from("artifacts/mcu.bin"),
+        false,
+    )
+    .expect_err("a Kconfig with a make assignment must not be prepared");
+
+    assert_eq!(
+        error,
+        PreparationError::UntrustedKconfig {
+            target: "mcu".to_owned(),
+            source: InvalidKconfig::Line {
+                line: 2,
+                reason: "not a CONFIG_ symbol assignment",
+                text: "CROSS_PREFIX=/tmp/evil/".to_owned(),
+            },
+        }
+    );
+    assert_eq!(
+        aldis::error_chain(&error),
+        "refusing to build \"mcu\" from the Kconfig its firmware reports: \
+         line 2 of the MCU-reported Kconfig is not a plain Kconfig setting \
+         (not a CONFIG_ symbol assignment): \"CROSS_PREFIX=/tmp/evil/\""
     );
 }
 
