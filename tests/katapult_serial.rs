@@ -41,3 +41,38 @@ fn reassembles_a_fragmented_katapult_reply() {
         b"~ \x1c Request Serial Bootloader!! ~"
     );
 }
+
+fn complete_reply() -> Vec<u8> {
+    let mut reply = vec![1, 0x88, 0xa0, 1, 0x15, 0, 0, 0];
+    reply.extend_from_slice(&crc16_ccitt(&reply[2..]).to_le_bytes());
+    reply.extend_from_slice(&[0x99, 3]);
+    reply
+}
+
+#[test]
+fn discards_the_tail_of_a_late_reply_ahead_of_the_next_frames_header() {
+    let reply = complete_reply();
+    // The last bytes of a reply to an earlier, timed-out request arrive first, then the real
+    // reply split so the header itself straddles two chunks.
+    let mut first = vec![0, 0, 0x99, 0x03, 0x01];
+    first.extend_from_slice(&reply[1..5]);
+    let io = ScriptedSerial {
+        reads: VecDeque::from([first, reply[5..].to_vec()]),
+        ..Default::default()
+    };
+    let mut transport = KatapultSerialTransport::new(io);
+
+    assert_eq!(transport.exchange(&[1, 2]).unwrap(), reply);
+}
+
+#[test]
+fn keeps_a_trailing_header_byte_that_the_next_chunk_completes() {
+    let reply = complete_reply();
+    let io = ScriptedSerial {
+        reads: VecDeque::from([vec![0x7f, 0x01], reply[1..].to_vec()]),
+        ..Default::default()
+    };
+    let mut transport = KatapultSerialTransport::new(io);
+
+    assert_eq!(transport.exchange(&[1, 2]).unwrap(), reply);
+}

@@ -11,8 +11,8 @@ use std::time::Duration;
 use std::fs;
 use std::path::PathBuf;
 
-use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
+use super::{AssemblyError, MAX_RESPONSE_FRAME_BYTES, ResponseAssembler};
 use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
 use crate::flash::usb_sysfs::{UsbIdentity, usb_device_ancestor, usb_identity, usb_tty};
 use crate::retry::retry_until_available;
@@ -139,27 +139,17 @@ impl<T: SerialIo> Transport for KatapultSerialTransport<T> {
         self.io
             .write_all(request)
             .map_err(SerialTransportError::Io)?;
-        let mut response = Vec::new();
-        let mut expected = None;
+        let mut assembler = ResponseAssembler::new();
         loop {
             let chunk = self.io.read().map_err(SerialTransportError::Io)?;
-            let length = response.len() + chunk.len();
-            if length > MAX_RESPONSE_FRAME_BYTES {
-                return Err(SerialTransportError::ResponseTooLarge { length });
-            }
-            response.extend_from_slice(&chunk);
-            if expected.is_none() && response.len() >= 4 {
-                expected = Some(8 + usize::from(response[3]) * 4);
-            }
-            if let Some(expected) = expected {
-                if response.len() == expected {
-                    return Ok(response);
+            match assembler.push(&chunk) {
+                Ok(Some(response)) => return Ok(response),
+                Ok(None) => {}
+                Err(AssemblyError::TooLarge { length }) => {
+                    return Err(SerialTransportError::ResponseTooLarge { length });
                 }
-                if response.len() > expected {
-                    return Err(SerialTransportError::ResponseLengthExceeded {
-                        expected,
-                        actual: response.len(),
-                    });
+                Err(AssemblyError::LengthExceeded { expected, actual }) => {
+                    return Err(SerialTransportError::ResponseLengthExceeded { expected, actual });
                 }
             }
         }

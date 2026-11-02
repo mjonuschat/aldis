@@ -86,6 +86,73 @@ pub struct Response {
     pub data: Vec<u8>,
 }
 
+/// Why a response could not be assembled from the bytes received so far.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssemblyError {
+    /// More bytes arrived than the largest Katapult frame holds.
+    TooLarge {
+        /// Bytes buffered when the limit was exceeded.
+        length: usize,
+    },
+    /// The response ran past the length its own header declares.
+    LengthExceeded {
+        /// Frame length implied by the declared payload size.
+        expected: usize,
+        /// Bytes actually received.
+        actual: usize,
+    },
+}
+
+/// Reassembles one Katapult response from the chunks a transport receives.
+///
+/// Bytes ahead of the frame header are discarded, as Katapult's own `flashtool.py` does: after a
+/// request times out, its late reply (or the tail of it) arrives at the start of the next
+/// exchange, and reading the frame length from those bytes would mis-frame every retry.
+#[derive(Debug, Default)]
+pub struct ResponseAssembler {
+    buffer: Vec<u8>,
+}
+
+impl ResponseAssembler {
+    /// Starts assembling a fresh response.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds `chunk` and returns the complete frame once its declared length has arrived.
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Option<Vec<u8>>, AssemblyError> {
+        self.buffer.extend_from_slice(chunk);
+        self.discard_until_header();
+        let length = self.buffer.len();
+        if length > MAX_RESPONSE_FRAME_BYTES {
+            return Err(AssemblyError::TooLarge { length });
+        }
+        if length < 4 {
+            return Ok(None);
+        }
+        let expected = MIN_FRAME_LENGTH + usize::from(self.buffer[3]) * 4;
+        match length.cmp(&expected) {
+            std::cmp::Ordering::Less => Ok(None),
+            std::cmp::Ordering::Equal => Ok(Some(std::mem::take(&mut self.buffer))),
+            std::cmp::Ordering::Greater => Err(AssemblyError::LengthExceeded {
+                expected,
+                actual: length,
+            }),
+        }
+    }
+
+    fn discard_until_header(&mut self) {
+        if let Some(start) = self.buffer.windows(HEADER.len()).position(|w| w == HEADER) {
+            self.buffer.drain(..start);
+            return;
+        }
+        // No header yet: keep only a trailing first header byte the next chunk may complete.
+        let keep = usize::from(self.buffer.last() == Some(&HEADER[0]));
+        let discard = self.buffer.len() - keep;
+        self.buffer.drain(..discard);
+    }
+}
+
 /// Calculates Katapult's CRC16-CCITT variant.
 pub fn crc16_ccitt(buffer: &[u8]) -> u16 {
     let mut crc = 0xffff_u16;

@@ -7,8 +7,8 @@ use std::fmt;
 use std::io;
 use std::time::{Duration, Instant};
 
-use super::MAX_RESPONSE_FRAME_BYTES;
 use super::session::Transport;
+use super::{AssemblyError, MAX_RESPONSE_FRAME_BYTES, ResponseAssembler};
 use socketcan::{CanDataFrame, CanSocket, EmbeddedFrame, Id, Socket};
 
 const CAN_ADMIN_ID: u16 = 0x3f0;
@@ -260,8 +260,7 @@ impl<T: CanIo> Transport for KatapultCanTransport<T> {
         }
 
         let deadline = Instant::now() + self.exchange_timeout;
-        let mut response = Vec::new();
-        let mut expected_length = None;
+        let mut assembler = ResponseAssembler::new();
         loop {
             if Instant::now() >= deadline {
                 return Err(CanTransportError::Timeout);
@@ -270,27 +269,14 @@ impl<T: CanIo> Transport for KatapultCanTransport<T> {
             if frame.id() != self.address.response_id() {
                 continue;
             }
-
-            let actual_length = response.len() + frame.data().len();
-            if actual_length > MAX_RESPONSE_FRAME_BYTES {
-                return Err(CanTransportError::ResponseTooLarge {
-                    length: actual_length,
-                });
-            }
-            response.extend_from_slice(frame.data());
-
-            if expected_length.is_none() && response.len() >= 4 {
-                expected_length = Some(8 + usize::from(response[3]) * 4);
-            }
-            if let Some(expected_length) = expected_length {
-                if response.len() == expected_length {
-                    return Ok(response);
+            match assembler.push(frame.data()) {
+                Ok(Some(response)) => return Ok(response),
+                Ok(None) => {}
+                Err(AssemblyError::TooLarge { length }) => {
+                    return Err(CanTransportError::ResponseTooLarge { length });
                 }
-                if response.len() > expected_length {
-                    return Err(CanTransportError::ResponseLengthExceeded {
-                        expected: expected_length,
-                        actual: response.len(),
-                    });
+                Err(AssemblyError::LengthExceeded { expected, actual }) => {
+                    return Err(CanTransportError::ResponseLengthExceeded { expected, actual });
                 }
             }
         }

@@ -125,6 +125,27 @@ fn assigns_a_node_then_reassembles_only_its_response_frames() {
 }
 
 #[test]
+fn discards_a_late_replys_tail_ahead_of_the_header() {
+    let address = KatapultCanAddress::new(0xe781_9ed8_e7d3).unwrap();
+    let response = [0x01, 0x88, 0xa0, 0x01, 0x15, 0, 0, 0, 0, 0, 0x99, 0x03];
+    let io = ScriptedCanIo {
+        received: VecDeque::from([
+            // The final fragment of a reply to an earlier, timed-out request.
+            CanFrame::new(address.response_id(), &[0, 0, 0x99, 0x03]).unwrap(),
+            CanFrame::new(address.response_id(), &response[..8]).unwrap(),
+            CanFrame::new(address.response_id(), &response[8..]).unwrap(),
+        ]),
+        ..Default::default()
+    };
+    let mut transport = KatapultCanTransport::new(io, address, Duration::from_secs(1));
+
+    assert_eq!(
+        transport.exchange(&[0x01, 0x88, 0x15, 0]).unwrap(),
+        response
+    );
+}
+
+#[test]
 fn requests_bootloader_entry_without_assigning_a_katapult_node() {
     let address = KatapultCanAddress::new(0xe781_9ed8_e7d3).unwrap();
     let mut transport =
