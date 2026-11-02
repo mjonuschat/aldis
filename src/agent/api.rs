@@ -7,10 +7,10 @@ use crate::eligibility::{
 };
 use crate::flash_order::is_usb_can_bridge;
 use crate::fleet::peer::{PeerState, check_bridge};
-use crate::host::{HostCheckError, check_host};
 use crate::moonraker::{
     HostInfo, KlippyState, McuInventory, McuTransport, PrintState, UnreportedReason,
 };
+use crate::service::KlipperUnit;
 
 pub const API_VERSION: u32 = 1;
 
@@ -215,9 +215,8 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
             "Moonraker is not on this machine; firmware updates need a local Moonraker".to_owned(),
         );
     }
-    // The URL was checked above; a fixed loopback URL leaves only the unit check.
-    if let Err(HostCheckError::UnsupportedInstance(unit)) =
-        check_host("http://127.0.0.1", host.klipper_unit.as_deref())
+    if let Some(unit) = host.klipper_unit.as_deref()
+        && KlipperUnit::parse(unit).is_err()
     {
         return block(
             BlockerReason::UnsupportedInstance,
