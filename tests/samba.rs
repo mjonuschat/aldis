@@ -18,6 +18,11 @@ struct FakeMonitor {
     command: Vec<u8>,
     payload_remaining: usize,
     outbox: VecDeque<u8>,
+    /// Bytes the monitor has sent that have not reached the host yet: invisible to
+    /// `discard_input`, delivered ahead of `outbox` on the next read.
+    in_flight: VecDeque<u8>,
+    /// Answer `N#` with the "\n\r" real monitors send, delivered late.
+    late_binary_mode_reply: bool,
     staged: Vec<u8>,
     copy_source: u32,
     flash: Vec<u8>,
@@ -35,6 +40,8 @@ impl FakeMonitor {
             command: Vec::new(),
             payload_remaining: 0,
             outbox: VecDeque::new(),
+            in_flight: VecDeque::new(),
+            late_binary_mode_reply: false,
             staged: Vec::new(),
             copy_source: 0,
             flash: vec![0xff; 0x40000],
@@ -56,7 +63,11 @@ impl FakeMonitor {
         let (kind, arguments) = text.split_at(1);
         let arguments = arguments.trim_end_matches('#');
         match kind {
-            "N" => {}
+            "N" => {
+                if self.late_binary_mode_reply {
+                    self.in_flight.extend(b"\n\r");
+                }
+            }
             "V" => self
                 .outbox
                 .extend(b"v1.1 [Arduino:XYZ] Nov 27 2019 16:35:59\n\r\0"),
@@ -134,6 +145,9 @@ impl Write for FakeMonitor {
 
 impl Read for FakeMonitor {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        while let Some(byte) = self.in_flight.pop_back() {
+            self.outbox.push_front(byte);
+        }
         if self.outbox.is_empty() {
             return Err(io::ErrorKind::TimedOut.into());
         }
@@ -181,6 +195,21 @@ fn writes_verifies_and_resets_an_image_spanning_several_chunks() {
     );
     assert!(monitor.reset_requested);
     assert_eq!(monitor.commands.last().unwrap(), "WE000ED0C,05FA0004#");
+}
+
+#[test]
+fn handshakes_when_the_binary_mode_reply_arrives_after_the_flush() {
+    let mut monitor = FakeMonitor::new();
+    monitor.late_binary_mode_reply = true;
+    let mut adapter = SambaAdapter::new(monitor, target());
+
+    adapter.flash(&firmware(64)).unwrap();
+
+    let monitor = adapter.into_port();
+    assert!(monitor.reset_requested);
+    assert_eq!(monitor.commands[0], "N#");
+    assert_eq!(monitor.commands[1], "V#");
+    assert_eq!(monitor.commands[2], "w41002018,4#");
 }
 
 #[test]

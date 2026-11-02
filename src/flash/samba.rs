@@ -177,16 +177,40 @@ struct Monitor<P> {
 
 impl<P: SambaPort> Monitor<P> {
     fn handshake(&mut self) -> Result<(), SambaError> {
+        // `N#` puts the monitor in binary mode and it answers "\n\r". Over USB CDC that reply
+        // usually lands after a flush issued here, so read it (as bossac does) rather than
+        // discarding whatever is buffered, or it is taken for the start of the version banner.
         self.port.write_all(b"N#")?;
         self.port.flush()?;
+        let mut ack = [0_u8; 2];
+        match self.port.read_exact(&mut ack) {
+            Ok(()) => {}
+            // A monitor already in binary mode does not answer again.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::UnexpectedEof
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
         self.port.discard_input()?;
         self.port.write_all(b"V#")?;
         self.port.flush()?;
 
+        // The banner is one line starting with `v`; anything before it that still looks like
+        // the tail of the `N#` reply is skipped.
         let mut line = Vec::new();
         let mut byte = [0_u8; 1];
-        while byte[0] != b'\n' {
+        let mut consumed = 0;
+        loop {
             self.port.read_exact(&mut byte)?;
+            consumed += 1;
+            if line.is_empty() && matches!(byte[0], b'\n' | b'\r' | 0) && consumed <= 2 {
+                continue;
+            }
+            if byte[0] == b'\n' {
+                break;
+            }
             line.push(byte[0]);
             if line.len() > MAX_VERSION_LINE {
                 return Err(SambaError::UnexpectedReply {
