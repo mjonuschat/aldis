@@ -7,11 +7,8 @@ use std::time::Duration;
 
 use super::adapter::KatapultAdapter;
 use super::can::{CanError, CanIo, CanTransportError, KatapultCanAddress, KatapultCanTransport};
-use super::serial::{KatapultSerialTransport, SystemSerialIo, UsbBootloaderError};
+use super::serial::{KatapultSerialTransport, SystemSerialIo};
 use super::session::{KatapultSession, SessionError, Transport};
-use crate::flash::usb_bootloader::{
-    SelectedUsbBootloader, UsbBootloaderSelectionError, select_usb_bootloader,
-};
 
 /// A failure while transitioning a CAN MCU into a ready Katapult session.
 #[derive(Debug)]
@@ -40,51 +37,6 @@ impl std::error::Error for CanBootstrapError<io::Error> {
     }
 }
 
-/// A failure while creating a ready serial Katapult backend.
-#[derive(Debug, thiserror::Error)]
-pub enum SerialBootstrapError {
-    /// The running USB device did not re-enumerate as Katapult.
-    #[error(transparent)]
-    Bootloader(UsbBootloaderError),
-    /// The observed bootloader is unsupported or cannot be used safely.
-    #[error("observed bootloader is unsupported or cannot be used safely: {0}")]
-    Selection(#[source] UsbBootloaderSelectionError),
-    /// A supported but non-Katapult bootloader appeared at the selected topology.
-    #[error("expected a Katapult bootloader, found {0:?} at the selected topology")]
-    UnexpectedBootloader(SelectedUsbBootloader),
-    /// The detected Katapult serial device could not be opened.
-    #[error(transparent)]
-    Open(serialport::Error),
-}
-
-/// Enters Katapult on a USB serial target and opens a ready serial backend.
-///
-/// This must only be called after the update coordinator has stopped Klipper.
-/// It performs a 1200-baud reset, waits for Katapult at the same USB topology,
-/// and opens the detected bootloader tty at `baud_rate`.
-pub fn bootstrap_system_serial(
-    running_device: &Path,
-    baud_rate: u32,
-    bootloader_timeout: Duration,
-    poll_interval: Duration,
-    read_timeout: Duration,
-) -> Result<KatapultAdapter<KatapultSerialTransport<SystemSerialIo>>, SerialBootstrapError> {
-    let bootloader = SystemSerialIo::request_and_observe_any_usb_bootloader(
-        running_device,
-        bootloader_timeout,
-        poll_interval,
-    )
-    .map_err(SerialBootstrapError::Bootloader)?;
-    let bootloader_device =
-        match select_usb_bootloader(bootloader).map_err(SerialBootstrapError::Selection)? {
-            SelectedUsbBootloader::Katapult { serial_device, .. } => serial_device,
-            bootloader => return Err(SerialBootstrapError::UnexpectedBootloader(bootloader)),
-        };
-    let io = SystemSerialIo::open(&bootloader_device, baud_rate, read_timeout)
-        .map_err(SerialBootstrapError::Open)?;
-    Ok(KatapultAdapter::new(KatapultSerialTransport::new(io)))
-}
-
 /// Confirms Katapult answers on `transport`, sending nothing but its connect command.
 pub fn confirm_bootloader<T: Transport>(transport: T) -> Result<KatapultAdapter<T>, SessionError>
 where
@@ -108,8 +60,7 @@ pub enum SerialLeaveError {
 
 /// Exits an already-running Katapult bootloader without flashing new firmware.
 ///
-/// Unlike [`bootstrap_system_serial`], this does not request bootloader entry
-/// or wait for re-enumeration: it assumes `serial_device` already is a
+/// This does not request bootloader entry or wait for re-enumeration: it assumes `serial_device` already is a
 /// Katapult bootloader (as found by scanning the USB bus) and asks it to
 /// start its application, the same command sent after a normal update
 /// finishes.

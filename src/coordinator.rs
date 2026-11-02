@@ -380,7 +380,7 @@ mod tests {
 
     use super::{BuildCoordinator, FlashCoordinatorError, PendingBuild, UpdateProgress};
     use crate::build::{BuildCommand, BuildRequest, CommandError, CommandOutput, CommandPort};
-    use crate::flash::katapult::system::SystemKatapultOptions;
+    use crate::flash::system::SystemKatapultOptions;
     use crate::flash::system::{SystemFlashError, SystemFlashOptions};
     use crate::prepare::PreparedBuild;
     use crate::service::KlipperUnit;

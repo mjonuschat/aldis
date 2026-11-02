@@ -91,32 +91,6 @@ pub enum Stm32DfuError {
     VerificationMismatch,
 }
 
-/// Finds exactly one internal-flash DFU device matching `identity`.
-pub fn find_device(identity: Stm32DfuDevice) -> Result<(nusb::DeviceInfo, u8), Stm32DfuError> {
-    let matches = nusb::list_devices()
-        .wait()
-        .map_err(Stm32DfuError::Discovery)?
-        .filter(|device| {
-            device.vendor_id() == identity.vendor_id && device.product_id() == identity.product_id
-        })
-        .filter_map(|device| {
-            let interface_number = device
-                .interfaces()
-                .find(|interface| interface.class() == 0xfe && interface.subclass() == 0x01)
-                .map(|interface| interface.interface_number());
-            interface_number.map(|interface_number| (device, interface_number))
-        })
-        .collect::<Vec<_>>();
-    match matches.len() {
-        0 => Err(Stm32DfuError::DeviceNotFound(identity)),
-        1 => Ok(matches.into_iter().next().expect("length was checked")),
-        count => Err(Stm32DfuError::AmbiguousDevice {
-            device: identity,
-            matches: count,
-        }),
-    }
-}
-
 /// Finds the internal-flash DFU device matching `identity` at `sysfs_path`.
 ///
 /// The path is retained from a serial MCU's USB topology across bootloader
@@ -456,25 +430,6 @@ pub fn leave_system_at_path(
         .block_on(async {
             let (device, interface) = find_device_at_path(identity, sysfs_path)?;
             leave_at_address(device, interface, application_start).await
-        })
-}
-
-/// Discovers the selected STM32 DFU device and flashes it synchronously.
-///
-/// Call only after the coordinator has stopped Klipper and the operator has
-/// explicitly approved the physical update.
-pub fn flash_system(
-    identity: Stm32DfuDevice,
-    target: Stm32DfuTarget,
-    firmware: &[u8],
-) -> Result<FlashResult, Stm32DfuError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .expect("Tokio runtime should initialize")
-        .block_on(async {
-            let (device, interface) = find_device(identity)?;
-            flash_device(device, interface, target, firmware).await
         })
 }
 

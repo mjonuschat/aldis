@@ -10,6 +10,7 @@ use crate::build::CommandPort;
 use crate::eligibility::kconfig_machine;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
+use crate::flash::katapult::adapter::KatapultAdapter;
 use crate::flash::katapult::adapter::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{
     CanBootstrapError, confirm_bootloader, request_can_bootloader,
@@ -19,7 +20,6 @@ use crate::flash::katapult::serial::{
     KatapultSerialTransport, SystemSerialIo, UsbBootloaderError, is_tty_without_usb_device,
 };
 use crate::flash::katapult::session::SessionError;
-use crate::flash::katapult::{adapter::KatapultAdapter, system::SystemKatapultOptions};
 use crate::flash::linux_host::{HostMcuInstaller, LinuxHostError, is_linux_host};
 use crate::flash::picoboot::{PicoBootAdapter, PicoBootError};
 use crate::flash::samba::{
@@ -296,6 +296,26 @@ impl std::error::Error for SystemFlashError {
             Self::CanUsbTopology(error) => Some(error),
         }
     }
+}
+
+/// Timing and baud settings for a native Katapult flash.
+#[derive(Clone, Copy, Debug)]
+pub struct SystemKatapultOptions {
+    /// Katapult serial baud rate.
+    pub baud_rate: u32,
+    /// Maximum time to wait for USB Katapult re-enumeration.
+    pub bootloader_timeout: Duration,
+    /// Poll interval while watching USB topology.
+    pub poll_interval: Duration,
+    /// Per-attempt serial or SocketCAN response timeout.
+    ///
+    /// Katapult's own `flashtool.py` waits up to 5s per `SEND_BLOCK` attempt
+    /// because a block write can trigger a flash sector erase; since aldis
+    /// doesn't vary the timeout per command, it must be at least that long
+    /// for every command, not just the fast ones like `CONNECT`.
+    pub read_timeout: Duration,
+    /// Delay between a CAN reboot request and temporary-node assignment.
+    pub can_bootloader_settle: Duration,
 }
 
 /// Context for diagnosing an unsupported bootloader identity; never affects

@@ -340,7 +340,7 @@ impl CommandPort for FakeRunner {
 use std::time::Duration;
 
 use aldis::build::BuildRequest;
-use aldis::flash::katapult::system::SystemKatapultOptions;
+use aldis::flash::system::SystemKatapultOptions;
 use aldis::flash::system::{
     SystemFlashError, SystemFlashOptions, SystemFlashProgress,
     flash_prepared_firmware_file_with_progress, flash_prepared_system_with_progress,

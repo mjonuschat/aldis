@@ -20,14 +20,6 @@ use crate::retry::retry_until_available;
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
 pub const BOOTLOADER_ENTRY_REQUEST: &[u8] = b"~ \x1c Request Serial Bootloader!! ~";
 
-/// Returns whether USB identity fields identify a Katapult bootloader.
-pub fn is_katapult_usb(usb_id: &str, manufacturer: &str) -> bool {
-    matches!(
-        crate::flash::usb_bootloader::classify_usb_identity(usb_id, manufacturer),
-        Some(UsbBootloaderKind::Katapult)
-    )
-}
-
 /// Returns whether a re-enumerated serial bootloader USB identity is still missing its tty.
 ///
 /// Katapult's and SAM-BA's CDC-ACM interfaces enumerate after their USB identity, so callers
@@ -224,37 +216,6 @@ impl SystemSerialIo {
         Ok(())
     }
 
-    /// Requests USB bootloader entry and waits for Katapult on the same USB path.
-    ///
-    /// On Linux this follows Katapult's topology-based strategy: the current
-    /// tty is resolved into sysfs, its USB device is watched through
-    /// re-enumeration, and the new tty is selected only from that device. A
-    /// reset I/O error does not stop the wait because disconnecting the old
-    /// USB CDC device is an expected successful outcome.
-    pub fn request_and_find_usb_bootloader(
-        path: &Path,
-        timeout: Duration,
-        poll_interval: Duration,
-    ) -> Result<PathBuf, UsbBootloaderError> {
-        Self::request_and_find_usb_identity(path, timeout, poll_interval, is_katapult_usb)
-    }
-
-    /// Requests USB bootloader entry and waits for a matching identity at the same topology.
-    pub fn request_and_find_usb_identity(
-        path: &Path,
-        timeout: Duration,
-        poll_interval: Duration,
-        matches: impl Fn(&str, &str) -> bool,
-    ) -> Result<PathBuf, UsbBootloaderError> {
-        Self::request_usb_bootloader_and_wait(
-            path,
-            timeout,
-            poll_interval,
-            matches,
-            |usb_path, _| usb_tty(usb_path),
-        )
-    }
-
     /// Requests USB bootloader entry and returns the observed bootloader at the same topology.
     pub fn request_and_observe_usb_bootloader(
         path: &Path,
@@ -326,22 +287,6 @@ impl SystemSerialIo {
             }
         })
         .map_err(|()| timeout_outcome(&initial_identity, &last_identity, usb_path, None))
-    }
-
-    /// Requests USB bootloader entry and waits for a matching USB identity.
-    pub fn request_and_wait_for_usb_identity(
-        path: &Path,
-        timeout: Duration,
-        poll_interval: Duration,
-        matches: impl Fn(&str, &str) -> bool,
-    ) -> Result<(), UsbBootloaderError> {
-        Self::request_usb_bootloader_and_wait(
-            path,
-            timeout,
-            poll_interval,
-            matches,
-            |_, _| Some(()),
-        )
     }
 
     fn request_usb_bootloader_and_wait<T>(

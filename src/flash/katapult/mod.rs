@@ -3,10 +3,8 @@
 pub mod adapter;
 pub mod bootstrap;
 pub mod can;
-pub mod endpoint;
 pub mod serial;
 pub mod session;
-pub mod system;
 
 const HEADER: [u8; 2] = [0x01, 0x88];
 const TRAILER: [u8; 2] = [0x99, 0x03];

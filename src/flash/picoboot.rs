@@ -103,11 +103,6 @@ pub fn decode_uf2(firmware: &[u8]) -> Result<Uf2Image, Uf2Error> {
     })
 }
 
-/// Writes, reads back, and starts one Klipper UF2 image through PicoBoot.
-pub fn flash_system(firmware: &[u8]) -> Result<FlashResult, PicoBootError> {
-    flash_system_with_device(firmware, |_| true)
-}
-
 /// Writes, verifies, and starts one Klipper UF2 image at a selected USB topology.
 pub fn flash_system_at_path(
     sysfs_path: &Path,
