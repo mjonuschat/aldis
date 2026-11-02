@@ -4,11 +4,11 @@ use std::process::ExitCode;
 use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
-use aldis::coordinator::{BuildCoordinator, FlashCoordinatorError};
+use aldis::coordinator::BuildCoordinator;
 use aldis::eligibility::{CheckoutRevision, Eligibility, classify_mcu};
-use aldis::flash::system::SystemFlashError;
 use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::{McuInventory, MoonrakerAdapter};
+use aldis::update_run::{Operation, failure_detail, failure_message};
 use aldis::workspace::RunWorkspace;
 
 use crate::cli::FlashArgs;
@@ -115,7 +115,11 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
             let restore = error
                 .allows_klipper_restore()
                 .then(|| coordinator.restore_after_failure());
-            let message = flash_failure(error, restore);
+            let message = failure_message(
+                Operation::Flash,
+                failure_detail(Operation::Flash, error),
+                restore,
+            );
             ui.action(&format!("error: {message}"));
             return Err(anyhow::anyhow!(message));
         }
@@ -175,31 +179,6 @@ fn confirmation_prompt(target: &str, firmware: &Path, byte_count: usize) -> Stri
     )
 }
 
-fn flash_failure(
-    error: FlashCoordinatorError<SystemFlashError>,
-    restore: Option<Result<(), aldis::coordinator::CoordinatorError>>,
-) -> String {
-    let detail = match error {
-        FlashCoordinatorError::Coordinator(error) => aldis::error_chain(&error),
-        FlashCoordinatorError::Artifact(error) => {
-            format!("could not read the firmware file: {error}")
-        }
-        FlashCoordinatorError::Flash(error) => aldis::error_chain(&error),
-    };
-    match restore {
-        None => format!(
-            "flash failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
-        ),
-        Some(Ok(())) => format!(
-            "flash failed: {detail}. Klipper has been left in its state from before this flash attempt"
-        ),
-        Some(Err(restore_error)) => format!(
-            "flash failed: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
-            aldis::error_chain(&restore_error)
-        ),
-    }
-}
-
 fn flash_refusal(inventory: &McuInventory, target: &str) -> Option<String> {
     let mcu = inventory.mcus.iter().find(|mcu| mcu.name == target)?;
     match classify_mcu(mcu) {
@@ -214,11 +193,9 @@ fn flash_refusal(inventory: &McuInventory, target: &str) -> Option<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{confirmation_prompt, flash_failure, flash_refusal};
-    use aldis::build::{BuildCommand, BuildError, CommandOutput};
-    use aldis::coordinator::{CoordinatorError, FlashCoordinatorError};
-    use aldis::flash::system::SystemFlashError;
+    use super::{confirmation_prompt, flash_refusal};
     use aldis::moonraker::{Mcu, McuInventory};
+    use aldis::update_run::{Operation, failure_message};
 
     fn inventory_with(kconfig: &str) -> McuInventory {
         McuInventory {
@@ -263,83 +240,14 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_host_mcu_setup_hint_in_the_final_flash_error() {
-        use aldis::flash::linux_host::{InstallStep, LinuxHostError};
-
-        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::LinuxHost(
-            LinuxHostError::CommandFailed {
-                step: InstallStep::Install,
-                output: Box::new(CommandOutput {
-                    success: false,
-                    stdout: Vec::new(),
-                    stderr: b"sudo: a password is required\n".to_vec(),
-                }),
-            },
-        ));
-
-        let message = flash_failure(error, None);
-
+    fn flash_failures_use_the_flash_wording_of_the_shared_message() {
+        assert_eq!(
+            failure_message(Operation::Flash, "DFU said no".to_owned(), Some(Ok(()))),
+            "flash failed: DFU said no. Klipper has been left in its state from before this flash attempt"
+        );
         assert!(
-            message.starts_with(
-                "flash failed: could not install /usr/local/bin/klipper_mcu: \
-                 sudo: a password is required; run sudo aldis setup"
-            ),
-            "{message}"
+            failure_message(Operation::Flash, "DFU said no".to_owned(), None)
+                .starts_with("flash failed: DFU said no. Klipper may still be stopped")
         );
-    }
-
-    #[test]
-    fn reports_the_cause_behind_a_native_flash_failure() {
-        use aldis::flash::stm32_dfu::Stm32DfuError;
-
-        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::Stm32Dfu(
-            Stm32DfuError::VerificationMismatch,
-        ));
-
-        let message = flash_failure(error, None);
-
-        assert!(
-            message.starts_with(
-                "flash failed: STM32 DFU flashing failed: flash readback did not match the written firmware."
-            ),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn reports_build_stderr_without_debugging_command_buffers() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Coordinator(
-            CoordinatorError::Build(BuildError::CommandFailed {
-                command: Box::new(BuildCommand {
-                    program: "make".to_owned(),
-                    arguments: Vec::new(),
-                    current_dir: None,
-                    stdin: None,
-                }),
-                output: Box::new(CommandOutput {
-                    success: false,
-                    stdout: b"unrelated output".to_vec(),
-                    stderr: b"permission denied".to_vec(),
-                }),
-            }),
-        );
-
-        let message = flash_failure(error, None);
-
-        assert!(message.contains("make failed: permission denied"));
-        assert!(!message.contains("unrelated output"));
-        assert!(message.contains("may still be stopped"));
-    }
-
-    #[test]
-    fn reports_that_klipper_was_restored_after_a_pre_flash_failure() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
-            "missing firmware file",
-        ));
-
-        let message = flash_failure(error, Some(Ok(())));
-
-        assert!(message.contains("left in its state from before this flash attempt"));
-        assert!(!message.contains("may still be stopped"));
     }
 }

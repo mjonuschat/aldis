@@ -183,11 +183,47 @@ fn pending_mcus(
         .collect()
 }
 
-fn failure_detail(error: FlashCoordinatorError<SystemFlashError>) -> String {
+/// Which command a failure message speaks for; the wording differs slightly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    /// `aldis update`: firmware built from the checkout.
+    Update,
+    /// `aldis flash`: an explicit firmware file.
+    Flash,
+}
+
+impl Operation {
+    fn failed(self) -> &'static str {
+        match self {
+            Self::Update => "update failed",
+            Self::Flash => "flash failed",
+        }
+    }
+
+    fn firmware(self) -> &'static str {
+        match self {
+            Self::Update => "the built firmware",
+            Self::Flash => "the firmware file",
+        }
+    }
+
+    fn attempt(self) -> &'static str {
+        match self {
+            Self::Update => "this update",
+            Self::Flash => "this flash attempt",
+        }
+    }
+}
+
+/// What went wrong, without any advice about Klipper's state.
+pub fn failure_detail(
+    operation: Operation,
+    error: FlashCoordinatorError<SystemFlashError>,
+) -> String {
     match error {
         FlashCoordinatorError::Coordinator(error) => crate::error_chain(&error),
         FlashCoordinatorError::Artifact(error) => {
-            format!("could not read the built firmware: {error}")
+            format!("could not read {}: {error}", operation.firmware())
         }
         // The backends' messages are headlines ("STM32 DFU flashing failed"); the cause is in
         // the chain.
@@ -195,19 +231,24 @@ fn failure_detail(error: FlashCoordinatorError<SystemFlashError>) -> String {
     }
 }
 
-fn update_failure_message(
+/// The terminal message for a failed `operation`: `detail`, then what state Klipper was left
+/// in given whether a restore was attempted and how it went.
+pub fn failure_message(
+    operation: Operation,
     detail: String,
     restore: Option<Result<(), crate::coordinator::CoordinatorError>>,
 ) -> String {
+    let failed = operation.failed();
     match restore {
         None => format!(
-            "update failed: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
+            "{failed}: {detail}. Klipper may still be stopped; fix the issue, then restart it manually"
         ),
         Some(Ok(())) => format!(
-            "update failed: {detail}. Klipper has been left in its state from before this update"
+            "{failed}: {detail}. Klipper has been left in its state from before {}",
+            operation.attempt()
         ),
         Some(Err(restore_error)) => format!(
-            "update failed: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
+            "{failed}: {detail}. Klipper also failed to restore: {}; fix the issue, then restart it manually",
             crate::error_chain(&restore_error)
         ),
     }
@@ -314,7 +355,7 @@ fn post_flash_failure(
     fail_with_detail(
         hooks,
         detail.clone(),
-        update_failure_message(detail, None),
+        failure_message(Operation::Update, detail, None),
         mcu,
         updated,
     )
@@ -385,11 +426,11 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
                 if let Some(Err(restore_error)) = &restore {
                     tracing::debug!(?restore_error, "restoring Klipper after the failure failed");
                 }
-                let detail = failure_detail(error);
+                let detail = failure_detail(Operation::Update, error);
                 return Err(fail_with_detail(
                     hooks,
                     detail.clone(),
-                    update_failure_message(detail, restore),
+                    failure_message(Operation::Update, detail, restore),
                     Some(name),
                     &updated,
                 ));
@@ -554,7 +595,11 @@ mod tests {
             },
         ));
 
-        let message = update_failure_message(failure_detail(error), None);
+        let message = failure_message(
+            Operation::Update,
+            failure_detail(Operation::Update, error),
+            None,
+        );
 
         assert!(
             message.starts_with(
@@ -575,7 +620,7 @@ mod tests {
             Stm32DfuError::VerificationMismatch,
         ));
         assert_eq!(
-            failure_detail(dfu),
+            failure_detail(Operation::Update, dfu),
             "STM32 DFU flashing failed: flash readback did not match the written firmware"
         );
 
@@ -583,7 +628,7 @@ mod tests {
             CanBootstrapError::Transport(CanTransportError::Timeout),
         ));
         assert_eq!(
-            failure_detail(can),
+            failure_detail(Operation::Update, can),
             "could not enter the bootloader over CAN: CAN exchange did not complete within the configured timeout"
         );
     }
@@ -606,7 +651,11 @@ mod tests {
             }),
         );
 
-        let message = update_failure_message(failure_detail(error), None);
+        let message = failure_message(
+            Operation::Update,
+            failure_detail(Operation::Update, error),
+            None,
+        );
 
         assert!(message.contains("make failed: permission denied"));
         assert!(!message.contains("unrelated output"));
@@ -619,7 +668,11 @@ mod tests {
             "missing artifact",
         ));
 
-        let message = update_failure_message(failure_detail(error), Some(Ok(())));
+        let message = failure_message(
+            Operation::Update,
+            failure_detail(Operation::Update, error),
+            Some(Ok(())),
+        );
 
         assert!(message.contains("left in its state from before this update"));
         assert!(!message.contains("may still be stopped"));
@@ -633,7 +686,11 @@ mod tests {
         let restore_error =
             CoordinatorError::UnexpectedKlipperState(crate::service::ServiceState::Failed);
 
-        let message = update_failure_message(failure_detail(error), Some(Err(restore_error)));
+        let message = failure_message(
+            Operation::Update,
+            failure_detail(Operation::Update, error),
+            Some(Err(restore_error)),
+        );
 
         assert!(message.contains("also failed to restore"));
         assert!(message.contains("restart it manually"));
