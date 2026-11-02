@@ -10,6 +10,16 @@ pub mod system;
 pub mod usb_bootloader;
 pub(crate) mod usb_sysfs;
 
+/// Runs `future` to completion on a fresh single-threaded Tokio runtime: the USB backends are
+/// async libraries, but every flash in aldis is one synchronous operation.
+pub(crate) fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("Tokio runtime should initialize")
+        .block_on(future)
+}
+
 /// Result details shared by native flashing backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlashResult {

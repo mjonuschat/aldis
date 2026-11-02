@@ -547,12 +547,11 @@ fn flash_uart_katapult(
     SystemSerialIo::request_serial_bootloader(serial_device, baud_rate)
         .map_err(SystemFlashError::UartBootloaderRequest)?;
     thread::sleep(UART_BOOTLOADER_SETTLE);
-    let io = open_katapult_serial_when_ready(
-        serial_device,
-        baud_rate,
-        options.katapult.read_timeout,
+    let io = open_serial_when_ready(
+        "katapult",
         options.katapult.bootloader_timeout,
         options.katapult.poll_interval,
+        || SystemSerialIo::open(serial_device, baud_rate, options.katapult.read_timeout),
     )
     .map_err(SystemFlashError::KatapultOpen)?;
     let mut backend = confirm_bootloader(KatapultSerialTransport::new(io))
@@ -591,12 +590,17 @@ fn dispatch_serial_route(
     match route {
         SerialFlashRoute::Katapult { serial_device } => {
             progress(SystemFlashProgress::Flashing);
-            let io = open_katapult_serial_when_ready(
-                &serial_device,
-                options.katapult.baud_rate,
-                options.katapult.read_timeout,
+            let io = open_serial_when_ready(
+                "katapult",
                 options.katapult.bootloader_timeout,
                 options.katapult.poll_interval,
+                || {
+                    SystemSerialIo::open(
+                        &serial_device,
+                        options.katapult.baud_rate,
+                        options.katapult.read_timeout,
+                    )
+                },
             )
             .map_err(SystemFlashError::KatapultOpen)?;
             let mut backend = KatapultAdapter::new(KatapultSerialTransport::new(io));
@@ -616,11 +620,11 @@ fn dispatch_serial_route(
             target,
         } => {
             progress(SystemFlashProgress::Flashing);
-            let port = open_samba_serial_when_ready(
-                &serial_device,
-                options.katapult.read_timeout,
+            let port = open_serial_when_ready(
+                "sam-ba",
                 options.katapult.bootloader_timeout,
                 options.katapult.poll_interval,
+                || SystemSambaPort::open(&serial_device, options.katapult.read_timeout),
             )
             .map_err(SystemFlashError::SamBaOpen)?;
             SambaAdapter::new(port, target)
@@ -702,29 +706,16 @@ fn resolve_stm32_firmware_file_target(
     })
 }
 
-fn open_katapult_serial_when_ready(
-    serial_device: &Path,
-    baud_rate: u32,
-    read_timeout: Duration,
+/// Opens a `bootloader`'s serial device, retrying while its tty is still enumerating.
+fn open_serial_when_ready<T>(
+    bootloader: &str,
     timeout: Duration,
     poll_interval: Duration,
-) -> serialport::Result<SystemSerialIo> {
+    mut open: impl FnMut() -> serialport::Result<T>,
+) -> serialport::Result<T> {
     retry_until_available(timeout, poll_interval, || {
-        SystemSerialIo::open(serial_device, baud_rate, read_timeout).inspect_err(|error| {
-            tracing::debug!(error = %error, "katapult serial device not yet ready, still waiting");
-        })
-    })
-}
-
-fn open_samba_serial_when_ready(
-    serial_device: &Path,
-    read_timeout: Duration,
-    timeout: Duration,
-    poll_interval: Duration,
-) -> serialport::Result<SystemSambaPort> {
-    retry_until_available(timeout, poll_interval, || {
-        SystemSambaPort::open(serial_device, read_timeout).inspect_err(|error| {
-            tracing::debug!(error = %error, "sam-ba serial device not yet ready, still waiting");
+        open().inspect_err(|error| {
+            tracing::debug!(error = %error, "{bootloader} serial device not yet ready, still waiting");
         })
     })
 }

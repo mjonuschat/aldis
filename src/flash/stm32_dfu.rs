@@ -33,29 +33,49 @@ pub struct Stm32DfuTarget {
     pub application_start: u32,
 }
 
-/// Flash-start offsets (from `0x0800_0000`) Klipper's STM32 Kconfig can select.
-const FLASH_START_OFFSETS_HEX: &[&str] = &[
-    "800", "1000", "2000", "4000", "5000", "7000", "8000", "8800", "9000", "C000", "10000",
-    "20000", "20200", "0000",
+/// Flash-start offsets (from [`FLASH_START`]) Klipper's STM32 Kconfig can select, each with the
+/// suffix of its `CONFIG_STM32_FLASH_START_*` symbol. The suffixes are Klipper's, not a rendering
+/// of the number: `800` has no leading zero while `0000` keeps all four.
+const FLASH_START_OFFSETS: &[(&str, u32)] = &[
+    ("800", 0x800),
+    ("1000", 0x1000),
+    ("2000", 0x2000),
+    ("4000", 0x4000),
+    ("5000", 0x5000),
+    ("7000", 0x7000),
+    ("8000", 0x8000),
+    ("8800", 0x8800),
+    ("9000", 0x9000),
+    ("C000", 0xC000),
+    ("10000", 0x10000),
+    ("20000", 0x20000),
+    ("20200", 0x20200),
+    ("0000", 0),
 ];
+
+/// Every candidate application start address, in table order.
+fn candidate_application_starts() -> impl Iterator<Item = u32> {
+    FLASH_START_OFFSETS
+        .iter()
+        .map(|(_, offset)| FLASH_START + offset)
+}
 
 /// Derives the STM32 application address from Klipper's embedded Kconfig.
 pub fn target_from_kconfig(kconfig: &str) -> Result<Stm32DfuTarget, Stm32DfuError> {
-    let selected: Vec<_> = FLASH_START_OFFSETS_HEX
+    let selected: Vec<u32> = FLASH_START_OFFSETS
         .iter()
-        .filter(|offset| {
+        .filter(|(symbol, _)| {
             kconfig
                 .lines()
-                .any(|line| line.trim() == format!("CONFIG_STM32_FLASH_START_{offset}=y"))
+                .any(|line| line.trim() == format!("CONFIG_STM32_FLASH_START_{symbol}=y"))
         })
+        .map(|(_, offset)| *offset)
         .collect();
     if selected.len() != 1 {
         return Err(Stm32DfuError::InvalidFlashStartConfiguration);
     }
-    let offset = u32::from_str_radix(selected[0], 16)
-        .map_err(|_| Stm32DfuError::InvalidFlashStartConfiguration)?;
     Ok(Stm32DfuTarget {
-        application_start: 0x0800_0000 + offset,
+        application_start: FLASH_START + selected[0],
     })
 }
 
@@ -192,12 +212,7 @@ const FLASH_END: u32 = 0x0820_0000;
 pub fn probe_application_start(
     mut read_vector_table: impl FnMut(u32) -> Option<[u8; 8]>,
 ) -> ApplicationProbeResult {
-    let matches: Vec<u32> = FLASH_START_OFFSETS_HEX
-        .iter()
-        .map(|offset| {
-            FLASH_START
-                + u32::from_str_radix(offset, 16).expect("FLASH_START_OFFSETS_HEX is valid hex")
-        })
+    let matches: Vec<u32> = candidate_application_starts()
         .filter(|&address| {
             read_vector_table(address).is_some_and(|bytes| {
                 let stack_pointer = u32::from_le_bytes(bytes[0..4].try_into().expect("4 bytes"));
@@ -219,63 +234,56 @@ pub fn probe_application_start_at_path(
     identity: Stm32DfuDevice,
     sysfs_path: &Path,
 ) -> Result<ApplicationProbeResult, Stm32DfuError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .expect("Tokio runtime should initialize")
-        .block_on(async {
-            let (device_info, interface_number) = find_device_at_path(identity, sysfs_path)?;
-            let device = device_info.open().await.map_err(Stm32DfuError::Discovery)?;
-            let interface = device
-                .detach_and_claim_interface(interface_number)
-                .await
-                .map_err(Stm32DfuError::Discovery)?;
-            let mut readings: Vec<(u32, [u8; 8])> = Vec::new();
-            let mut session: Option<DfuSync> = None;
-            for offset_hex in FLASH_START_OFFSETS_HEX {
-                let offset = u32::from_str_radix(offset_hex, 16)
-                    .expect("FLASH_START_OFFSETS_HEX is valid hex");
-                let address = FLASH_START + offset;
-                let dfu = match session.take() {
-                    Some(dfu) => dfu,
-                    None => match DfuNusb::open(device.clone(), interface.clone(), 0).await {
-                        Ok(dfu) => dfu.into_sync_dfu(),
-                        Err(error) => {
-                            tracing::debug!(
-                                address = %format_args!("{address:#x}"),
-                                error = %Stm32DfuError::Transport(error),
-                                "could not open a dfu session for candidate offset, skipping"
-                            );
-                            continue;
-                        }
-                    },
-                };
-                match dfu.upload_from_address(address, 8) {
-                    Ok((next, bytes)) => {
-                        session = Some(next);
-                        if let Ok(bytes) = <[u8; 8]>::try_from(bytes.as_slice()) {
-                            readings.push((address, bytes));
-                        }
-                    }
+    crate::flash::block_on(async {
+        let (device_info, interface_number) = find_device_at_path(identity, sysfs_path)?;
+        let device = device_info.open().await.map_err(Stm32DfuError::Discovery)?;
+        let interface = device
+            .detach_and_claim_interface(interface_number)
+            .await
+            .map_err(Stm32DfuError::Discovery)?;
+        let mut readings: Vec<(u32, [u8; 8])> = Vec::new();
+        let mut session: Option<DfuSync> = None;
+        for address in candidate_application_starts() {
+            let dfu = match session.take() {
+                Some(dfu) => dfu,
+                None => match DfuNusb::open(device.clone(), interface.clone(), 0).await {
+                    Ok(dfu) => dfu.into_sync_dfu(),
                     Err(error) => {
                         tracing::debug!(
                             address = %format_args!("{address:#x}"),
                             error = %Stm32DfuError::Transport(error),
-                            "could not read candidate application offset, skipping"
+                            "could not open a dfu session for candidate offset, skipping"
                         );
-                        if let Err(error) = clear_dfu_error(&interface).await {
-                            tracing::debug!(%error, "could not clear the dfu error state");
-                        }
+                        continue;
+                    }
+                },
+            };
+            match dfu.upload_from_address(address, 8) {
+                Ok((next, bytes)) => {
+                    session = Some(next);
+                    if let Ok(bytes) = <[u8; 8]>::try_from(bytes.as_slice()) {
+                        readings.push((address, bytes));
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        address = %format_args!("{address:#x}"),
+                        error = %Stm32DfuError::Transport(error),
+                        "could not read candidate application offset, skipping"
+                    );
+                    if let Err(error) = clear_dfu_error(&interface).await {
+                        tracing::debug!(%error, "could not clear the dfu error state");
                     }
                 }
             }
-            Ok(probe_application_start(|address| {
-                readings
-                    .iter()
-                    .find(|(candidate, _)| *candidate == address)
-                    .map(|(_, bytes)| *bytes)
-            }))
-        })
+        }
+        Ok(probe_application_start(|address| {
+            readings
+                .iter()
+                .find(|(candidate, _)| *candidate == address)
+                .map(|(_, bytes)| *bytes)
+        }))
+    })
 }
 
 const DFU_CLRSTATUS: u8 = 4;
@@ -315,12 +323,7 @@ pub fn expected_application_start(firmware: &[u8]) -> Option<u32> {
     if !is_plausible_vector_table(stack_pointer, reset_vector) {
         return None;
     }
-    FLASH_START_OFFSETS_HEX
-        .iter()
-        .map(|offset| {
-            FLASH_START
-                + u32::from_str_radix(offset, 16).expect("FLASH_START_OFFSETS_HEX is valid hex")
-        })
+    candidate_application_starts()
         .filter(|&candidate| candidate <= reset_vector)
         .max()
 }
@@ -352,12 +355,7 @@ pub fn plausible_application_starts(firmware: &[u8]) -> Vec<u32> {
         .copied()
         .filter(|word| (FLASH_START..FLASH_END).contains(word))
         .collect();
-    FLASH_START_OFFSETS_HEX
-        .iter()
-        .map(|offset| {
-            FLASH_START
-                + u32::from_str_radix(offset, 16).expect("FLASH_START_OFFSETS_HEX is valid hex")
-        })
+    candidate_application_starts()
         .filter(|&base| {
             handlers
                 .iter()
@@ -423,14 +421,10 @@ pub fn leave_system_at_path(
     sysfs_path: &Path,
     application_start: u32,
 ) -> Result<(), Stm32DfuError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .expect("Tokio runtime should initialize")
-        .block_on(async {
-            let (device, interface) = find_device_at_path(identity, sysfs_path)?;
-            leave_at_address(device, interface, application_start).await
-        })
+    crate::flash::block_on(async {
+        let (device, interface) = find_device_at_path(identity, sysfs_path)?;
+        leave_at_address(device, interface, application_start).await
+    })
 }
 
 /// Discovers the selected STM32 DFU device at one USB topology and flashes it.
@@ -440,14 +434,10 @@ pub fn flash_system_at_path(
     target: Stm32DfuTarget,
     firmware: &[u8],
 ) -> Result<FlashResult, Stm32DfuError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .expect("Tokio runtime should initialize")
-        .block_on(async {
-            let (device, interface) = find_device_at_path(identity, sysfs_path)?;
-            flash_device(device, interface, target, firmware).await
-        })
+    crate::flash::block_on(async {
+        let (device, interface) = find_device_at_path(identity, sysfs_path)?;
+        flash_device(device, interface, target, firmware).await
+    })
 }
 
 /// An STM32 DFU flash operation bound to one USB topology and application target.
@@ -473,5 +463,21 @@ impl FlashPort for Stm32DfuAdapter<'_> {
 
     fn flash(&mut self, firmware: &[u8]) -> Result<FlashResult, Self::Error> {
         flash_system_at_path(self.identity, self.sysfs_path, self.target, firmware)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FLASH_START_OFFSETS;
+
+    #[test]
+    fn every_flash_start_symbol_names_its_own_offset() {
+        for (symbol, offset) in FLASH_START_OFFSETS {
+            assert_eq!(
+                u32::from_str_radix(symbol, 16).unwrap(),
+                *offset,
+                "{symbol}"
+            );
+        }
     }
 }
