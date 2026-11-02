@@ -13,7 +13,8 @@ pub struct RunWorkspace {
 pub struct WorkspaceBuildPaths {
     /// Klipper's generated Kconfig path.
     pub config_path: PathBuf,
-    /// Destination for the copied firmware artifact.
+    /// Destination for the copied firmware artifact, without an extension: the build adds
+    /// Klipper's own (`.bin`, `.uf2` or `.elf`).
     pub artifact_path: PathBuf,
 }
 
@@ -87,7 +88,7 @@ impl RunWorkspace {
 
         Ok(WorkspaceBuildPaths {
             config_path: config_dir.join(".config"),
-            artifact_path: artifact_dir.join("klipper.bin"),
+            artifact_path: artifact_dir.join("klipper"),
         })
     }
 }

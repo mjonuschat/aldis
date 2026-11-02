@@ -146,13 +146,14 @@ fn copies_uf2_artifact_for_a_no_bootloader_rp2040_build() {
         .build(&BuildRequest {
             kconfig: "CONFIG_MACH_RPXXXX=y\nCONFIG_RPXXXX_FLASH_START_0100=y\n".to_owned(),
             config_path,
-            artifact_path: artifact_path.clone(),
+            artifact_path,
             clean: false,
         })
         .expect("build should succeed");
 
+    assert_eq!(artifact.path, root.join("artifacts/mcu.uf2"));
     assert_eq!(
-        fs::read(&artifact_path).expect("copied artifact"),
+        fs::read(&artifact.path).expect("copied artifact"),
         b"uf2 firmware"
     );
     assert_eq!(artifact.byte_count, 12);
@@ -169,17 +170,18 @@ fn copies_the_elf_artifact_for_a_linux_host_build() {
     fs::write(source_dir.join("out/klipper.elf"), b"\x7fELF host").expect("fixture artifact");
     let builder = KlipperBuilder::new(&source_dir, FakeRunner::success());
 
-    builder
+    let artifact = builder
         .build(&BuildRequest {
             kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_LINUX=y\n".to_owned(),
             config_path,
-            artifact_path: artifact_path.clone(),
+            artifact_path,
             clean: false,
         })
         .expect("build should succeed");
 
+    assert_eq!(artifact.path, root.join("artifacts/mcu host.elf"));
     assert_eq!(
-        fs::read(&artifact_path).expect("copied artifact"),
+        fs::read(&artifact.path).expect("copied artifact"),
         b"\x7fELF host"
     );
     fs::remove_dir_all(root).expect("test directory cleanup");

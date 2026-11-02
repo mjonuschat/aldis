@@ -25,7 +25,7 @@ impl PendingBuild {
         &self.prepared.target_name
     }
 
-    /// Returns the artifact path that would be produced by the build.
+    /// Returns the path the build will copy its artifact to, before Klipper's extension is added.
     pub fn artifact_path(&self) -> &PathBuf {
         &self.prepared.request.artifact_path
     }

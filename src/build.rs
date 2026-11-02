@@ -14,7 +14,8 @@ pub struct BuildRequest {
     /// Per-run copy of the Kconfig kept for the run record: the embedded one as submitted,
     /// replaced by Klipper's expanded `.config` once `olddefconfig` has run.
     pub config_path: PathBuf,
-    /// Destination for the immutable firmware artifact produced by this build.
+    /// Destination for the immutable firmware artifact produced by this build; the copy keeps
+    /// Klipper's own extension (`.bin`, `.uf2` or `.elf`), replacing any this path carries.
     pub artifact_path: PathBuf,
     /// Discard the checkout's existing build output before configuring.
     pub clean: bool,
@@ -310,11 +311,17 @@ where
         let source_artifact = self
             .source_dir
             .join(output_artifact_name(&expanded_kconfig));
-        fs::copy(&source_artifact, &request.artifact_path).map_err(|source| BuildError::Io {
+        // Keep Klipper's extension so the copy says what it is (`klipper.uf2`, not `klipper.bin`
+        // holding a UF2 image).
+        let destination = match source_artifact.extension() {
+            Some(extension) => request.artifact_path.with_extension(extension),
+            None => request.artifact_path.clone(),
+        };
+        fs::copy(&source_artifact, &destination).map_err(|source| BuildError::Io {
             action: "copy Klipper's firmware artifact",
             source,
         })?;
-        let byte_count = fs::metadata(&request.artifact_path)
+        let byte_count = fs::metadata(&destination)
             .map_err(|source| BuildError::Io {
                 action: "read the copied firmware artifact",
                 source,
@@ -322,7 +329,7 @@ where
             .len();
 
         Ok(BuildArtifact {
-            path: request.artifact_path.clone(),
+            path: destination,
             byte_count,
             kconfig: expanded_kconfig,
         })

@@ -17,7 +17,7 @@ fn creates_isolated_paths_for_a_selected_mcu() {
     assert!(paths.config_path.starts_with(&root));
     assert!(paths.artifact_path.starts_with(&root));
     assert!(paths.config_path.ends_with(".config"));
-    assert!(paths.artifact_path.ends_with("klipper.bin"));
+    assert!(paths.artifact_path.ends_with("klipper"));
     assert!(!paths.config_path.exists());
     assert!(!paths.artifact_path.exists());
 
