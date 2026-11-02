@@ -8,7 +8,7 @@ use crate::build::CommandPort;
 use crate::coordinator::{BuildCoordinator, FlashCoordinatorError, UpdateProgress};
 use crate::eligibility::{CheckoutRevision, revisions_match};
 use crate::flash::linux_host::HOST_MCU_UNIT_FILE;
-use crate::flash::system::{SystemFlashError, SystemFlashOptions, SystemKatapultOptions};
+use crate::flash::system::{SystemFlashOptions, SystemKatapultOptions};
 use crate::moonraker::{HostPort, McuInventory, McuTransport, MoonrakerPort, PrinterStatePort};
 use crate::retry::retry_until_available;
 use crate::workspace::RunWorkspace;
@@ -216,10 +216,7 @@ impl Operation {
 }
 
 /// What went wrong, without any advice about Klipper's state.
-pub fn failure_detail(
-    operation: Operation,
-    error: FlashCoordinatorError<SystemFlashError>,
-) -> String {
+pub fn failure_detail(operation: Operation, error: FlashCoordinatorError) -> String {
     match error {
         FlashCoordinatorError::Coordinator(error) => crate::error_chain(&error),
         FlashCoordinatorError::Artifact(error) => {
@@ -584,7 +581,7 @@ mod tests {
     fn reports_the_host_mcu_setup_hint_in_the_final_update_error() {
         use crate::flash::linux_host::{InstallStep, LinuxHostError};
 
-        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::LinuxHost(
+        let error = FlashCoordinatorError::Flash(SystemFlashError::LinuxHost(
             LinuxHostError::CommandFailed {
                 step: InstallStep::Install,
                 output: Box::new(CommandOutput {
@@ -616,7 +613,7 @@ mod tests {
         use crate::flash::katapult::can::CanTransportError;
         use crate::flash::stm32_dfu::Stm32DfuError;
 
-        let dfu = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::Stm32Dfu(
+        let dfu = FlashCoordinatorError::Flash(SystemFlashError::Stm32Dfu(
             Stm32DfuError::VerificationMismatch,
         ));
         assert_eq!(
@@ -624,7 +621,7 @@ mod tests {
             "STM32 DFU flashing failed: flash readback did not match the written firmware"
         );
 
-        let can = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::Can(
+        let can = FlashCoordinatorError::Flash(SystemFlashError::Can(
             CanBootstrapError::Transport(CanTransportError::Timeout),
         ));
         assert_eq!(
@@ -635,8 +632,8 @@ mod tests {
 
     #[test]
     fn reports_build_stderr_without_debugging_command_buffers() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Coordinator(
-            CoordinatorError::Build(BuildError::CommandFailed {
+        let error = FlashCoordinatorError::Coordinator(CoordinatorError::Build(
+            BuildError::CommandFailed {
                 command: Box::new(BuildCommand {
                     program: "make".to_owned(),
                     arguments: Vec::new(),
@@ -648,8 +645,8 @@ mod tests {
                     stdout: b"unrelated output".to_vec(),
                     stderr: b"permission denied".to_vec(),
                 }),
-            }),
-        );
+            },
+        ));
 
         let message = failure_message(
             Operation::Update,
@@ -664,9 +661,7 @@ mod tests {
 
     #[test]
     fn reports_that_klipper_was_restored_after_a_pre_flash_failure() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
-            "missing artifact",
-        ));
+        let error = FlashCoordinatorError::Artifact(std::io::Error::other("missing artifact"));
 
         let message = failure_message(
             Operation::Update,
@@ -680,9 +675,7 @@ mod tests {
 
     #[test]
     fn reports_when_restoring_klipper_after_a_pre_flash_failure_also_fails() {
-        let error = FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other(
-            "missing artifact",
-        ));
+        let error = FlashCoordinatorError::Artifact(std::io::Error::other("missing artifact"));
         let restore_error =
             CoordinatorError::UnexpectedKlipperState(crate::service::ServiceState::Failed);
 

@@ -50,7 +50,7 @@ fn executes_an_approved_build_after_stopping_klipper_without_restarting_it() {
         .execute_and_flash(pending.approve(), |prepared, firmware| {
             assert_eq!(prepared.target_name, "mcu toolhead");
             assert_eq!(firmware, b"firmware");
-            Ok::<_, ()>(aldis::flash::FlashResult {
+            Ok(aldis::flash::FlashResult {
                 reported_pages: Some(1),
                 padded_bytes: 64,
             })
@@ -124,7 +124,7 @@ fn reports_build_phases_before_the_flash_callback() {
         .execute_and_flash_with_progress(
             pending.approve(),
             |_, _| {
-                Ok::<_, ()>(aldis::flash::FlashResult {
+                Ok(aldis::flash::FlashResult {
                     reported_pages: Some(1),
                     padded_bytes: 64,
                 })
@@ -201,10 +201,9 @@ fn does_not_restart_klipper_when_a_later_batch_flash_fails() {
 
     assert!(
         coordinator
-            .execute_and_flash(
-                pending.approve(),
-                |_, _| Err::<aldis::flash::FlashResult, _>("flash failed")
-            )
+            .execute_and_flash(pending.approve(), |_, _| Err(
+                aldis::flash::system::SystemFlashError::MissingTransport
+            ))
             .is_err()
     );
     assert!(

@@ -67,18 +67,18 @@ pub enum CoordinatorError {
     Build(#[source] BuildError),
 }
 
-/// Failure while executing an approved build and its caller-supplied flash operation.
+/// Failure while executing an approved build and flashing its result.
 #[derive(Debug)]
-pub enum FlashCoordinatorError<E> {
+pub enum FlashCoordinatorError {
     /// The service transition or Klipper build failed.
     Coordinator(CoordinatorError),
     /// The completed artifact could not be read for flashing.
     Artifact(std::io::Error),
     /// The selected native backend failed.
-    Flash(E),
+    Flash(SystemFlashError),
 }
 
-impl FlashCoordinatorError<SystemFlashError> {
+impl FlashCoordinatorError {
     /// Whether Klipper can safely be restarted after this failure. A USB MCU may
     /// be left in its bootloader, but the host MCU never is.
     pub fn allows_klipper_restore(&self) -> bool {
@@ -89,7 +89,7 @@ impl FlashCoordinatorError<SystemFlashError> {
     }
 }
 
-impl fmt::Display for FlashCoordinatorError<SystemFlashError> {
+impl fmt::Display for FlashCoordinatorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Coordinator(error) => write!(f, "{error}"),
@@ -99,13 +99,23 @@ impl fmt::Display for FlashCoordinatorError<SystemFlashError> {
     }
 }
 
-impl std::error::Error for FlashCoordinatorError<SystemFlashError> {
+impl std::error::Error for FlashCoordinatorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Coordinator(error) => std::error::Error::source(error),
             Self::Artifact(error) => Some(error),
             Self::Flash(error) => Some(error),
         }
+    }
+}
+
+/// The update-level phase a native flash stage corresponds to.
+fn update_progress(stage: SystemFlashProgress) -> UpdateProgress {
+    match stage {
+        SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
+        SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
+        SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
+        SystemFlashProgress::Installing => UpdateProgress::Installing,
     }
 }
 
@@ -261,7 +271,7 @@ where
         options: SystemFlashOptions,
         force: bool,
         mut progress: impl FnMut(UpdateProgress),
-    ) -> Result<FlashResult, FlashCoordinatorError<SystemFlashError>> {
+    ) -> Result<FlashResult, FlashCoordinatorError> {
         self.ensure_klipper_stopped(&mut progress)
             .map_err(FlashCoordinatorError::Coordinator)?;
         flash_prepared_firmware_file_with_progress(
@@ -270,40 +280,28 @@ where
             options,
             self.service.runner(),
             force,
-            |stage| {
-                progress(match stage {
-                    SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
-                    SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
-                    SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
-                    SystemFlashProgress::Installing => UpdateProgress::Installing,
-                });
-            },
+            |stage| progress(update_progress(stage)),
         )
         .map_err(FlashCoordinatorError::Flash)
     }
 
     /// Builds an approved target, then invokes `flash` only after Klipper is stopped.
-    pub fn execute_and_flash<E>(
+    pub fn execute_and_flash(
         &self,
         approved: ApprovedBuild,
-        flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, E>,
-    ) -> Result<CompletedUpdate, FlashCoordinatorError<E>> {
+        flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, SystemFlashError>,
+    ) -> Result<CompletedUpdate, FlashCoordinatorError> {
         self.execute_and_flash_with_progress(approved, flash, |_| {})
     }
 
     /// Builds and flashes an approved target while reporting each visible phase.
-    pub fn execute_and_flash_with_progress<E>(
+    pub fn execute_and_flash_with_progress(
         &self,
         approved: ApprovedBuild,
-        flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, E>,
+        flash: impl FnOnce(&PreparedBuild, &[u8]) -> Result<FlashResult, SystemFlashError>,
         mut progress: impl FnMut(UpdateProgress),
-    ) -> Result<CompletedUpdate, FlashCoordinatorError<E>> {
-        let mut prepared = approved.pending.prepared.clone();
-        let artifact = self
-            .execute_with_progress(approved, &mut progress)
-            .map_err(FlashCoordinatorError::Coordinator)?;
-        prepared.request.kconfig = artifact.kconfig.clone();
-        let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
+    ) -> Result<CompletedUpdate, FlashCoordinatorError> {
+        let (prepared, artifact, firmware) = self.build_for_flash(approved, &mut progress)?;
         let flash = flash(&prepared, &firmware).map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
     }
@@ -317,29 +315,33 @@ where
         approved: ApprovedBuild,
         options: SystemFlashOptions,
         mut progress: impl FnMut(UpdateProgress),
-    ) -> Result<CompletedUpdate, FlashCoordinatorError<SystemFlashError>> {
-        let mut prepared = approved.pending.prepared.clone();
-        let artifact = self
-            .execute_with_progress(approved, &mut progress)
-            .map_err(FlashCoordinatorError::Coordinator)?;
-        prepared.request.kconfig = artifact.kconfig.clone();
-        let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
+    ) -> Result<CompletedUpdate, FlashCoordinatorError> {
+        let (prepared, artifact, firmware) = self.build_for_flash(approved, &mut progress)?;
         let flash = flash_prepared_system_with_progress(
             &prepared,
             &firmware,
             options,
             self.service.runner(),
-            |stage| {
-                progress(match stage {
-                    SystemFlashProgress::EnteringBootloader => UpdateProgress::EnteringBootloader,
-                    SystemFlashProgress::BootloaderReady => UpdateProgress::BootloaderReady,
-                    SystemFlashProgress::Flashing => UpdateProgress::StartingFlash,
-                    SystemFlashProgress::Installing => UpdateProgress::Installing,
-                });
-            },
+            |stage| progress(update_progress(stage)),
         )
         .map_err(FlashCoordinatorError::Flash)?;
         Ok(CompletedUpdate { artifact, flash })
+    }
+
+    /// Stops Klipper if necessary, builds `approved`, and reads the artifact back for flashing,
+    /// with the prepared build's Kconfig replaced by the one the build actually used.
+    fn build_for_flash(
+        &self,
+        approved: ApprovedBuild,
+        progress: &mut impl FnMut(UpdateProgress),
+    ) -> Result<(PreparedBuild, BuildArtifact, Vec<u8>), FlashCoordinatorError> {
+        let mut prepared = approved.pending.prepared.clone();
+        let artifact = self
+            .execute_with_progress(approved, progress)
+            .map_err(FlashCoordinatorError::Coordinator)?;
+        prepared.request.kconfig = artifact.kconfig.clone();
+        let firmware = std::fs::read(&artifact.path).map_err(FlashCoordinatorError::Artifact)?;
+        Ok((prepared, artifact, firmware))
     }
 
     /// Starts Klipper once every selected MCU has completed its flash and application checks.
@@ -398,8 +400,7 @@ mod tests {
                 .allows_klipper_restore()
         );
         assert!(
-            FlashCoordinatorError::<SystemFlashError>::Artifact(std::io::Error::other("gone"))
-                .allows_klipper_restore()
+            FlashCoordinatorError::Artifact(std::io::Error::other("gone")).allows_klipper_restore()
         );
     }
 
