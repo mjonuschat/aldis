@@ -3,8 +3,8 @@ use std::io::{self, Read, Write};
 
 use aldis::flash::FlashPort;
 use aldis::flash::samba::{
-    SambaAdapter, SambaError, SambaPort, SambaTarget, crc16_xmodem, reboot_into_application,
-    target_from_kconfig,
+    SambaAdapter, SambaError, SambaPort, SambaTarget, crc16_xmodem, is_flashable_part,
+    reboot_into_application, target_from_kconfig,
 };
 
 const SAMD21_DEVICE_ID: u32 = 0x1001_0305;
@@ -373,9 +373,33 @@ fn skips_the_bootloader_size_check_when_the_bootprot_fuse_is_unset() {
 }
 
 #[test]
-fn refuses_the_samd21e15_whose_ram_cannot_hold_the_staging_buffer() {
-    assert!(matches!(
-        target_from_kconfig("CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21E15=y\n"),
-        Err(SambaError::InsufficientRam)
-    ));
+fn refuses_every_samd21_whose_ram_cannot_hold_the_staging_buffer() {
+    for part in ["SAMD21E15", "SAMD21E16", "SAMD21G17"] {
+        let kconfig = format!("CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21=y\nCONFIG_MACH_{part}=y\n");
+        let error = target_from_kconfig(&kconfig).unwrap_err();
+        assert!(
+            matches!(&error, SambaError::InsufficientRam(named) if named == part),
+            "{part}: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("the {part} has too little RAM"))
+        );
+        assert!(!is_flashable_part(part), "{part}");
+    }
+    for part in ["SAMD21G18", "SAMD21E18", "SAMD21J18"] {
+        assert!(is_flashable_part(part), "{part}");
+        assert!(
+            target_from_kconfig(&format!(
+                "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAMD21=y\nCONFIG_MACH_{part}=y\n"
+            ))
+            .is_ok(),
+            "{part}"
+        );
+    }
+    // The family symbol itself names no part, and other families are not SAM-BA targets.
+    assert!(!is_flashable_part("SAMD21"));
+    assert!(!is_flashable_part("SAMD51G19"));
+    assert!(!is_flashable_part("SAMC21G18"));
 }

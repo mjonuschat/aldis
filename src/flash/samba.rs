@@ -20,9 +20,12 @@ const AIRCR_SYSRESETREQ: u32 = 0x05FA_0004;
 const SAMD21_DEVICE_ID_MASK: u32 = 0xFFFF_0000;
 const SAMD21_DEVICE_ID: u32 = 0x1001_0000;
 
+/// 16 KiB into RAM, so with a [`CHUNK_SIZE`] buffer the part needs at least 20 KiB of RAM.
 const STAGING_ADDRESS: u32 = 0x2000_4000;
 const CHUNK_SIZE: usize = 0x1000;
-const PART_WITHOUT_STAGING_RAM: &str = "SAMD21E15";
+/// The SAMD21 variants with enough RAM for the staging buffer: `x18` parts have 32 KiB, while
+/// `x15`, `x16` and `x17` have 4, 8 and 16 KiB.
+const STAGING_RAM_VARIANT: &str = "18";
 
 const COPY_ACK: &[u8; 3] = b"Y\n\r";
 const CRC_REPLY_LEN: usize = 12;
@@ -35,9 +38,21 @@ pub struct SambaTarget {
     pub application_start: u32,
 }
 
-/// Whether a `CONFIG_MACH_*` family name is a SAMD21 part this backend can flash.
+/// Whether a `CONFIG_MACH_*` family name is a SAMD21 part this backend can flash: one whose RAM
+/// holds the staging buffer. The bare `SAMD21` family symbol is not a part.
 pub fn is_flashable_part(family: &str) -> bool {
-    family.starts_with("SAMD21") && family != PART_WITHOUT_STAGING_RAM
+    family
+        .strip_prefix("SAMD21")
+        .is_some_and(|variant| variant.len() == 3 && variant.ends_with(STAGING_RAM_VARIANT))
+}
+
+/// The SAMD21 part a Kconfig selects (`CONFIG_MACH_SAMD21G18=y` gives `SAMD21G18`), if any.
+fn samd21_part(kconfig: &str) -> Option<&str> {
+    kconfig
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("CONFIG_MACH_")?.strip_suffix("=y"))
+        .find(|family| family.len() > "SAMD21".len() && family.starts_with("SAMD21"))
 }
 
 /// Derives the SAMD21 application address from Klipper's embedded Kconfig.
@@ -49,8 +64,10 @@ pub fn target_from_kconfig(kconfig: &str) -> Result<SambaTarget, SambaError> {
     if enabled("CONFIG_SAMD_FLASH_START_0000=y") {
         return Err(SambaError::NoBootloaderOffset);
     }
-    if enabled(&format!("CONFIG_MACH_{PART_WITHOUT_STAGING_RAM}=y")) {
-        return Err(SambaError::InsufficientRam);
+    if let Some(part) = samd21_part(kconfig)
+        && !is_flashable_part(part)
+    {
+        return Err(SambaError::InsufficientRam(part.to_owned()));
     }
     let application_start = if enabled("CONFIG_SAMD_FLASH_START_4000=y") {
         0x4000
@@ -69,8 +86,10 @@ pub enum SambaError {
     )]
     NoBootloaderOffset,
     /// The part's RAM cannot hold the staging buffer the transfer uses.
-    #[error("the SAMD21E15 has too little RAM to stage firmware through the SAM-BA bootloader")]
-    InsufficientRam,
+    #[error(
+        "the {0} has too little RAM to stage firmware through the SAM-BA bootloader; only the 32 KiB SAMD21x18 parts have enough"
+    )]
+    InsufficientRam(String),
     /// The bootloader's write protection disagrees with the firmware's application address.
     #[error(
         "the firmware starts at {application_start:#x} but the bootloader protects the first {protected_size:#x} bytes of flash; rebuild with the matching bootloader offset"
