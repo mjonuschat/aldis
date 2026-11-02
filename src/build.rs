@@ -64,6 +64,22 @@ pub struct BuildCommand {
     pub stdin: Option<CommandStdin>,
 }
 
+impl BuildCommand {
+    /// A privileged command run through `sudo -n`, so a missing sudoers grant fails at once
+    /// instead of prompting, with `stdin` piped to it when given.
+    pub fn sudo(arguments: &[&str], stdin: Option<&[u8]>) -> Self {
+        Self {
+            program: "sudo".to_owned(),
+            arguments: std::iter::once("-n")
+                .chain(arguments.iter().copied())
+                .map(str::to_owned)
+                .collect(),
+            current_dir: None,
+            stdin: stdin.map(|bytes| CommandStdin(bytes.to_vec())),
+        }
+    }
+}
+
 /// Captured result of a command invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {

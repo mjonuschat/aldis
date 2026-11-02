@@ -31,7 +31,7 @@ enum RestartOutcome {
 /// Restarts the `aldis` agent through the NOPASSWD sudoers grant `aldis setup
 /// --agent` installs, but only if it is currently active.
 fn restart_agent_if_running(runner: &impl CommandPort) -> RestartOutcome {
-    let is_active = match runner.run(&sudo(&AGENT_STATUS_COMMAND)) {
+    let is_active = match runner.run(&BuildCommand::sudo(&AGENT_STATUS_COMMAND, None)) {
         Ok(output) => match std::str::from_utf8(&output.stdout).map(str::trim) {
             Ok("active") => true,
             Ok("inactive" | "failed" | "activating" | "deactivating" | "reloading") => false,
@@ -44,21 +44,9 @@ fn restart_agent_if_running(runner: &impl CommandPort) -> RestartOutcome {
     if !is_active {
         return RestartOutcome::NotRunning;
     }
-    match runner.run(&sudo(&AGENT_RESTART_COMMAND)) {
+    match runner.run(&BuildCommand::sudo(&AGENT_RESTART_COMMAND, None)) {
         Ok(output) if output.success => RestartOutcome::Restarted,
         _ => RestartOutcome::CouldNotRestart,
-    }
-}
-
-fn sudo(arguments: &[&str]) -> BuildCommand {
-    BuildCommand {
-        program: "sudo".to_owned(),
-        arguments: std::iter::once("-n")
-            .chain(arguments.iter().copied())
-            .map(str::to_owned)
-            .collect(),
-        current_dir: None,
-        stdin: None,
     }
 }
 

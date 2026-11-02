@@ -4,7 +4,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort, CommandStdin};
+use crate::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 use crate::flash::FlashResult;
 
 /// Where Klipper's `scripts/flash-linux.sh` installs the host MCU binary.
@@ -160,9 +160,15 @@ impl<R: CommandPort> HostMcuInstaller<R> {
         if !self.unit_file.exists() {
             return Err(LinuxHostError::ServiceNotInstalled(self.unit_file.clone()));
         }
-        self.step(InstallStep::Install, sudo(&INSTALL_COMMAND, Some(firmware)))?;
-        self.step(InstallStep::Sync, command("sync", &[], None))?;
-        self.step(InstallStep::Restart, sudo(&RESTART_COMMAND, None))?;
+        self.step(
+            InstallStep::Install,
+            BuildCommand::sudo(&INSTALL_COMMAND, Some(firmware)),
+        )?;
+        self.step(InstallStep::Sync, sync_command())?;
+        self.step(
+            InstallStep::Restart,
+            BuildCommand::sudo(&RESTART_COMMAND, None),
+        )?;
         Ok(FlashResult {
             reported_pages: None,
             padded_bytes: firmware.len(),
@@ -185,21 +191,12 @@ impl<R: CommandPort> HostMcuInstaller<R> {
     }
 }
 
-fn sudo(arguments: &[&str], stdin: Option<&[u8]>) -> BuildCommand {
-    let arguments: Vec<&str> = std::iter::once("-n")
-        .chain(arguments.iter().copied())
-        .collect();
-    command("sudo", &arguments, stdin)
-}
-
-fn command(program: &str, arguments: &[&str], stdin: Option<&[u8]>) -> BuildCommand {
+/// Flushes the newly installed binary to disk before the service restarts onto it.
+fn sync_command() -> BuildCommand {
     BuildCommand {
-        program: program.to_owned(),
-        arguments: arguments
-            .iter()
-            .map(|argument| (*argument).to_owned())
-            .collect(),
+        program: "sync".to_owned(),
+        arguments: Vec::new(),
         current_dir: None,
-        stdin: stdin.map(|bytes| CommandStdin(bytes.to_vec())),
+        stdin: None,
     }
 }
