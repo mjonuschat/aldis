@@ -10,7 +10,7 @@ use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use aldis::config::{FleetConfig, instance_urls};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
-use aldis::eligibility::{CheckoutRevision, Eligibility, UpdateSelection, assess_mcu, is_selected};
+use aldis::eligibility::{CheckoutRevision, UpdateSelection, is_selected};
 use aldis::fleet::peer::{check_bridge, peers_excluding};
 use aldis::fleet::system::{other_urls, probe_peer};
 use aldis::logging::{self, LoggingCommandAdapter};
@@ -146,18 +146,13 @@ fn run_update(
         &inventory,
         refreshed.as_ref(),
     ));
-    let selection = selection_for(arguments.all);
+    // `--force` offers every eligible MCU among the named ones (or all of them), as `--all` does.
+    let selection = selection_for(arguments.all || arguments.force);
     let offered = inventory
         .mcus
         .iter()
         .filter(|mcu| arguments.targets.is_empty() || arguments.targets.contains(&mcu.name))
-        .filter(|mcu| {
-            if arguments.force {
-                assess_mcu(mcu, &checkout).eligibility == Eligibility::Eligible
-            } else {
-                is_selected(mcu, &checkout, &selection)
-            }
-        })
+        .filter(|mcu| is_selected(mcu, &checkout, &selection))
         .map(|mcu| mcu.name.clone())
         .collect::<Vec<_>>();
     let offered = aldis::flash_order::flash_order(&inventory, &offered);
@@ -280,8 +275,8 @@ fn unknown_targets<'a>(inventory: &McuInventory, targets: &'a [String]) -> Vec<&
     unknown
 }
 
-fn selection_for(all: bool) -> UpdateSelection {
-    if all {
+fn selection_for(every_eligible: bool) -> UpdateSelection {
+    if every_eligible {
         UpdateSelection::All
     } else {
         UpdateSelection::Required

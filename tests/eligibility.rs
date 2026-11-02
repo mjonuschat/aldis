@@ -237,11 +237,6 @@ fn selects_only_outdated_eligible_mcus_unless_explicitly_overridden() {
         &UpdateSelection::Required
     ));
     assert!(is_selected(&current, &checkout, &UpdateSelection::All));
-    assert!(is_selected(
-        &current,
-        &checkout,
-        &UpdateSelection::Force("mcu".to_owned())
-    ));
     assert!(!is_selected(&external, &checkout, &UpdateSelection::All));
 }
 
@@ -324,9 +319,4 @@ fn never_selects_an_mcu_family_without_a_flashable_bootloader() {
 
     assert!(!is_selected(&samd, &checkout, &UpdateSelection::Required));
     assert!(!is_selected(&samd, &checkout, &UpdateSelection::All));
-    assert!(!is_selected(
-        &samd,
-        &checkout,
-        &UpdateSelection::Force(samd.name.clone())
-    ));
 }

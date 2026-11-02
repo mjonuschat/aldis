@@ -86,9 +86,8 @@ pub struct McuStatus {
 pub enum UpdateSelection {
     /// Offer only known out-of-date MCUs.
     Required,
-    /// Offer one named eligible MCU regardless of revision state.
-    Force(String),
-    /// Offer every eligible MCU regardless of revision state.
+    /// Offer every eligible MCU regardless of revision state (`--all`, or `--force` on the
+    /// MCUs the caller already narrowed the inventory to).
     All,
 }
 
@@ -100,7 +99,6 @@ pub fn is_selected(mcu: &Mcu, checkout: &CheckoutRevision, selection: &UpdateSel
     }
     match selection {
         UpdateSelection::Required => status.revision == Some(RevisionStatus::UpdateRequired),
-        UpdateSelection::Force(name) => mcu.name == *name,
         UpdateSelection::All => true,
     }
 }
