@@ -34,7 +34,7 @@ use crate::flash::usb_bootloader::{
     ObservedUsbBootloader, SelectedUsbBootloader, UsbBootloaderSelectionError,
     select_usb_bootloader,
 };
-use crate::flash::usb_sysfs::usb_device_ancestor;
+use crate::flash::usb_sysfs::{usb_device_ancestor, usb_identity};
 use crate::flash_order::kconfig_selects_usb_can_bridge;
 use crate::moonraker::McuTransport;
 use crate::prepare::PreparedBuild;
@@ -799,21 +799,17 @@ fn flash_can_system(
         .then(|| usb_device_path_for_can_interface(interface))
         .transpose()
         .map_err(SystemFlashError::CanUsbTopology)?;
-    let initial_usb_identity = usb_path
-        .as_deref()
-        .map(usb_identity)
-        .transpose()
-        .map_err(SystemFlashError::CanUsbTopology)?;
+    let initial_usb_identity = usb_path.as_deref().map(usb_identity);
     let io = SocketCanIo::open(interface, options.katapult.read_timeout)
         .map_err(SystemFlashError::CanSocket)?;
     let bootstrap = request_can_bootloader(io, uuid, options.katapult.read_timeout)
         .map_err(SystemFlashError::Can)?;
-    if let (Some(usb_path), Some((usb_id, manufacturer))) = (usb_path, initial_usb_identity) {
+    if let (Some(usb_path), Some(identity)) = (usb_path, initial_usb_identity) {
         let started = Instant::now();
         let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
             &usb_path,
-            &usb_id,
-            &manufacturer,
+            &identity.usb_id,
+            &identity.manufacturer,
             options.katapult.bootloader_timeout,
             options.katapult.poll_interval,
         )
@@ -847,18 +843,6 @@ fn usb_device_path_for_can_interface(interface: &str) -> io::Result<PathBuf> {
             format!("could not find a USB device for CAN interface {interface:?}"),
         )
     })
-}
-
-fn usb_identity(usb_path: &Path) -> io::Result<(String, String)> {
-    let value = |name: &str| {
-        std::fs::read_to_string(usb_path.join(name))
-            .map(|value| value.trim().to_ascii_lowercase())
-            .unwrap_or_default()
-    };
-    Ok((
-        format!("{}:{}", value("idVendor"), value("idProduct")),
-        value("manufacturer"),
-    ))
 }
 
 #[cfg(test)]
