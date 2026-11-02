@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use aldis::flash::katapult::crc16_ccitt;
-use aldis::flash::katapult::serial::{BOOTLOADER_ENTRY_REQUEST, KatapultSerialTransport, SerialIo};
+use aldis::flash::katapult::serial::{
+    BOOTLOADER_ENTRY_REQUEST, KatapultSerialTransport, SerialIo, SerialTransportError,
+};
 use aldis::flash::katapult::session::Transport;
 
 #[derive(Default)]
@@ -63,6 +66,48 @@ fn discards_the_tail_of_a_late_reply_ahead_of_the_next_frames_header() {
     let mut transport = KatapultSerialTransport::new(io);
 
     assert_eq!(transport.exchange(&[1, 2]).unwrap(), reply);
+}
+
+/// Never blocks and never produces a frame header.
+struct NoiseSerial;
+
+impl SerialIo for NoiseSerial {
+    type Error = ();
+
+    fn write_all(&mut self, _: &[u8]) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn read(&mut self) -> Result<Vec<u8>, Self::Error> {
+        Ok(vec![0x55; 16])
+    }
+}
+
+#[test]
+fn times_out_an_exchange_fed_bytes_that_never_form_a_frame() {
+    let started = Instant::now();
+    let mut transport =
+        KatapultSerialTransport::with_timeout(NoiseSerial, Duration::from_millis(50));
+
+    assert!(matches!(
+        transport.exchange(&[1, 2]),
+        Err(SerialTransportError::Timeout)
+    ));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn reports_a_serial_device_that_returns_no_bytes_instead_of_spinning() {
+    let io = ScriptedSerial {
+        reads: VecDeque::from([Vec::new()]),
+        ..Default::default()
+    };
+    let mut transport = KatapultSerialTransport::new(io);
+
+    assert!(matches!(
+        transport.exchange(&[1, 2]),
+        Err(SerialTransportError::Disconnected)
+    ));
 }
 
 #[test]

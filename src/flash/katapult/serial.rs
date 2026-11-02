@@ -6,7 +6,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use std::fs;
 use std::path::PathBuf;
@@ -88,6 +88,10 @@ pub enum SerialTransportError<E> {
         /// Number of bytes actually received.
         actual: usize,
     },
+    /// No complete response arrived before the exchange deadline.
+    Timeout,
+    /// The serial device returned no bytes, which a tty does only once it has gone away.
+    Disconnected,
 }
 
 impl fmt::Display for SerialTransportError<io::Error> {
@@ -102,6 +106,11 @@ impl fmt::Display for SerialTransportError<io::Error> {
                 f,
                 "serial response of {actual} bytes exceeds the {expected} bytes declared by its header"
             ),
+            Self::Timeout => write!(
+                f,
+                "serial exchange did not complete within the configured timeout"
+            ),
+            Self::Disconnected => write!(f, "the serial device returned no data"),
         }
     }
 }
@@ -110,20 +119,40 @@ impl std::error::Error for SerialTransportError<io::Error> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::ResponseTooLarge { .. } | Self::ResponseLengthExceeded { .. } => None,
+            Self::ResponseTooLarge { .. }
+            | Self::ResponseLengthExceeded { .. }
+            | Self::Timeout
+            | Self::Disconnected => None,
         }
     }
 }
 
+/// How long one [`KatapultSerialTransport`] exchange may take in total. Reads of a real port
+/// each return within the port's read timeout, so this only matters for a device that keeps
+/// sending bytes that never form a frame.
+pub const DEFAULT_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// A sequential Katapult transport over serial bytes.
 pub struct KatapultSerialTransport<T> {
     io: T,
+    exchange_timeout: Duration,
 }
 
 impl<T> KatapultSerialTransport<T> {
-    /// Creates a transport over an already-open serial I/O implementation.
+    /// Creates a transport over an already-open serial I/O implementation with the
+    /// [`DEFAULT_EXCHANGE_TIMEOUT`].
     pub fn new(io: T) -> Self {
-        Self { io }
+        Self::with_timeout(io, DEFAULT_EXCHANGE_TIMEOUT)
+    }
+
+    /// Creates a transport whose every `exchange` is bounded by `exchange_timeout`. As for the
+    /// CAN transport, the deadline is checked before each read, so the worst case is the timeout
+    /// plus one read's own blocking time.
+    pub fn with_timeout(io: T, exchange_timeout: Duration) -> Self {
+        Self {
+            io,
+            exchange_timeout,
+        }
     }
 
     /// Returns the underlying serial I/O implementation.
@@ -139,9 +168,16 @@ impl<T: SerialIo> Transport for KatapultSerialTransport<T> {
         self.io
             .write_all(request)
             .map_err(SerialTransportError::Io)?;
+        let deadline = Instant::now() + self.exchange_timeout;
         let mut assembler = ResponseAssembler::new();
         loop {
+            if Instant::now() >= deadline {
+                return Err(SerialTransportError::Timeout);
+            }
             let chunk = self.io.read().map_err(SerialTransportError::Io)?;
+            if chunk.is_empty() {
+                return Err(SerialTransportError::Disconnected);
+            }
             match assembler.push(&chunk) {
                 Ok(Some(response)) => return Ok(response),
                 Ok(None) => {}
@@ -431,6 +467,13 @@ impl SerialIo for SystemSerialIo {
     fn read(&mut self) -> Result<Vec<u8>, Self::Error> {
         let mut buffer = [0_u8; 256];
         let count = self.port.read(&mut buffer)?;
+        if count == 0 {
+            // A tty read returns zero bytes only at end of file, i.e. once the device is gone.
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the serial device returned no data",
+            ));
+        }
         Ok(buffer[..count].to_vec())
     }
 }
