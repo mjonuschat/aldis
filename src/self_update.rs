@@ -1,7 +1,7 @@
 //! Discovering, downloading, and installing a released `aldis` binary.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -12,12 +12,19 @@ use crate::build::{BuildCommand, CommandError, CommandPort};
 /// The checksum manifest published with every release, as written by `sha256sum`.
 pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
 
+/// The most the archive download will read into memory. Published archives are a few MiB; the
+/// cap keeps a wrong or hostile response from exhausting a small host's memory.
+pub const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Errors while checking for or installing a released `aldis` binary.
 #[derive(Debug, thiserror::Error)]
 pub enum ReleaseError {
     /// The GitHub API request failed.
     #[error("GitHub request failed")]
     Http(#[from] ureq::Error),
+    /// The archive response kept going past [`MAX_ARCHIVE_BYTES`].
+    #[error("the release archive is larger than the {0} bytes aldis will download")]
+    ArchiveTooLarge(u64),
     /// GitHub's response body could not be parsed.
     #[error("GitHub returned invalid JSON")]
     Json(#[from] serde_json::Error),
@@ -128,16 +135,23 @@ impl ReleasePort for GithubReleaseAdapter {
     }
 
     fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
-        let mut bytes = Vec::new();
         self.agent
             .get(asset_url(&self.repo, tag, &archive_name(platform)))
             .header("User-Agent", "aldis-self-update")
             .call()?
             .body_mut()
-            .as_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|error| ReleaseError::Http(ureq::Error::from(error)))?;
-        Ok(bytes)
+            .with_config()
+            .limit(MAX_ARCHIVE_BYTES)
+            .read_to_vec()
+            .map_err(map_archive_error)
+    }
+}
+
+/// Names the size cap when the body exceeded it; every other transport failure passes through.
+fn map_archive_error(error: ureq::Error) -> ReleaseError {
+    match error {
+        ureq::Error::BodyExceedsLimit(_) => ReleaseError::ArchiveTooLarge(MAX_ARCHIVE_BYTES),
+        error => ReleaseError::Http(error),
     }
 }
 
@@ -279,14 +293,30 @@ fn install_binary_impl(new_binary: &Path, current_exe: &Path) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{
-        CHECKSUMS_FILE, ReleaseError, archive_name, asset_url, expected_checksum, is_up_to_date,
-        target_platform, verify_checksum,
+        CHECKSUMS_FILE, MAX_ARCHIVE_BYTES, ReleaseError, archive_name, asset_url,
+        expected_checksum, is_up_to_date, map_archive_error, target_platform, verify_checksum,
     };
 
     // Both line formats `sha256sum` writes (text mode `  `, binary mode ` *`); the digests are
     // arbitrary, these tests only parse them.
     const MANIFEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  aldis-x86_64-linux.tar.xz\n\
                             d6c4b7c6a3b0d2bb7e3d3ea8bd2b2ea9b3a1dd8ad1f6ce6a3e8a19e5c0f2b1a4 *aldis-aarch64-linux.tar.xz\n";
+
+    #[test]
+    fn stops_downloading_an_archive_that_exceeds_the_size_cap() {
+        assert!(matches!(
+            map_archive_error(ureq::Error::BodyExceedsLimit(MAX_ARCHIVE_BYTES)),
+            ReleaseError::ArchiveTooLarge(limit) if limit == MAX_ARCHIVE_BYTES
+        ));
+        assert!(matches!(
+            map_archive_error(ureq::Error::StatusCode(404)),
+            ReleaseError::Http(ureq::Error::StatusCode(404))
+        ));
+        assert_eq!(
+            ReleaseError::ArchiveTooLarge(MAX_ARCHIVE_BYTES).to_string(),
+            "the release archive is larger than the 67108864 bytes aldis will download"
+        );
+    }
 
     #[test]
     fn matches_a_tag_with_or_without_its_v_prefix() {
