@@ -104,7 +104,7 @@ impl std::error::Error for FlashCoordinatorError<SystemFlashError> {
         match self {
             Self::Coordinator(error) => std::error::Error::source(error),
             Self::Artifact(error) => Some(error),
-            Self::Flash(_) => None,
+            Self::Flash(error) => Some(error),
         }
     }
 }

@@ -32,12 +32,49 @@ pub mod workspace;
 /// reaches an `anyhow::Result`). Call sites that only have a bare
 /// `&dyn Error` — not an owned, `'static` value `anyhow::Error::new` could
 /// wrap — use this instead, so they still show the full detail in one shot.
+///
+/// A cause whose text its parent already rendered (an `#[error("...: {0}")]` that also marks
+/// `0` as the source) is not repeated.
 pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {
-        message.push_str(&format!(": {cause}"));
+        let text = cause.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
         source = cause.source();
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::error_chain;
+
+    #[derive(Debug, thiserror::Error)]
+    enum Outer {
+        #[error("outer failed")]
+        Headline(#[source] Inner),
+        #[error("outer failed: {0}")]
+        Embedding(#[source] Inner),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("inner failed")]
+    struct Inner(#[source] std::io::Error);
+
+    #[test]
+    fn renders_each_cause_once_whether_or_not_its_parent_embedded_it() {
+        let io = || std::io::Error::other("disk on fire");
+        assert_eq!(
+            error_chain(&Outer::Headline(Inner(io()))),
+            "outer failed: inner failed: disk on fire"
+        );
+        assert_eq!(
+            error_chain(&Outer::Embedding(Inner(io()))),
+            "outer failed: inner failed: disk on fire"
+        );
+    }
 }

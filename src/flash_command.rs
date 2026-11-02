@@ -148,7 +148,7 @@ fn flash_failure(
         FlashCoordinatorError::Artifact(error) => {
             format!("could not read the firmware file: {error}")
         }
-        FlashCoordinatorError::Flash(error) => error.to_string(),
+        FlashCoordinatorError::Flash(error) => aldis::error_chain(&error),
     };
     match restore {
         None => format!(
@@ -247,6 +247,24 @@ mod tests {
             message.starts_with(
                 "flash failed: could not install /usr/local/bin/klipper_mcu: \
                  sudo: a password is required; run sudo aldis setup"
+            ),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn reports_the_cause_behind_a_native_flash_failure() {
+        use aldis::flash::stm32_dfu::Stm32DfuError;
+
+        let error = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::Stm32Dfu(
+            Stm32DfuError::VerificationMismatch,
+        ));
+
+        let message = flash_failure(error, None);
+
+        assert!(
+            message.starts_with(
+                "flash failed: STM32 DFU flashing failed: flash readback did not match the written firmware."
             ),
             "{message}"
         );

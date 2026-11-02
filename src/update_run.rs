@@ -186,7 +186,9 @@ fn failure_detail(error: FlashCoordinatorError<SystemFlashError>) -> String {
         FlashCoordinatorError::Artifact(error) => {
             format!("could not read the built firmware: {error}")
         }
-        FlashCoordinatorError::Flash(error) => error.to_string(),
+        // The backends' messages are headlines ("STM32 DFU flashing failed"); the cause is in
+        // the chain.
+        FlashCoordinatorError::Flash(error) => crate::error_chain(&error),
     }
 }
 
@@ -535,6 +537,29 @@ mod tests {
                  sudo: a password is required; run sudo aldis setup"
             ),
             "{message}"
+        );
+    }
+
+    #[test]
+    fn reports_the_cause_behind_a_native_flash_failure() {
+        use crate::flash::katapult::bootstrap::CanBootstrapError;
+        use crate::flash::katapult::can::CanTransportError;
+        use crate::flash::stm32_dfu::Stm32DfuError;
+
+        let dfu = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::Stm32Dfu(
+            Stm32DfuError::VerificationMismatch,
+        ));
+        assert_eq!(
+            failure_detail(dfu),
+            "STM32 DFU flashing failed: flash readback did not match the written firmware"
+        );
+
+        let can = FlashCoordinatorError::<SystemFlashError>::Flash(SystemFlashError::Can(
+            CanBootstrapError::Transport(CanTransportError::Timeout),
+        ));
+        assert_eq!(
+            failure_detail(can),
+            "could not enter the bootloader over CAN: CAN exchange did not complete within the configured timeout"
         );
     }
 

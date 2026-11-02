@@ -250,9 +250,9 @@ impl std::error::Error for SystemFlashError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::MissingTransport
-            | Self::Can(_)
             | Self::UnrecognizedFirmwareTarget
             | Self::Stm32TargetMismatch { .. } => None,
+            Self::Can(error) => Some(error),
             Self::Bootloader(error) => Some(error),
             Self::UsbAccess(error) => Some(error),
             Self::Selection { error, .. } => Some(error),
