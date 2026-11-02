@@ -121,6 +121,15 @@ pub enum SystemFlashError {
     /// Rebooting the device back to its existing application, after refusing
     /// a mismatched firmware file, itself failed.
     Stm32MismatchRecovery(Stm32DfuError),
+    /// The device holds plausible applications at several offsets (for example a leftover
+    /// bootloader at the base of flash and an application above it), so which one is running
+    /// cannot be told and no `--force` override was given.
+    Stm32AmbiguousApplication {
+        /// The offsets whose contents look like a vector table.
+        candidates: Vec<u32>,
+        /// The offset the firmware file's own vector table expects.
+        firmware_offset: u32,
+    },
     /// The request for a UART-attached Klipper to enter Katapult could not be sent.
     UartBootloaderRequest(serialport::Error),
     /// The MCU on a UART never answered Katapult's connect command after the request.
@@ -235,6 +244,21 @@ impl fmt::Display for SystemFlashError {
                 "flash refused due to a target mismatch, and rebooting the device back to \
                  its existing application failed: {error}"
             ),
+            Self::Stm32AmbiguousApplication {
+                candidates,
+                firmware_offset,
+            } => write!(
+                f,
+                "the device's flash looks like an application at each of {}; aldis cannot tell \
+                 which one is running, so it will not guess a flash offset. Pass --force to use \
+                 the firmware's own offset {firmware_offset:#x}; the device is left in its \
+                 bootloader, run `aldis reboot` to leave it",
+                candidates
+                    .iter()
+                    .map(|offset| format!("{offset:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Selection { error, transport } => write!(
                 f,
                 "the re-enumerated bootloader is not supported for automatic flashing: {error}\n  \
@@ -251,7 +275,8 @@ impl std::error::Error for SystemFlashError {
         match self {
             Self::MissingTransport
             | Self::UnrecognizedFirmwareTarget
-            | Self::Stm32TargetMismatch { .. } => None,
+            | Self::Stm32TargetMismatch { .. }
+            | Self::Stm32AmbiguousApplication { .. } => None,
             Self::Can(error) => Some(error),
             Self::Bootloader(error) => Some(error),
             Self::UsbAccess(error) => Some(error),
@@ -655,6 +680,28 @@ fn dispatch_serial_route(
     }
 }
 
+/// The offset the device currently runs its application from, as far as the probe can tell.
+/// An ambiguous probe is refused (the candidates are returned) unless `force` is given, in which
+/// case it counts as unknown and the firmware's own offset decides, exactly as a device with no
+/// application at all does.
+fn installed_application_start(
+    probe: ApplicationProbeResult,
+    force: bool,
+) -> Result<Option<u32>, Vec<u32>> {
+    match probe {
+        ApplicationProbeResult::Found(offset) => Ok(Some(offset)),
+        ApplicationProbeResult::NotFound => Ok(None),
+        ApplicationProbeResult::Ambiguous(candidates) if force => {
+            tracing::warn!(
+                ?candidates,
+                "several offsets look like applications; --force uses the firmware's own offset"
+            );
+            Ok(None)
+        }
+        ApplicationProbeResult::Ambiguous(candidates) => Err(candidates),
+    }
+}
+
 fn resolve_stm32_firmware_file_target(
     sysfs_path: &Path,
     kconfig: &str,
@@ -664,13 +711,14 @@ fn resolve_stm32_firmware_file_target(
     let firmware_offset =
         expected_application_start(firmware).ok_or(SystemFlashError::UnrecognizedFirmwareTarget)?;
     wait_for_usb_device_access(sysfs_path)?;
-    let installed =
-        match probe_application_start_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path)
-            .map_err(SystemFlashError::Stm32Probe)?
-        {
-            ApplicationProbeResult::Found(device_offset) => Some(device_offset),
-            _ => None,
-        };
+    let probe = probe_application_start_at_path(Stm32DfuDevice::ROM_BOOTLOADER, sysfs_path)
+        .map_err(SystemFlashError::Stm32Probe)?;
+    let installed = installed_application_start(probe, force).map_err(|candidates| {
+        SystemFlashError::Stm32AmbiguousApplication {
+            candidates,
+            firmware_offset,
+        }
+    })?;
     let configured = target_from_kconfig(kconfig)
         .ok()
         .map(|target| target.application_start);
@@ -855,12 +903,40 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        SystemFlashError, UsbBootloaderError, kconfig_flash_start_symbols, kconfig_machine,
-        kconfig_serial_baud, usb_device_node,
+        SystemFlashError, UsbBootloaderError, installed_application_start,
+        kconfig_flash_start_symbols, kconfig_machine, kconfig_serial_baud, usb_device_node,
     };
     use crate::flash::katapult::Command;
     use crate::flash::katapult::adapter::KatapultFlashError;
     use crate::flash::katapult::session::SessionError;
+    use crate::flash::stm32_dfu::ApplicationProbeResult;
+
+    #[test]
+    fn refuses_an_ambiguous_application_probe_unless_forced() {
+        assert_eq!(
+            installed_application_start(ApplicationProbeResult::Found(0x0800_2000), false),
+            Ok(Some(0x0800_2000))
+        );
+        assert_eq!(
+            installed_application_start(ApplicationProbeResult::NotFound, false),
+            Ok(None)
+        );
+        let ambiguous = || ApplicationProbeResult::Ambiguous(vec![0x0800_0000, 0x0800_2000]);
+        assert_eq!(
+            installed_application_start(ambiguous(), false),
+            Err(vec![0x0800_0000, 0x0800_2000])
+        );
+        assert_eq!(installed_application_start(ambiguous(), true), Ok(None));
+
+        let error = SystemFlashError::Stm32AmbiguousApplication {
+            candidates: vec![0x0800_0000, 0x0800_2000],
+            firmware_offset: 0x0800_2000,
+        };
+        let message = error.to_string();
+        assert!(message.contains("0x8000000, 0x8002000"), "{message}");
+        assert!(message.contains("--force"), "{message}");
+        assert!(message.contains("aldis reboot"), "{message}");
+    }
 
     #[test]
     fn explains_an_unresponsive_can_bootloader_without_a_debug_dump() {
