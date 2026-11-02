@@ -300,6 +300,23 @@ fn fail_with_detail(
     }
 }
 
+/// A failure after firmware was written, while Klipper is still stopped for the run and no
+/// restore is attempted: the terminal message carries the same advice as a flash failure.
+fn post_flash_failure(
+    hooks: &mut dyn RunHooks,
+    detail: String,
+    mcu: Option<&str>,
+    updated: &[String],
+) -> RunFailure {
+    fail_with_detail(
+        hooks,
+        detail.clone(),
+        update_failure_message(detail, None),
+        mcu,
+        updated,
+    )
+}
+
 /// Builds and flashes each approved target in order, then starts Klipper and waits for every
 /// updated MCU to reconnect at `target_revision`. The first failure ends the run.
 pub fn run_updates<B: CommandPort, S: CommandPort>(
@@ -352,7 +369,7 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
                 hooks.step_started(RunStep::WaitForApplication);
                 if let Err(message) = wait_for_application(mcu) {
                     tracing::debug!(error = %message, "waiting for MCU restart failed");
-                    return Err(fail(hooks, message, Some(name), &updated));
+                    return Err(post_flash_failure(hooks, message, Some(name), &updated));
                 }
                 hooks.step_succeeded(RunStep::WaitForApplication);
                 updated.push(name.clone());
@@ -382,7 +399,12 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
     hooks.step_started(RunStep::StartKlipper);
     if let Err(error) = coordinator.start_after_batch() {
         tracing::debug!(?error, "starting Klipper after batch failed");
-        return Err(fail(hooks, crate::error_chain(&error), None, &updated));
+        return Err(post_flash_failure(
+            hooks,
+            format!("could not start Klipper: {}", crate::error_chain(&error)),
+            None,
+            &updated,
+        ));
     }
     hooks.step_succeeded(RunStep::StartKlipper);
     hooks.step_started(RunStep::Reconnect);
@@ -910,6 +932,31 @@ mod tests {
             unreported: Vec::new(),
         };
         (dir, workspace, inventory, RecordingRunner::default())
+    }
+
+    #[test]
+    fn post_flash_failures_tell_the_user_klipper_may_still_be_stopped() {
+        let mut hooks = Recorder::default();
+
+        let failure = post_flash_failure(
+            &mut hooks,
+            "mcu h723 did not come back at /dev/serial/by-id/x".to_owned(),
+            Some("mcu h723"),
+            &["mcu toolhead".to_owned()],
+        );
+
+        assert_eq!(
+            failure.message,
+            "update failed: mcu h723 did not come back at /dev/serial/by-id/x. \
+             Klipper may still be stopped; fix the issue, then restart it manually"
+        );
+        assert_eq!(
+            failure.detail,
+            "mcu h723 did not come back at /dev/serial/by-id/x"
+        );
+        assert_eq!(failure.mcu.as_deref(), Some("mcu h723"));
+        assert_eq!(failure.updated, vec!["mcu toolhead".to_owned()]);
+        assert_eq!(hooks.failures, vec![failure.detail.clone()]);
     }
 
     #[test]
