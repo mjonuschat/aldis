@@ -75,9 +75,34 @@ pub fn instance_urls(file: Option<FleetConfig>, flags: &[String]) -> Vec<String>
     urls
 }
 
+/// The first URL the agent cannot serve. The agent reaches Moonraker over a plain-HTTP websocket
+/// (its websocket client is built without TLS), so every instance URL must start with `http://`.
+pub fn non_http_url(urls: &[String]) -> Option<&str> {
+    urls.iter()
+        .map(String::as_str)
+        .find(|url| !url.starts_with("http://"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_the_first_url_the_agent_cannot_connect_to() {
+        assert_eq!(non_http_url(&strings(&["http://127.0.0.1:7125"])), None);
+        assert_eq!(
+            non_http_url(&strings(&[
+                "http://127.0.0.1:7125",
+                "https://127.0.0.1:7130",
+                "127.0.0.1:7126",
+            ])),
+            Some("https://127.0.0.1:7130")
+        );
+        assert_eq!(
+            non_http_url(&strings(&["127.0.0.1:7126"])),
+            Some("127.0.0.1:7126")
+        );
+    }
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()

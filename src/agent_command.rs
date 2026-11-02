@@ -18,5 +18,11 @@ pub(crate) fn agent(arguments: AgentArgs, verbose: u8) -> ExitCode {
         Err(error) => return fail(format!("{error:#}")),
     };
     let urls = instance_urls(file, &arguments.moonraker);
+    // Fail at startup rather than logging a failed connection every retry forever.
+    if let Some(url) = aldis::config::non_http_url(&urls) {
+        return fail(format!(
+            "the agent connects to Moonraker over plain HTTP and cannot use {url}; configure an http:// URL"
+        ));
+    }
     aldis::agent::runtime::run_instances(urls, sink)
 }
