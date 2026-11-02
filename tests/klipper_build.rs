@@ -233,7 +233,7 @@ fn returns_the_expanded_kconfig_after_olddefconfig() {
     let artifact = builder
         .build(&BuildRequest {
             kconfig: "CONFIG_MACH_ATSAMD=y\n".to_owned(),
-            config_path,
+            config_path: config_path.clone(),
             artifact_path,
             clean: false,
         })
@@ -242,6 +242,11 @@ fn returns_the_expanded_kconfig_after_olddefconfig() {
     assert_eq!(
         artifact.kconfig,
         "CONFIG_MACH_ATSAMD=y\nCONFIG_SAMD_FLASH_START_2000=y\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&config_path).expect("the run's Kconfig copy"),
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_SAMD_FLASH_START_2000=y\n",
+        "the run record must hold the Kconfig make built from, not only the one the MCU sent"
     );
     fs::remove_dir_all(root).expect("test directory cleanup");
 }

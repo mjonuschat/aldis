@@ -94,6 +94,8 @@ Flashing a USB-CAN bridge resets its CAN bus, so aldis refuses while another pri
 - `--pull` can be combined with specific `<mcu>` names too.
 - `--auto` already implies `--pull` and can't be combined with `--pull`, `--force`, `--all`, or explicit MCU names.
 
+Each build writes the MCU's embedded Kconfig to `.config` in the Klipper checkout, replacing whatever `make menuconfig` left there; keep a copy of a hand-maintained `.config` if you need it. The run's workspace keeps the configuration as expanded by `make olddefconfig`.
+
 `self-update` compares the running binary's version against the latest GitHub release and, unless already current, downloads and installs the matching platform archive over the current binary. The archive's SHA-256 digest must match the `SHA256SUMS` file published with the release, or nothing is installed. No `sudo` is required as long as `~/aldis` is writable by the current user. If the agent service is running, `self-update` restarts it onto the new binary; otherwise it leaves the service alone.
 
 `status` also reports MCUs Klipper configured but could not reach, with their connection info and why. `update` and `flash` refuse to run against a remote Moonraker or one whose Klipper service name is not a valid Klipper unit. Only one `update`, `flash`, or `reboot` runs at a time on the host, and a second one fails immediately instead of racing the first.

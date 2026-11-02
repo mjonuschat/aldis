@@ -11,7 +11,8 @@ use crate::kconfig::{self, InvalidKconfig};
 pub struct BuildRequest {
     /// Embedded Kconfig obtained from Moonraker for the selected MCU.
     pub kconfig: String,
-    /// Per-run temporary location for Klipper's generated Kconfig.
+    /// Per-run copy of the Kconfig kept for the run record: the embedded one as submitted,
+    /// replaced by Klipper's expanded `.config` once `olddefconfig` has run.
     pub config_path: PathBuf,
     /// Destination for the immutable firmware artifact produced by this build.
     pub artifact_path: PathBuf,
@@ -238,7 +239,8 @@ where
         // files) whenever KCONFIG_CONFIG's mtime moves, which turns every build into
         // a full rebuild if we hand it a fresh path every run. Writing in place, and
         // only when the content actually changed, keeps `make`'s own incremental
-        // tracking effective across repeated updates of the same MCU.
+        // tracking effective across repeated updates of the same MCU. This replaces
+        // whatever `make menuconfig` left in the checkout, which the README documents.
         let checkout_config_path = self.source_dir.join(".config");
         write_if_changed(&checkout_config_path, &request.kconfig).map_err(|source| {
             BuildError::Io {
@@ -266,6 +268,11 @@ where
                 action: "read the expanded Kconfig",
                 source,
             })?;
+        // The run record now shows what make actually built from, not only what the MCU sent.
+        fs::write(&request.config_path, &expanded_kconfig).map_err(|source| BuildError::Io {
+            action: "record the expanded Kconfig",
+            source,
+        })?;
         progress(BuildProgress::Compiling);
         // Klipper embeds `git describe` only when compile_time_request.o is rebuilt, and
         // make skips that when no firmware source changed (e.g. a docs-only pull).
