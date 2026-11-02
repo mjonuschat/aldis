@@ -330,6 +330,7 @@ pub struct UnsupportedBootloaderContext {
 }
 
 /// Where an STM32 DFU route's application address comes from.
+#[derive(Clone, Copy)]
 enum Stm32TargetSource<'a> {
     /// Trust the exact Kconfig the artifact was built with.
     Kconfig(&'a str),
@@ -348,21 +349,6 @@ pub fn serial_route(
         observed,
         kconfig,
         Stm32TargetSource::Kconfig(kconfig),
-        context,
-    )
-}
-
-fn serial_route_for_firmware_file(
-    observed: ObservedUsbBootloader,
-    kconfig: &str,
-    firmware: &[u8],
-    force: bool,
-    context: &UnsupportedBootloaderContext,
-) -> Result<SerialFlashRoute, SystemFlashError> {
-    resolve_serial_route(
-        observed,
-        kconfig,
-        Stm32TargetSource::FirmwareFile { firmware, force },
         context,
     )
 }
@@ -440,29 +426,60 @@ pub fn flash_prepared_system_with_progress(
     runner: &impl CommandPort,
     mut progress: impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
-    if is_linux_host(&prepared.request.kconfig) {
-        return install_linux_host(runner, &options.host_mcu_unit_file, firmware, &mut progress);
+    flash_prepared(
+        prepared,
+        firmware,
+        options,
+        runner,
+        Stm32TargetSource::Kconfig(&prepared.request.kconfig),
+        &mut progress,
+    )
+}
+
+/// Flashes an explicit firmware file, skipping the Kconfig-derived STM32
+/// addressing [`flash_prepared_system_with_progress`] trusts (see
+/// [`resolve_stm32_firmware_file_target`]). Other routes behave identically.
+pub fn flash_prepared_firmware_file_with_progress(
+    prepared: &PreparedBuild,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    runner: &impl CommandPort,
+    force: bool,
+    mut progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    flash_prepared(
+        prepared,
+        firmware,
+        options,
+        runner,
+        Stm32TargetSource::FirmwareFile { firmware, force },
+        &mut progress,
+    )
+}
+
+fn flash_prepared(
+    prepared: &PreparedBuild,
+    firmware: &[u8],
+    options: SystemFlashOptions,
+    runner: &impl CommandPort,
+    stm32_target: Stm32TargetSource<'_>,
+    progress: &mut impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    let kconfig = &prepared.request.kconfig;
+    if is_linux_host(kconfig) {
+        return install_linux_host(runner, &options.host_mcu_unit_file, firmware, progress);
     }
     match prepared
         .transport
         .as_ref()
         .ok_or(SystemFlashError::MissingTransport)?
     {
-        McuTransport::Serial { device } => flash_serial_system(
-            device,
-            &prepared.request.kconfig,
-            firmware,
-            options,
-            &mut progress,
-        ),
-        McuTransport::Can { interface, uuid } => flash_can_system(
-            interface,
-            *uuid,
-            &prepared.request.kconfig,
-            firmware,
-            options,
-            &mut progress,
-        ),
+        McuTransport::Serial { device } => {
+            flash_serial_system(device, kconfig, firmware, options, stm32_target, progress)
+        }
+        McuTransport::Can { interface, uuid } => {
+            flash_can_system(interface, *uuid, kconfig, firmware, options, progress)
+        }
     }
 }
 
@@ -483,6 +500,7 @@ fn flash_serial_system(
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
+    stm32_target: Stm32TargetSource<'_>,
     progress: &mut impl FnMut(SystemFlashProgress),
 ) -> Result<FlashResult, SystemFlashError> {
     if is_tty_without_usb_device(Path::new(running_device)) {
@@ -506,7 +524,15 @@ fn flash_serial_system(
         transport: running_device.to_owned(),
         reset_elapsed: Some(started.elapsed()),
     };
-    flash_observed_usb(observed, kconfig, firmware, options, progress, &context)
+    flash_observed_usb(
+        observed,
+        kconfig,
+        firmware,
+        options,
+        stm32_target,
+        progress,
+        &context,
+    )
 }
 
 fn flash_uart_katapult(
@@ -538,107 +564,18 @@ fn flash_uart_katapult(
         .map_err(SystemFlashError::KatapultFlash)
 }
 
-/// Flashes an explicit firmware file, skipping the Kconfig-derived STM32
-/// addressing [`flash_prepared_system_with_progress`] trusts (see
-/// [`resolve_stm32_firmware_file_target`]). Other routes behave identically.
-pub fn flash_prepared_firmware_file_with_progress(
-    prepared: &PreparedBuild,
-    firmware: &[u8],
-    options: SystemFlashOptions,
-    runner: &impl CommandPort,
-    force: bool,
-    mut progress: impl FnMut(SystemFlashProgress),
-) -> Result<FlashResult, SystemFlashError> {
-    if is_linux_host(&prepared.request.kconfig) {
-        return install_linux_host(runner, &options.host_mcu_unit_file, firmware, &mut progress);
-    }
-    match prepared
-        .transport
-        .as_ref()
-        .ok_or(SystemFlashError::MissingTransport)?
-    {
-        McuTransport::Serial { device } => flash_serial_firmware_file(
-            device,
-            &prepared.request.kconfig,
-            firmware,
-            options,
-            force,
-            &mut progress,
-        ),
-        McuTransport::Can { interface, uuid } => flash_can_system(
-            interface,
-            *uuid,
-            &prepared.request.kconfig,
-            firmware,
-            options,
-            &mut progress,
-        ),
-    }
-}
-
-fn flash_serial_firmware_file(
-    running_device: &str,
-    kconfig: &str,
-    firmware: &[u8],
-    options: SystemFlashOptions,
-    force: bool,
-    progress: &mut impl FnMut(SystemFlashProgress),
-) -> Result<FlashResult, SystemFlashError> {
-    if is_tty_without_usb_device(Path::new(running_device)) {
-        return flash_uart_katapult(
-            Path::new(running_device),
-            kconfig,
-            firmware,
-            options,
-            progress,
-        );
-    }
-    progress(SystemFlashProgress::EnteringBootloader);
-    let started = Instant::now();
-    let observed = SystemSerialIo::request_and_observe_any_usb_bootloader(
-        std::path::Path::new(running_device),
-        options.katapult.bootloader_timeout,
-        options.katapult.poll_interval,
-    )
-    .map_err(SystemFlashError::Bootloader)?;
-    let context = UnsupportedBootloaderContext {
-        transport: running_device.to_owned(),
-        reset_elapsed: Some(started.elapsed()),
-    };
-    flash_observed_usb_for_firmware_file(
-        observed, kconfig, firmware, options, force, progress, &context,
-    )
-}
-
 fn flash_observed_usb(
     observed: ObservedUsbBootloader,
     kconfig: &str,
     firmware: &[u8],
     options: SystemFlashOptions,
+    stm32_target: Stm32TargetSource<'_>,
     progress: &mut impl FnMut(SystemFlashProgress),
     context: &UnsupportedBootloaderContext,
 ) -> Result<FlashResult, SystemFlashError> {
     progress(SystemFlashProgress::BootloaderReady);
     dispatch_serial_route(
-        serial_route(observed, kconfig, context)?,
-        firmware,
-        options,
-        progress,
-    )
-}
-
-fn flash_observed_usb_for_firmware_file(
-    observed: ObservedUsbBootloader,
-    kconfig: &str,
-    firmware: &[u8],
-    options: SystemFlashOptions,
-    force: bool,
-    progress: &mut impl FnMut(SystemFlashProgress),
-    context: &UnsupportedBootloaderContext,
-) -> Result<FlashResult, SystemFlashError> {
-    progress(SystemFlashProgress::BootloaderReady);
-    dispatch_serial_route(
-        serial_route_for_firmware_file(observed, kconfig, firmware, force, context)?,
+        resolve_serial_route(observed, kconfig, stm32_target, context)?,
         firmware,
         options,
         progress,
@@ -885,7 +822,15 @@ fn flash_can_system(
             transport: format!("CAN {interface} (uuid {uuid:016x})"),
             reset_elapsed: Some(started.elapsed()),
         };
-        return flash_observed_usb(observed, kconfig, firmware, options, progress, &context);
+        return flash_observed_usb(
+            observed,
+            kconfig,
+            firmware,
+            options,
+            Stm32TargetSource::Kconfig(kconfig),
+            progress,
+            &context,
+        );
     }
     thread::sleep(options.katapult.can_bootloader_settle);
     let mut backend = bootstrap.connect().map_err(SystemFlashError::Can)?;
