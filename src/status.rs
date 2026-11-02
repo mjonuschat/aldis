@@ -50,7 +50,7 @@ pub(crate) fn format_status(
     inventory: &McuInventory,
     refreshed: Option<&RefreshResult>,
 ) -> String {
-    let revision = refreshed.map_or_else(|| checkout_label(checkout).to_owned(), refresh_label);
+    let revision = refreshed.map_or_else(|| checkout.label().to_owned(), refresh_label);
     let mut output = format!(
         "Klipper source:    {}\nCheckout revision: {}\n",
         source.display(),
@@ -86,13 +86,6 @@ pub(crate) fn format_status(
         }
     }
     output
-}
-
-pub(crate) fn checkout_label(checkout: &CheckoutRevision) -> &str {
-    match checkout {
-        CheckoutRevision::Known(revision) => revision,
-        CheckoutRevision::Indeterminate => "unknown",
-    }
 }
 
 fn firmware_label(mcu: &aldis::moonraker::Mcu, eligibility: &Eligibility) -> String {
@@ -144,8 +137,8 @@ pub(crate) fn refresh_label(refreshed: &RefreshResult) -> String {
     };
     format!(
         "{} -> {} ({} {suffix})",
-        checkout_label(&refreshed.before),
-        checkout_label(&refreshed.after),
+        refreshed.before.label(),
+        refreshed.after.label(),
         refreshed.commits_advanced,
     )
 }

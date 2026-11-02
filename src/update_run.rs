@@ -309,13 +309,6 @@ pub fn standard_flash_options() -> SystemFlashOptions {
     }
 }
 
-fn revision_label(revision: &CheckoutRevision) -> &str {
-    match revision {
-        CheckoutRevision::Known(revision) => revision,
-        CheckoutRevision::Indeterminate => "unknown",
-    }
-}
-
 fn fail(
     hooks: &mut dyn RunHooks,
     message: String,
@@ -380,7 +373,7 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
             ));
         };
         let current = mcu.version.as_deref().unwrap_or("unknown");
-        if !hooks.approve(name, current, revision_label(request.target_revision)) {
+        if !hooks.approve(name, current, request.target_revision.label()) {
             continue;
         }
         let pending = match coordinator.prepare(inventory, workspace, name, request.clean) {

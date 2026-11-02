@@ -72,6 +72,16 @@ pub enum CheckoutRevision {
     Indeterminate,
 }
 
+impl CheckoutRevision {
+    /// The revision for display, `unknown` when indeterminate.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Known(revision) => revision,
+            Self::Indeterminate => "unknown",
+        }
+    }
+}
+
 /// Read-only eligibility and revision result for one MCU.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McuStatus {
