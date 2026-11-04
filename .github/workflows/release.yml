@@ -138,6 +138,9 @@ jobs:
               tar cJf "dist/$pkgname.tar.xz" -C tmp "$pkgname"
           done
 
+          cd dist
+          sha256sum -- *.tar.xz > SHA256SUMS
+
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:

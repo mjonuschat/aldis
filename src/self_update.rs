@@ -5,7 +5,12 @@ use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::build::{BuildCommand, CommandError, CommandPort};
+
+/// The checksum manifest published with every release, as written by `sha256sum`.
+pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
 
 /// Errors while checking for or installing a released `aldis` binary.
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +24,24 @@ pub enum ReleaseError {
     /// The host's CPU architecture has no published release archive.
     #[error("no published release archive for host architecture {0:?}")]
     UnsupportedPlatform(String),
+    /// The release's checksum manifest does not list the archive.
+    #[error("the release's {CHECKSUMS_FILE} has no entry for {0}")]
+    ChecksumMissing(String),
+    /// The manifest lists the archive, but not with a SHA-256 digest.
+    #[error("the release's {CHECKSUMS_FILE} entry for {0} is not a SHA-256 digest")]
+    ChecksumInvalid(String),
+    /// The downloaded archive's digest differs from the published one.
+    #[error(
+        "downloaded {file} does not match the release's {CHECKSUMS_FILE}: expected {expected}, got {actual}"
+    )]
+    ChecksumMismatch {
+        /// The archive file name.
+        file: String,
+        /// The digest the manifest lists, as hex.
+        expected: String,
+        /// The digest of the bytes actually downloaded, as hex.
+        actual: String,
+    },
     /// The downloaded archive could not be extracted.
     #[error("could not extract the downloaded archive")]
     Extract(#[source] CommandError),
@@ -47,6 +70,8 @@ pub struct LatestRelease {
 pub trait ReleasePort {
     /// Queries GitHub for the latest published release.
     fn latest_release(&self) -> Result<LatestRelease, ReleaseError>;
+    /// Downloads the [`CHECKSUMS_FILE`] manifest published with release `tag`.
+    fn download_checksums(&self, tag: &str) -> Result<String, ReleaseError>;
     /// Downloads the release archive for `tag` (e.g. `"v0.2.3"`, from a prior
     /// [`Self::latest_release`] call) and `platform` (e.g. `"aarch64-linux"`).
     fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError>;
@@ -92,10 +117,20 @@ impl ReleasePort for GithubReleaseAdapter {
         })
     }
 
+    fn download_checksums(&self, tag: &str) -> Result<String, ReleaseError> {
+        Ok(self
+            .agent
+            .get(asset_url(&self.repo, tag, CHECKSUMS_FILE))
+            .header("User-Agent", "aldis-self-update")
+            .call()?
+            .body_mut()
+            .read_to_string()?)
+    }
+
     fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
         let mut bytes = Vec::new();
         self.agent
-            .get(download_url(&self.repo, tag, platform))
+            .get(asset_url(&self.repo, tag, &archive_name(platform)))
             .header("User-Agent", "aldis-self-update")
             .call()?
             .body_mut()
@@ -133,8 +168,57 @@ pub fn target_platform(arch: &str) -> Result<&'static str, ReleaseError> {
     }
 }
 
-fn download_url(repo: &str, tag: &str, platform: &str) -> String {
-    format!("https://github.com/{repo}/releases/download/{tag}/aldis-{platform}.tar.xz")
+/// The archive file name a release publishes for `platform`, matching `release.yml`.
+pub fn archive_name(platform: &str) -> String {
+    format!("aldis-{platform}.tar.xz")
+}
+
+fn asset_url(repo: &str, tag: &str, asset: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{tag}/{asset}")
+}
+
+/// Finds `file_name`'s digest in a [`CHECKSUMS_FILE`] manifest. Each line is as `sha256sum`
+/// writes it: 64 hex digits, a space, then a space or `*`, then the file name.
+pub fn expected_checksum(manifest: &str, file_name: &str) -> Result<[u8; 32], ReleaseError> {
+    let entry = manifest
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .find(|(_, name)| name.trim_start_matches([' ', '*']) == file_name)
+        .ok_or_else(|| ReleaseError::ChecksumMissing(file_name.to_owned()))?;
+    decode_hex(entry.0).ok_or_else(|| ReleaseError::ChecksumInvalid(file_name.to_owned()))
+}
+
+/// Checks that `archive`'s SHA-256 digest is `expected`.
+pub fn verify_checksum(
+    file_name: &str,
+    archive: &[u8],
+    expected: &[u8; 32],
+) -> Result<(), ReleaseError> {
+    let actual: [u8; 32] = Sha256::digest(archive).into();
+    if actual == *expected {
+        Ok(())
+    } else {
+        Err(ReleaseError::ChecksumMismatch {
+            file: file_name.to_owned(),
+            expected: encode_hex(expected),
+            actual: encode_hex(&actual),
+        })
+    }
+}
+
+fn decode_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut digest = [0_u8; 32];
+    for (byte, pair) in digest.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(digest)
+}
+
+fn encode_hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Extracts `archive` (a `.tar.xz`, as published) into `dest_dir`, stripping
@@ -194,7 +278,15 @@ fn install_binary_impl(new_binary: &Path, current_exe: &Path) -> io::Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use super::{download_url, is_up_to_date, target_platform};
+    use super::{
+        CHECKSUMS_FILE, ReleaseError, archive_name, asset_url, expected_checksum, is_up_to_date,
+        target_platform, verify_checksum,
+    };
+
+    // Both line formats `sha256sum` writes (text mode `  `, binary mode ` *`); the digests are
+    // arbitrary, these tests only parse them.
+    const MANIFEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  aldis-x86_64-linux.tar.xz\n\
+                            d6c4b7c6a3b0d2bb7e3d3ea8bd2b2ea9b3a1dd8ad1f6ce6a3e8a19e5c0f2b1a4 *aldis-aarch64-linux.tar.xz\n";
 
     #[test]
     fn matches_a_tag_with_or_without_its_v_prefix() {
@@ -203,11 +295,88 @@ mod tests {
     }
 
     #[test]
-    fn downloads_the_asset_for_the_specific_tag_rather_than_whatever_is_latest() {
+    fn downloads_the_assets_for_the_specific_tag_rather_than_whatever_is_latest() {
         assert_eq!(
-            download_url("mjonuschat/aldis", "v0.2.3", "aarch64-linux"),
+            asset_url("mjonuschat/aldis", "v0.2.3", &archive_name("aarch64-linux")),
             "https://github.com/mjonuschat/aldis/releases/download/v0.2.3/aldis-aarch64-linux.tar.xz"
         );
+        assert_eq!(
+            asset_url("mjonuschat/aldis", "v0.2.3", CHECKSUMS_FILE),
+            "https://github.com/mjonuschat/aldis/releases/download/v0.2.3/SHA256SUMS"
+        );
+    }
+
+    #[test]
+    fn finds_the_archives_digest_in_either_sha256sum_line_format() {
+        let aarch64 = expected_checksum(MANIFEST, "aldis-aarch64-linux.tar.xz").unwrap();
+        assert_eq!(aarch64[0], 0xd6);
+        assert_eq!(aarch64[31], 0xa4);
+        let x86_64 = expected_checksum(MANIFEST, "aldis-x86_64-linux.tar.xz").unwrap();
+        assert_eq!(x86_64[0], 0x01);
+        assert_eq!(x86_64[31], 0xef);
+    }
+
+    #[test]
+    fn refuses_a_manifest_without_the_archive_or_with_a_malformed_digest() {
+        assert!(matches!(
+            expected_checksum(MANIFEST, "aldis-armv7l-linux.tar.xz"),
+            Err(ReleaseError::ChecksumMissing(file)) if file == "aldis-armv7l-linux.tar.xz"
+        ));
+        // A name that merely ends with the archive name must not match.
+        assert!(matches!(
+            expected_checksum(MANIFEST, "x86_64-linux.tar.xz"),
+            Err(ReleaseError::ChecksumMissing(_))
+        ));
+        for manifest in [
+            "abc  aldis-x86_64-linux.tar.xz\n",
+            "zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  aldis-x86_64-linux.tar.xz\n",
+        ] {
+            assert!(matches!(
+                expected_checksum(manifest, "aldis-x86_64-linux.tar.xz"),
+                Err(ReleaseError::ChecksumInvalid(_))
+            ));
+        }
+        assert!(matches!(
+            expected_checksum("", "aldis-x86_64-linux.tar.xz"),
+            Err(ReleaseError::ChecksumMissing(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_an_archive_whose_digest_matches_and_names_both_digests_otherwise() {
+        let expected = expected_checksum(
+            &format!("{}  aldis.tar.xz\n", sha256_hex(b"firmware")),
+            "aldis.tar.xz",
+        )
+        .unwrap();
+        assert!(verify_checksum("aldis.tar.xz", b"firmware", &expected).is_ok());
+
+        let error = verify_checksum("aldis.tar.xz", b"firmwarf", &expected).unwrap_err();
+        match &error {
+            ReleaseError::ChecksumMismatch {
+                file,
+                expected: listed,
+                actual,
+            } => {
+                assert_eq!(file, "aldis.tar.xz");
+                assert_eq!(*listed, sha256_hex(b"firmware"));
+                assert_eq!(*actual, sha256_hex(b"firmwarf"));
+            }
+            other => panic!("expected a mismatch, got {other:?}"),
+        }
+        assert!(
+            error
+                .to_string()
+                .starts_with("downloaded aldis.tar.xz does not match the release's SHA256SUMS: ")
+        );
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     #[test]

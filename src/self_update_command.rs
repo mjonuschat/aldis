@@ -5,8 +5,8 @@ use anyhow::Context;
 use aldis::build::{BuildCommand, CommandPort, SystemCommandAdapter};
 use aldis::logging::LoggingCommandAdapter;
 use aldis::self_update::{
-    GithubReleaseAdapter, ReleasePort, extract_binary, install_binary, is_up_to_date,
-    target_platform,
+    CHECKSUMS_FILE, GithubReleaseAdapter, ReleasePort, archive_name, expected_checksum,
+    extract_binary, install_binary, is_up_to_date, target_platform, verify_checksum,
 };
 
 use crate::cli::SelfUpdateArgs;
@@ -93,11 +93,24 @@ fn run_self_update(arguments: SelfUpdateArgs, ui: &mut UpdateUi) -> anyhow::Resu
 
     let platform =
         target_platform(std::env::consts::ARCH).context("cannot self-update on this platform")?;
+    let archive = archive_name(platform);
     ui.begin(format!("downloading {}", latest.tag));
+    // The manifest comes first: a release without one, or without this archive in it, is
+    // refused before the archive is even fetched.
+    let manifest = adapter
+        .download_checksums(&latest.tag)
+        .with_context(|| format!("failed to download the release's {CHECKSUMS_FILE}"))?;
+    let expected = expected_checksum(&manifest, &archive)
+        .context("the release does not publish a usable checksum for this archive")?;
     let archive_bytes = adapter
         .download_archive(&latest.tag, platform)
         .context("failed to download the release archive")?;
     ui.finish_success(format!("downloaded {} bytes", archive_bytes.len()));
+
+    ui.begin("verifying");
+    verify_checksum(&archive, &archive_bytes, &expected)
+        .context("refusing to install the downloaded archive")?;
+    ui.finish_success(format!("SHA-256 matches the release's {CHECKSUMS_FILE}"));
 
     let workspace = tempfile::Builder::new()
         .prefix("aldis-self-update-")
