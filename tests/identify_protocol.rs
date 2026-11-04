@@ -91,6 +91,21 @@ struct FakeMcu {
     dictionary: Vec<u8>,
     pending: VecDeque<u8>,
     decoder: FrameDecoder,
+    completion_pending: bool,
+    completion_delay: Option<Duration>,
+}
+
+impl FakeMcu {
+    fn new(expected_seq: u8, dictionary: Vec<u8>) -> Self {
+        Self {
+            expected_seq,
+            dictionary,
+            pending: VecDeque::new(),
+            decoder: FrameDecoder::new(),
+            completion_pending: false,
+            completion_delay: None,
+        }
+    }
 }
 
 impl Write for FakeMcu {
@@ -106,6 +121,7 @@ impl Write for FakeMcu {
             let count = decode_vlq(&frame.payload, &mut pos).unwrap() as usize;
             let end = (offset + count).min(self.dictionary.len());
             let chunk = &self.dictionary[offset.min(end)..end];
+            self.completion_pending = chunk.is_empty();
             self.expected_seq = (self.expected_seq + 1) & 0x0f;
             let mut payload = vec![0x00];
             encode_vlq(&mut payload, offset as u32);
@@ -126,6 +142,11 @@ impl Read for FakeMcu {
         if self.pending.is_empty() {
             return Err(io::ErrorKind::TimedOut.into());
         }
+        if self.completion_pending
+            && let Some(delay) = self.completion_delay.take()
+        {
+            std::thread::sleep(delay);
+        }
         let n = out.len().min(self.pending.len());
         for slot in out.iter_mut().take(n) {
             *slot = self.pending.pop_front().unwrap();
@@ -136,16 +157,45 @@ impl Read for FakeMcu {
 
 #[test]
 fn reads_the_whole_dictionary_after_resyncing_from_a_nak() {
-    let mut mcu = FakeMcu {
-        expected_seq: 7,
-        dictionary: dictionary(),
-        pending: VecDeque::new(),
-        decoder: FrameDecoder::new(),
-    };
+    let mut mcu = FakeMcu::new(7, dictionary());
 
     let data = identify_over(&mut mcu, Duration::from_secs(2)).expect("identify");
 
     assert_eq!(data, dictionary());
+}
+
+#[test]
+fn accepts_compressed_dictionaries_at_the_limit_and_rejects_overflow() {
+    for size in [
+        MAX_DICTIONARY_BYTES - 1,
+        MAX_DICTIONARY_BYTES,
+        MAX_DICTIONARY_BYTES + 1,
+    ] {
+        let mut mcu = FakeMcu::new(0, vec![b'x'; size]);
+        let result = identify_over(&mut mcu, Duration::from_secs(60));
+        if size > MAX_DICTIONARY_BYTES {
+            assert!(
+                matches!(result, Err(IdentifyError::DictionaryTooLarge(limit)) if limit == MAX_DICTIONARY_BYTES as u64)
+            );
+        } else {
+            assert_eq!(result.expect("dictionary within the cap").len(), size);
+        }
+    }
+}
+
+#[test]
+fn refuses_a_terminating_reply_received_after_the_deadline() {
+    let timeout = Duration::from_millis(100);
+    let mut mcu = FakeMcu::new(0, dictionary());
+    mcu.completion_delay = Some(timeout * 2);
+
+    let result = identify_over(&mut mcu, timeout);
+
+    assert!(
+        mcu.completion_delay.is_none(),
+        "the terminating read must be delayed"
+    );
+    assert!(matches!(result, Err(IdentifyError::Timeout(duration)) if duration == timeout));
 }
 
 /// Answers every request with a full chunk at the requested offset, forever.
@@ -235,6 +285,61 @@ fn gives_up_on_an_mcu_that_floods_frames_without_ever_answering() {
         "{error:?}"
     );
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn reports_timeout_after_a_reply_even_when_it_expires_during_a_write() {
+    struct PausingMcu {
+        requests: usize,
+    }
+    impl Write for PausingMcu {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > 1 {
+                self.requests += 1;
+                if self.requests == 2 {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Read for PausingMcu {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            FloodingMcu.read(out)
+        }
+    }
+    let timeout = Duration::from_millis(100);
+    let mut mcu = PausingMcu { requests: 0 };
+
+    let result = identify_over(&mut mcu, timeout);
+
+    assert_eq!(mcu.requests, 2, "a reply must precede the delayed write");
+    assert!(matches!(result, Err(IdentifyError::Timeout(duration)) if duration == timeout));
+}
+
+#[test]
+fn accepts_valid_json_at_the_inflated_limit_and_rejects_overflow() {
+    for size in [
+        MAX_INFLATED_BYTES - 1,
+        MAX_INFLATED_BYTES,
+        MAX_INFLATED_BYTES + 1,
+    ] {
+        let mut json = br#"{"version":"v","config":{"MCU":"test"}}"#.to_vec();
+        json.resize(size as usize, b' ');
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&json).unwrap();
+        let result = IdentifyData::from_compressed(&encoder.finish().unwrap());
+        if size > MAX_INFLATED_BYTES {
+            assert!(
+                matches!(result, Err(IdentifyError::DictionaryTooLarge(limit)) if limit == MAX_INFLATED_BYTES)
+            );
+        } else {
+            assert_eq!(result.expect("JSON within the cap").version, "v");
+        }
+    }
 }
 
 #[test]

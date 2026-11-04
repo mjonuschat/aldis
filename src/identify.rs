@@ -225,37 +225,41 @@ impl IdentifyData {
 /// Starts at sequence 0 and adopts whatever sequence the MCU reports in each reply (including a
 /// NAK), since firmware that talked to Klippy earlier expects a sequence number other than 0.
 ///
-/// `timeout` bounds the whole exchange, whether the MCU is silent or answering, and the
-/// dictionary may not exceed [`MAX_DICTIONARY_BYTES`].
+/// The deadline is checked before each request and before accepting a reply. The port must use
+/// bounded I/O so blocked reads and writes return control for the deadline check. Expiry reports
+/// [`IdentifyError::NoResponse`] until a valid frame arrives, then [`IdentifyError::Timeout`].
+/// The dictionary may not exceed [`MAX_DICTIONARY_BYTES`].
 pub fn identify_over<P: Read + Write>(
     port: &mut P,
     timeout: Duration,
 ) -> Result<Vec<u8>, IdentifyError> {
     let deadline = Instant::now() + timeout;
+    let check_deadline = |received_frame| {
+        if Instant::now() < deadline {
+            Ok(())
+        } else if received_frame {
+            Err(IdentifyError::Timeout(timeout))
+        } else {
+            Err(IdentifyError::NoResponse)
+        }
+    };
     port.write_all(&[MESSAGE_SYNC]).map_err(IdentifyError::Io)?;
     let mut decoder = FrameDecoder::new();
     let mut seq = 0u8;
     let mut data = Vec::new();
     let mut buffer = [0u8; MESSAGE_MAX];
+    let mut received_frame = false;
     loop {
-        // The inner loop only sees the deadline while waiting for bytes; an MCU that floods
-        // frames (or keeps returning chunks) would otherwise never let it be checked.
-        if Instant::now() >= deadline {
-            return Err(IdentifyError::Timeout(timeout));
-        }
-        if data.len() >= MAX_DICTIONARY_BYTES {
-            return Err(IdentifyError::DictionaryTooLarge(
-                MAX_DICTIONARY_BYTES as u64,
-            ));
-        }
+        check_deadline(received_frame)?;
         port.write_all(&identify_request(seq, data.len() as u32, IDENTIFY_CHUNK))
             .map_err(IdentifyError::Io)?;
         let frame = loop {
-            if let Some(frame) = decoder.next_frame() {
+            let frame = decoder.next_frame();
+            received_frame |= frame.is_some();
+            // Check after decoding too: a read may return a valid reply after the deadline.
+            check_deadline(received_frame)?;
+            if let Some(frame) = frame {
                 break frame;
-            }
-            if Instant::now() >= deadline {
-                return Err(IdentifyError::NoResponse);
             }
             match port.read(&mut buffer) {
                 Ok(n) => decoder.push(&buffer[..n]),
@@ -273,6 +277,11 @@ pub fn identify_over<P: Read + Write>(
         };
         if offset as usize != data.len() {
             continue;
+        }
+        if data.len() + chunk.len() > MAX_DICTIONARY_BYTES {
+            return Err(IdentifyError::DictionaryTooLarge(
+                MAX_DICTIONARY_BYTES as u64,
+            ));
         }
         if chunk.is_empty() {
             return Ok(data);
