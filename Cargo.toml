@@ -29,6 +29,7 @@ semver = "1.0.28"
 flate2 = "1.1.10"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+sha2 = "0.11"
 
 [patch.crates-io]
 dfu-core = { git = "https://github.com/mjonuschat/dfu-core", rev = "e0150206498cbb2b1f06c897ba129b5daa841f7a" }
