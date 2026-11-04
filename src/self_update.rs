@@ -1,7 +1,7 @@
 //! Discovering, downloading, and installing a released `aldis` binary.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -12,8 +12,8 @@ use crate::build::{BuildCommand, CommandError, CommandPort};
 /// The checksum manifest published with every release, as written by `sha256sum`.
 pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
 
-/// The most the archive download will read into memory. Published archives are a few MiB; the
-/// cap keeps a wrong or hostile response from exhausting a small host's memory.
+/// The maximum encoded and decoded archive size. Published archives are a few MiB; one extra
+/// byte may be read to detect an oversized response without buffering past this cap.
 pub const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Errors while checking for or installing a released `aldis` binary.
@@ -135,16 +135,41 @@ impl ReleasePort for GithubReleaseAdapter {
     }
 
     fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
-        self.agent
+        let mut response = self
+            .agent
             .get(asset_url(&self.repo, tag, &archive_name(platform)))
             .header("User-Agent", "aldis-self-update")
-            .call()?
-            .body_mut()
-            .with_config()
-            .limit(MAX_ARCHIVE_BYTES)
-            .read_to_vec()
-            .map_err(map_archive_error)
+            .call()?;
+        // ureq limits encoded bytes before decompressing. Allow a size probe on the wire,
+        // and independently bound the decoded stream that is buffered for verification.
+        read_archive(
+            response
+                .body_mut()
+                .with_config()
+                .limit(MAX_ARCHIVE_BYTES + 1)
+                .reader(),
+        )
     }
+}
+
+fn read_archive(mut reader: impl Read) -> Result<Vec<u8>, ReleaseError> {
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(MAX_ARCHIVE_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|error| map_archive_error(error.into()))?;
+    let mut extra = [0_u8; 1];
+    let extra_bytes = loop {
+        match reader.read(&mut extra) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => break result.map_err(|error| map_archive_error(error.into()))?,
+        }
+    };
+    if extra_bytes != 0 {
+        return Err(ReleaseError::ArchiveTooLarge(MAX_ARCHIVE_BYTES));
+    }
+    Ok(bytes)
 }
 
 /// Names the size cap when the body exceeded it; every other transport failure passes through.
@@ -292,9 +317,14 @@ fn install_binary_impl(new_binary: &Path, current_exe: &Path) -> io::Result<()> 
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, BufRead, Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
     use super::{
-        CHECKSUMS_FILE, MAX_ARCHIVE_BYTES, ReleaseError, archive_name, asset_url,
-        expected_checksum, is_up_to_date, map_archive_error, target_platform, verify_checksum,
+        CHECKSUMS_FILE, GithubReleaseAdapter, MAX_ARCHIVE_BYTES, ReleaseError, ReleasePort,
+        archive_name, asset_url, expected_checksum, is_up_to_date, map_archive_error, read_archive,
+        target_platform, verify_checksum,
     };
 
     // Both line formats `sha256sum` writes (text mode `  `, binary mode ` *`); the digests are
@@ -303,7 +333,7 @@ mod tests {
                             d6c4b7c6a3b0d2bb7e3d3ea8bd2b2ea9b3a1dd8ad1f6ce6a3e8a19e5c0f2b1a4 *aldis-aarch64-linux.tar.xz\n";
 
     #[test]
-    fn stops_downloading_an_archive_that_exceeds_the_size_cap() {
+    fn maps_archive_size_errors_without_hiding_other_http_errors() {
         assert!(matches!(
             map_archive_error(ureq::Error::BodyExceedsLimit(MAX_ARCHIVE_BYTES)),
             ReleaseError::ArchiveTooLarge(limit) if limit == MAX_ARCHIVE_BYTES
@@ -316,6 +346,138 @@ mod tests {
             ReleaseError::ArchiveTooLarge(MAX_ARCHIVE_BYTES).to_string(),
             "the release archive is larger than the 67108864 bytes aldis will download"
         );
+    }
+
+    #[test]
+    fn accepts_archive_downloads_below_and_at_the_size_cap() {
+        for size in [MAX_ARCHIVE_BYTES - 1, MAX_ARCHIVE_BYTES] {
+            for (gzip, chunked) in [(false, false), (false, true), (true, false), (true, true)] {
+                let bytes = download_test_archive(size, gzip, chunked).unwrap_or_else(|error| {
+                    panic!("size={size}, gzip={gzip}, chunked={chunked}: {error}")
+                });
+                assert_eq!(bytes.len() as u64, size);
+                assert!(bytes.iter().all(|byte| *byte == b'x'));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_archive_downloads_including_gzip_responses() {
+        for (gzip, chunked) in [(false, false), (false, true), (true, false), (true, true)] {
+            match download_test_archive(MAX_ARCHIVE_BYTES + 1, gzip, chunked) {
+                Err(ReleaseError::ArchiveTooLarge(limit)) => assert_eq!(limit, MAX_ARCHIVE_BYTES),
+                Err(error) => panic!("gzip={gzip}, chunked={chunked}: {error}"),
+                Ok(bytes) => panic!(
+                    "accepted {} bytes: gzip={gzip}, chunked={chunked}",
+                    bytes.len()
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn stops_reading_the_decoded_stream_after_one_byte_past_the_cap() {
+        struct CountedReader(u64);
+
+        impl Read for CountedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let remaining = MAX_ARCHIVE_BYTES + 1 - self.0;
+                if remaining == 0 {
+                    return Err(io::Error::other("read beyond the size probe"));
+                }
+                let count = remaining.min(buffer.len() as u64) as usize;
+                buffer[..count].fill(b'x');
+                self.0 += count as u64;
+                Ok(count)
+            }
+        }
+
+        let mut reader = CountedReader(0);
+        assert!(
+            matches!(read_archive(&mut reader), Err(ReleaseError::ArchiveTooLarge(limit)) if limit == MAX_ARCHIVE_BYTES)
+        );
+        assert_eq!(reader.0, MAX_ARCHIVE_BYTES + 1);
+    }
+
+    fn download_test_archive(
+        size: u64,
+        gzip: bool,
+        chunked: bool,
+    ) -> Result<Vec<u8>, ReleaseError> {
+        let body = if gzip {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            io::copy(&mut io::repeat(b'x').take(size), &mut encoder).expect("compress response");
+            encoder.finish().expect("finish gzip response")
+        } else {
+            vec![b'x'; size as usize]
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept download");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("read timeout");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .expect("write timeout");
+            let mut request = String::new();
+            let mut reader = io::BufReader::new(&mut stream);
+            while !request.ends_with("\r\n\r\n") {
+                assert_ne!(reader.read_line(&mut request).expect("read request"), 0);
+            }
+            let mut send_response = || -> io::Result<()> {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n"
+                )?;
+                if gzip {
+                    write!(stream, "Content-Encoding: gzip\r\n")?;
+                }
+                if chunked {
+                    write!(stream, "Transfer-Encoding: chunked\r\n\r\n")?;
+                    for chunk in body.chunks(8192) {
+                        write!(stream, "{:x}\r\n", chunk.len())?;
+                        stream.write_all(chunk)?;
+                        write!(stream, "\r\n")?;
+                    }
+                    write!(stream, "0\r\n\r\n")
+                } else {
+                    write!(stream, "Content-Length: {}\r\n\r\n", body.len())?;
+                    stream.write_all(&body)
+                }
+            };
+            if let Err(error) = send_response() {
+                assert!(
+                    matches!(
+                        error.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    ),
+                    "send response: {error}"
+                );
+            }
+        });
+        let uri: ureq::http::Uri = format!("http://{address}/archive")
+            .parse()
+            .expect("local URI");
+        let config = ureq::config::Config::builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .middleware(
+                move |mut request: ureq::http::Request<ureq::SendBody>,
+                      next: ureq::middleware::MiddlewareNext| {
+                    *request.uri_mut() = uri.clone();
+                    next.handle(request)
+                },
+            )
+            .build();
+        let adapter = GithubReleaseAdapter {
+            agent: config.into(),
+            repo: "test/aldis".to_owned(),
+        };
+        let result = adapter.download_archive("v0.4.1", "aarch64-linux");
+        server.join().expect("download server");
+        result
     }
 
     #[test]
