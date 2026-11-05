@@ -221,3 +221,95 @@ pub fn compare(running: &Version, release: &Release) -> RevisionStatus {
         Ordering::Greater => RevisionStatus::Indeterminate,
     }
 }
+
+/// The repository FOCI publishes its releases from.
+pub const RELEASE_REPOSITORY: &str = "foci-rs/foci";
+
+/// How long any one request to GitHub for a FOCI release may take.
+const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Failure while looking up or downloading a FOCI release.
+#[derive(Debug, thiserror::Error)]
+pub enum ReleaseError {
+    /// The GitHub request failed or returned something unusable.
+    #[error("could not fetch FOCI releases from GitHub")]
+    Github(#[source] crate::self_update::ReleaseError),
+    /// The latest release's tag does not name a version.
+    #[error("the latest FOCI release's tag {0:?} does not name a version")]
+    InvalidTag(String),
+    /// The `.sha256` file published beside a firmware image names no digest for it.
+    #[error("{0}.sha256 does not hold a SHA-256 digest for {0}")]
+    ChecksumInvalid(String),
+    /// The downloaded firmware image's digest differs from the published one.
+    #[error("downloaded {0} does not match its published SHA-256 digest")]
+    ChecksumMismatch(String),
+}
+
+/// A source of FOCI releases and their firmware images.
+pub trait ReleasePort {
+    /// The latest published FOCI release.
+    fn latest_release(&self) -> Result<Release, ReleaseError>;
+    /// Downloads `release`'s firmware image `asset`, verified against the `<asset>.sha256` file
+    /// published beside it.
+    fn download_firmware(&self, release: &Release, asset: &str) -> Result<Vec<u8>, ReleaseError>;
+}
+
+/// FOCI releases on GitHub.
+pub struct GithubReleases(crate::self_update::GithubReleaseAdapter);
+
+impl GithubReleases {
+    pub fn new() -> Self {
+        Self(crate::self_update::GithubReleaseAdapter::with_timeout(
+            RELEASE_REPOSITORY,
+            "aldis",
+            RELEASE_TIMEOUT,
+        ))
+    }
+}
+
+impl Default for GithubReleases {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReleasePort for GithubReleases {
+    fn latest_release(&self) -> Result<Release, ReleaseError> {
+        let tag = self.0.latest_tag().map_err(ReleaseError::Github)?;
+        Release::from_tag(&tag).ok_or(ReleaseError::InvalidTag(tag))
+    }
+
+    fn download_firmware(&self, release: &Release, asset: &str) -> Result<Vec<u8>, ReleaseError> {
+        download_verified(
+            asset,
+            |name| self.0.download_text(&release.tag, name),
+            |name| self.0.download_bytes(&release.tag, name),
+        )
+    }
+}
+
+/// Fetches `asset` and the `<asset>.sha256` published beside it, and returns the firmware only
+/// if it matches that digest. Every FOCI image reaches a flash through here.
+pub fn download_verified(
+    asset: &str,
+    text: impl FnOnce(&str) -> Result<String, crate::self_update::ReleaseError>,
+    bytes: impl FnOnce(&str) -> Result<Vec<u8>, crate::self_update::ReleaseError>,
+) -> Result<Vec<u8>, ReleaseError> {
+    let checksum = text(&format!("{asset}.sha256")).map_err(ReleaseError::Github)?;
+    let firmware = bytes(asset).map_err(ReleaseError::Github)?;
+    verify_firmware(asset, &checksum, &firmware)?;
+    Ok(firmware)
+}
+
+/// Checks `firmware` against `checksum_file`, the `sha256sum` output the release workflow
+/// publishes as `<asset>.sha256`.
+pub fn verify_firmware(
+    asset: &str,
+    checksum_file: &str,
+    firmware: &[u8],
+) -> Result<(), ReleaseError> {
+    let expected = crate::self_update::expected_checksum(checksum_file, asset)
+        .map_err(|_| ReleaseError::ChecksumInvalid(asset.to_owned()))?;
+    crate::self_update::verify_checksum(asset, firmware, &expected)
+        .map_err(|_| ReleaseError::ChecksumMismatch(asset.to_owned()))
+}

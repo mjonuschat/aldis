@@ -165,6 +165,78 @@ fn compares_only_release_builds_against_a_release() {
 }
 
 #[test]
+fn verifies_firmware_against_its_published_sha256_file() {
+    use aldis::foci::{ReleaseError, verify_firmware};
+    use sha2::{Digest, Sha256};
+
+    let asset = "ouroboros-fw-v0.4.1-prod.bin";
+    let firmware = b"firmware image".as_slice();
+    let digest: String = Sha256::digest(firmware)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let checksum_file = format!("{digest}  {asset}\n");
+
+    assert!(verify_firmware(asset, &checksum_file, firmware).is_ok());
+    assert!(matches!(
+        verify_firmware(asset, &checksum_file, b"tampered"),
+        Err(ReleaseError::ChecksumMismatch(file)) if file == asset
+    ));
+    assert!(matches!(
+        verify_firmware(asset, &format!("{digest}  openffboard-fw-v0.4.1-prod.bin\n"), firmware),
+        Err(ReleaseError::ChecksumInvalid(file)) if file == asset
+    ));
+    assert!(matches!(
+        verify_firmware(asset, "", firmware),
+        Err(ReleaseError::ChecksumInvalid(_))
+    ));
+}
+
+#[test]
+fn hands_out_a_downloaded_image_only_after_checking_its_published_digest() {
+    use aldis::foci::{ReleaseError, download_verified};
+    use sha2::{Digest, Sha256};
+    use std::cell::RefCell;
+
+    let asset = "ouroboros-fw-v0.4.1-prod.bin";
+    let digest: String = Sha256::digest(b"firmware image")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let asked = RefCell::new(Vec::new());
+    let fetch = |image: &'static [u8]| {
+        let asked = &asked;
+        let digest = digest.clone();
+        move || {
+            download_verified(
+                asset,
+                |name| {
+                    asked.borrow_mut().push(name.to_owned());
+                    Ok(format!("{digest}  {asset}\n"))
+                },
+                |name| {
+                    asked.borrow_mut().push(name.to_owned());
+                    Ok(image.to_vec())
+                },
+            )
+        }
+    };
+
+    assert_eq!(fetch(b"firmware image")().unwrap(), b"firmware image");
+    assert_eq!(
+        *asked.borrow(),
+        vec![
+            "ouroboros-fw-v0.4.1-prod.bin.sha256".to_owned(),
+            "ouroboros-fw-v0.4.1-prod.bin".to_owned()
+        ]
+    );
+    assert!(matches!(
+        fetch(b"tampered")(),
+        Err(ReleaseError::ChecksumMismatch(file)) if file == asset
+    ));
+}
+
+#[test]
 fn links_each_board_above_the_katapult_foci_documents_for_it() {
     assert_eq!(Board::Ouroboros.application_start(), 0x0802_0000);
     assert_eq!(Board::OpenFfboard.application_start(), 0x0800_8000);
