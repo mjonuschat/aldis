@@ -12,6 +12,7 @@ pub mod eligibility;
 pub mod flash;
 pub mod flash_order;
 pub mod fleet;
+pub mod foci;
 pub mod host;
 pub mod identify;
 pub mod kconfig;
