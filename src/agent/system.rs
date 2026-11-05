@@ -107,6 +107,7 @@ impl AgentBackend for SystemBackend {
             state_message: message,
             software_version: None,
             klipper_path: None,
+            python_path: None,
         };
         let (klipper_unit, unit_error) = match url_is_local.then(|| adapter.klipper_unit()) {
             Some(Ok(unit)) => (unit, None),

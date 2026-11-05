@@ -556,6 +556,7 @@ mod tests {
                     state_message: "Printer is ready".to_owned(),
                     software_version: Some("v2".to_owned()),
                     klipper_path: Some("/home/pi/klipper".into()),
+                    python_path: None,
                 },
                 checkout_version: Some(CheckoutRevision::Known("v2".to_owned())),
                 print_state: Some(print_state),

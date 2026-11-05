@@ -197,6 +197,7 @@ impl HostPort for MoonrakerAdapter {
                 state_message: "Klipper is not connected to Moonraker".to_owned(),
                 software_version: None,
                 klipper_path: None,
+                python_path: None,
             }),
             Err(error) => Err(MoonrakerError::Http(error)),
         }
@@ -622,6 +623,8 @@ pub struct HostInfo {
     pub state_message: String,
     pub software_version: Option<String>,
     pub klipper_path: Option<std::path::PathBuf>,
+    /// The Python interpreter Klippy runs under, inside its virtualenv.
+    pub python_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -637,6 +640,8 @@ struct PrinterInfo {
     software_version: Option<String>,
     #[serde(default)]
     klipper_path: Option<String>,
+    #[serde(default)]
+    python_path: Option<String>,
 }
 
 pub fn parse_host_info(response: &str) -> Result<HostInfo, MoonrakerError> {
@@ -653,6 +658,7 @@ pub fn parse_host_info(response: &str) -> Result<HostInfo, MoonrakerError> {
         state_message: info.state_message,
         software_version: info.software_version,
         klipper_path: info.klipper_path.map(std::path::PathBuf::from),
+        python_path: info.python_path.map(std::path::PathBuf::from),
     })
 }
 

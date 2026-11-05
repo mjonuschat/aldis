@@ -191,7 +191,8 @@ fn still_rejects_a_populated_object_without_an_mcu_constant() {
 #[test]
 fn parses_host_info_including_version_and_path() {
     let response = r#"{"result":{"state":"error","state_message":"MCU Protocol error",
-        "software_version":"v0.13.0-770-gce7002bed","klipper_path":"/home/pi/klipper"}}"#;
+        "software_version":"v0.13.0-770-gce7002bed","klipper_path":"/home/pi/klipper",
+        "python_path":"/home/pi/klippy-env/bin/python"}}"#;
 
     let info = parse_host_info(response).unwrap();
 
@@ -204,6 +205,10 @@ fn parses_host_info_including_version_and_path() {
     assert_eq!(
         info.klipper_path,
         Some(std::path::PathBuf::from("/home/pi/klipper"))
+    );
+    assert_eq!(
+        info.python_path,
+        Some(std::path::PathBuf::from("/home/pi/klippy-env/bin/python"))
     );
 
     let disconnected =

@@ -475,6 +475,7 @@ mod tests {
                     state_message: "Printer is ready".to_owned(),
                     software_version: Some("v0.13.0-770-gce7002bed".to_owned()),
                     klipper_path: Some("/home/pi/klipper".into()),
+                    python_path: None,
                 },
                 checkout_version: Some(CheckoutRevision::Known(
                     "v0.13.0-770-gce7002bed".to_owned(),
