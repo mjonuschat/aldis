@@ -226,6 +226,56 @@ fn reads_the_logs_root_from_file_roots() {
 }
 
 #[test]
+fn reads_the_serial_port_from_a_beacon_section() {
+    let response = r#"{
+      "result": {
+        "status": {
+          "mcu beacon": {
+            "app": "",
+            "mcu_version": "Beacon 2.1.0",
+            "mcu_constants": { "MCU": "samd21g18a" }
+          },
+          "mcu beacon sensor rear": {
+            "app": "",
+            "mcu_version": "Beacon 2.1.0",
+            "mcu_constants": { "MCU": "samd21g18a" }
+          },
+          "configfile": {
+            "settings": {
+              "beacon": { "serial": "/dev/serial/by-id/usb-Beacon_Beacon_RevH_ABC-if00" },
+              "beacon sensor rear": { "serial": "/dev/serial/by-id/usb-Beacon_Beacon_RevD_DEF-if00" }
+            }
+          }
+        }
+      }
+    }"#;
+
+    let inventory = parse_inventory(response).expect("fixture should parse");
+    let transport = |name: &str| {
+        inventory
+            .mcus
+            .iter()
+            .find(|mcu| mcu.name == name)
+            .unwrap()
+            .transport
+            .clone()
+    };
+
+    assert_eq!(
+        transport("mcu beacon"),
+        Some(McuTransport::Serial {
+            device: "/dev/serial/by-id/usb-Beacon_Beacon_RevH_ABC-if00".to_owned(),
+        })
+    );
+    assert_eq!(
+        transport("mcu beacon sensor rear"),
+        Some(McuTransport::Serial {
+            device: "/dev/serial/by-id/usb-Beacon_Beacon_RevD_DEF-if00".to_owned(),
+        })
+    );
+}
+
+#[test]
 fn describes_each_transport_the_way_users_are_told_about_it() {
     use aldis::moonraker::McuTransport;
 

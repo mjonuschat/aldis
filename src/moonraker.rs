@@ -515,10 +515,15 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
             continue;
         }
         // Case-insensitive: configfile.settings lowercases section names, objects.list keeps
-        // the declared case (e.g. `[mcu RP2040]`).
-        let transport = settings
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+        // the declared case (e.g. `[mcu RP2040]`). Beacon's MCU objects are configured in its
+        // own `[beacon]` sections instead of an `[mcu ...]` one.
+        let section = |wanted: &str| {
+            settings
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(wanted))
+        };
+        let transport = section(&name)
+            .or_else(|| crate::beacon::config_section(&name).and_then(section))
             .map(|(_, settings)| parse_transport(&name, settings))
             .transpose()?
             .flatten();
