@@ -1,5 +1,5 @@
 use aldis::flash::FlashPort;
-use aldis::flash::katapult::adapter::KatapultAdapter;
+use aldis::flash::katapult::adapter::{KatapultAdapter, KatapultFlashError};
 use aldis::flash::katapult::session::Transport;
 use aldis::flash::katapult::{Command, crc16_ccitt};
 
@@ -117,4 +117,60 @@ fn verifies_the_configured_can_uuid_before_transferring_firmware() {
         .collect();
     assert_eq!(commands[1], Command::GetCanbusId as u8);
     assert_eq!(commands[2], Command::SendBlock as u8);
+}
+
+#[test]
+fn refuses_a_katapult_that_starts_applications_elsewhere_and_restarts_the_old_one() {
+    let transport = ScriptedTransport {
+        responses: vec![
+            connect_response(0x0800_8000, 64),
+            response(Command::Complete, &[]),
+        ],
+        ..Default::default()
+    };
+    let mut backend = KatapultAdapter::new(transport).expecting_application_start(0x0802_0000);
+
+    assert_eq!(
+        backend.flash(&[0xab]),
+        Err(KatapultFlashError::ApplicationStartMismatch {
+            expected: 0x0802_0000,
+            actual: 0x0800_8000,
+        })
+    );
+
+    let commands: Vec<u8> = backend
+        .into_transport()
+        .requests
+        .iter()
+        .map(|request| request[2])
+        .collect();
+    assert_eq!(
+        commands,
+        vec![Command::Connect as u8, Command::Complete as u8],
+        "nothing may be written before the refusal"
+    );
+}
+
+#[test]
+fn flashes_when_katapult_starts_applications_where_expected() {
+    let application_start = 0x0802_0000;
+    let mut padded_block = vec![0xab];
+    padded_block.resize(64, 0xff);
+    let transport = ScriptedTransport {
+        responses: vec![
+            connect_response(application_start, 64),
+            response(Command::SendBlock, &application_start.to_le_bytes()),
+            response(Command::SendEof, &1_u32.to_le_bytes()),
+            response(
+                Command::RequestBlock,
+                &[application_start.to_le_bytes().as_slice(), &padded_block].concat(),
+            ),
+            response(Command::Complete, &[]),
+        ],
+        ..Default::default()
+    };
+    let mut backend =
+        KatapultAdapter::new(transport).expecting_application_start(application_start);
+
+    assert_eq!(backend.flash(&[0xab]).unwrap().padded_bytes, 64);
 }

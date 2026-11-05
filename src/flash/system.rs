@@ -209,6 +209,12 @@ impl fmt::Display for SystemFlashError {
             Self::KatapultOpen(error) => {
                 write!(f, "could not open the Katapult bootloader: {error}")
             }
+            Self::KatapultFlash(error @ KatapultFlashError::ApplicationStartMismatch { .. }) => {
+                write!(
+                    f,
+                    "refusing to flash: {error}; Katapult was asked to start the existing application"
+                )
+            }
             Self::KatapultFlash(_) => write!(
                 f,
                 "the Katapult bootloader rejected or could not verify the firmware transfer"

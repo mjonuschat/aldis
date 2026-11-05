@@ -92,6 +92,11 @@ impl KatapultTarget {
             block_size,
         })
     }
+
+    /// Where Katapult writes and starts the application.
+    pub fn application_start(&self) -> u32 {
+        self.application_start
+    }
 }
 
 /// Details of a Katapult upload and readback verification.
