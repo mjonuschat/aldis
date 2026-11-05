@@ -88,6 +88,7 @@ pub trait ReleasePort {
 pub struct GithubReleaseAdapter {
     agent: ureq::Agent,
     repo: String,
+    user_agent: &'static str,
 }
 
 impl GithubReleaseAdapter {
@@ -96,12 +97,30 @@ impl GithubReleaseAdapter {
         Self {
             agent: ureq::Agent::new_with_defaults(),
             repo: repo.into(),
+            user_agent: "aldis-self-update",
         }
     }
-}
 
-impl ReleasePort for GithubReleaseAdapter {
-    fn latest_release(&self) -> Result<LatestRelease, ReleaseError> {
+    /// Creates an adapter for `repo` that sends `user_agent` and gives up on any request that
+    /// takes longer than `timeout`, for lookups that must not hold up the command making them.
+    pub fn with_timeout(
+        repo: impl Into<String>,
+        user_agent: &'static str,
+        timeout: std::time::Duration,
+    ) -> Self {
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .build();
+        Self {
+            agent: config.into(),
+            repo: repo.into(),
+            user_agent,
+        }
+    }
+
+    /// The tag of the repository's latest release. GitHub never reports a pre-release or a draft
+    /// as the latest release.
+    pub fn latest_tag(&self) -> Result<String, ReleaseError> {
         #[derive(serde::Deserialize)]
         struct Response {
             tag_name: String,
@@ -113,32 +132,32 @@ impl ReleasePort for GithubReleaseAdapter {
                 "https://api.github.com/repos/{}/releases/latest",
                 self.repo
             ))
-            .header("User-Agent", "aldis-self-update")
+            .header("User-Agent", self.user_agent)
             .header("Accept", "application/vnd.github+json")
             .call()?
             .body_mut()
             .read_to_string()?;
         let parsed: Response = serde_json::from_str(&response)?;
-        Ok(LatestRelease {
-            tag: parsed.tag_name,
-        })
+        Ok(parsed.tag_name)
     }
 
-    fn download_checksums(&self, tag: &str) -> Result<String, ReleaseError> {
+    /// Downloads release `tag`'s text asset `asset`.
+    pub fn download_text(&self, tag: &str, asset: &str) -> Result<String, ReleaseError> {
         Ok(self
             .agent
-            .get(asset_url(&self.repo, tag, CHECKSUMS_FILE))
-            .header("User-Agent", "aldis-self-update")
+            .get(asset_url(&self.repo, tag, asset))
+            .header("User-Agent", self.user_agent)
             .call()?
             .body_mut()
             .read_to_string()?)
     }
 
-    fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
+    /// Downloads release `tag`'s asset `asset`, refusing one past [`MAX_ARCHIVE_BYTES`].
+    pub fn download_bytes(&self, tag: &str, asset: &str) -> Result<Vec<u8>, ReleaseError> {
         let mut response = self
             .agent
-            .get(asset_url(&self.repo, tag, &archive_name(platform)))
-            .header("User-Agent", "aldis-self-update")
+            .get(asset_url(&self.repo, tag, asset))
+            .header("User-Agent", self.user_agent)
             .call()?;
         // ureq limits encoded bytes before decompressing. Allow a size probe on the wire,
         // and independently bound the decoded stream that is buffered for verification.
@@ -149,6 +168,22 @@ impl ReleasePort for GithubReleaseAdapter {
                 .limit(MAX_ARCHIVE_BYTES + 1)
                 .reader(),
         )
+    }
+}
+
+impl ReleasePort for GithubReleaseAdapter {
+    fn latest_release(&self) -> Result<LatestRelease, ReleaseError> {
+        Ok(LatestRelease {
+            tag: self.latest_tag()?,
+        })
+    }
+
+    fn download_checksums(&self, tag: &str) -> Result<String, ReleaseError> {
+        self.download_text(tag, CHECKSUMS_FILE)
+    }
+
+    fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
+        self.download_bytes(tag, &archive_name(platform))
     }
 }
 
@@ -474,6 +509,7 @@ mod tests {
         let adapter = GithubReleaseAdapter {
             agent: config.into(),
             repo: "test/aldis".to_owned(),
+            user_agent: "aldis-self-update",
         };
         let result = adapter.download_archive("v0.4.1", "aarch64-linux");
         server.join().expect("download server");
