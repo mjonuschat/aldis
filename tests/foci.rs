@@ -237,6 +237,67 @@ fn hands_out_a_downloaded_image_only_after_checking_its_published_digest() {
 }
 
 #[test]
+fn reuses_a_found_release_and_retries_a_failed_lookup_sooner() {
+    use aldis::foci::{LOOKUP_RETRY, RELEASE_REUSE, ReleaseCache, ReleaseError};
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    let asked = Cell::new(0);
+    let found = |tag: &'static str| {
+        let asked = &asked;
+        move || {
+            asked.set(asked.get() + 1);
+            Ok(Release::from_tag(tag).unwrap())
+        }
+    };
+    let fails = || {
+        asked.set(asked.get() + 1);
+        Err(ReleaseError::InvalidTag("nightly".to_owned()))
+    };
+    let tag = |release: Option<Release>| release.map(|release| release.tag);
+    let start = Instant::now();
+    let mut cache = ReleaseCache::default();
+
+    assert_eq!(
+        tag(cache.get(start, found("v0.4.1"))),
+        Some("v0.4.1".to_owned())
+    );
+    assert_eq!(
+        tag(cache.get(
+            start + RELEASE_REUSE - Duration::from_secs(1),
+            found("v0.4.2")
+        )),
+        Some("v0.4.1".to_owned())
+    );
+    assert_eq!(asked.get(), 1, "a found release is reused");
+
+    let renewed = start + RELEASE_REUSE;
+    assert_eq!(
+        tag(cache.get(renewed, fails)),
+        Some("v0.4.1".to_owned()),
+        "a failed renewal keeps the release found before it"
+    );
+    assert_eq!(
+        tag(cache.get(
+            renewed + LOOKUP_RETRY - Duration::from_secs(1),
+            found("v0.4.2")
+        )),
+        Some("v0.4.1".to_owned())
+    );
+    assert_eq!(asked.get(), 2);
+    assert_eq!(
+        tag(cache.get(renewed + LOOKUP_RETRY, found("v0.4.2"))),
+        Some("v0.4.2".to_owned())
+    );
+    assert_eq!(asked.get(), 3);
+
+    let mut never_found = ReleaseCache::default();
+    assert_eq!(never_found.get(start, fails), None);
+    assert_eq!(never_found.get(start + Duration::from_secs(1), fails), None);
+    assert_eq!(asked.get(), 4, "a failed lookup is not repeated at once");
+}
+
+#[test]
 fn links_each_board_above_the_katapult_foci_documents_for_it() {
     assert_eq!(Board::Ouroboros.application_start(), 0x0802_0000);
     assert_eq!(Board::OpenFfboard.application_start(), 0x0800_8000);

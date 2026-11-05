@@ -259,10 +259,15 @@ pub struct GithubReleases(crate::self_update::GithubReleaseAdapter);
 
 impl GithubReleases {
     pub fn new() -> Self {
+        Self::with_timeout(RELEASE_TIMEOUT)
+    }
+
+    /// Releases fetched with requests that give up after `timeout` each.
+    pub fn with_timeout(timeout: std::time::Duration) -> Self {
         Self(crate::self_update::GithubReleaseAdapter::with_timeout(
             RELEASE_REPOSITORY,
             "aldis",
-            RELEASE_TIMEOUT,
+            timeout,
         ))
     }
 }
@@ -312,4 +317,77 @@ pub fn verify_firmware(
         .map_err(|_| ReleaseError::ChecksumInvalid(asset.to_owned()))?;
     crate::self_update::verify_checksum(asset, firmware, &expected)
         .map_err(|_| ReleaseError::ChecksumMismatch(asset.to_owned()))
+}
+
+/// The latest FOCI release, looked up only when `inventory` has a FOCI MCU to compare with it.
+pub fn release_for(
+    inventory: &crate::moonraker::McuInventory,
+    releases: &impl ReleasePort,
+) -> Result<Option<Release>, ReleaseError> {
+    if !inventory.mcus.iter().any(is_foci) {
+        return Ok(None);
+    }
+    releases.latest_release().map(Some)
+}
+
+/// How long a found release is reused before GitHub is asked again.
+pub const RELEASE_REUSE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// How long after a failed lookup GitHub is asked again.
+pub const LOOKUP_RETRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The latest FOCI release for a caller that needs it far more often than releases are
+/// published: GitHub is asked at most once per [`RELEASE_REUSE`], or [`LOOKUP_RETRY`] after a
+/// failed lookup, which also keeps unauthenticated requests well inside GitHub's rate limit.
+#[derive(Debug, Default)]
+pub struct ReleaseCache {
+    last: Option<CachedLookup>,
+}
+
+#[derive(Debug)]
+struct CachedLookup {
+    at: std::time::Instant,
+    release: Option<Release>,
+    failed: bool,
+}
+
+impl ReleaseCache {
+    /// The release `lookup` last found, asking it again only once the last answer is due for
+    /// renewal at `now`. A failed renewal is reported and keeps the release found before it.
+    pub fn get(
+        &mut self,
+        now: std::time::Instant,
+        lookup: impl FnOnce() -> Result<Release, ReleaseError>,
+    ) -> Option<Release> {
+        if let Some(last) = &self.last {
+            let reuse = if last.failed {
+                LOOKUP_RETRY
+            } else {
+                RELEASE_REUSE
+            };
+            if now.saturating_duration_since(last.at) < reuse {
+                return last.release.clone();
+            }
+        }
+        let last = match lookup() {
+            Ok(release) => CachedLookup {
+                at: now,
+                release: Some(release),
+                failed: false,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    "could not look up the latest FOCI release: {}",
+                    crate::error_chain(&error)
+                );
+                CachedLookup {
+                    at: now,
+                    release: self.last.take().and_then(|last| last.release),
+                    failed: true,
+                }
+            }
+        };
+        let release = last.release.clone();
+        self.last = Some(last);
+        release
+    }
 }
