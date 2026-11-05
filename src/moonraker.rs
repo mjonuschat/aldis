@@ -279,6 +279,15 @@ impl MoonrakerAdapter {
         }
     }
 
+    /// Asks Klipper to restart its host software and reconnect every MCU (`FIRMWARE_RESTART`).
+    pub fn firmware_restart(&self) -> Result<(), MoonrakerError> {
+        self.agent
+            .post(&self.endpoint("/printer/firmware_restart"))
+            .send_empty()
+            .map_err(map_http_error)?;
+        Ok(())
+    }
+
     pub fn discover_mcus(&self) -> Result<McuInventory, MoonrakerError> {
         let response = self
             .agent

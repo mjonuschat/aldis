@@ -160,10 +160,13 @@ pub(crate) struct RebootArgs {
     /// with its image.
     #[arg(long)]
     pub(crate) yes: bool,
-    /// beacon_klipper checkout to recover a Beacon from. Defaults to the checkout
-    /// ~/klipper/klippy/extras/beacon.py is linked from, then ~/beacon_klipper.
+    /// beacon_klipper checkout to recover a Beacon from. Defaults to the checkout Klipper's
+    /// klippy/extras/beacon.py is linked from, then ~/beacon_klipper.
     #[arg(long, env = "ALDIS_BEACON_SOURCE")]
     pub(crate) beacon_source: Option<std::path::PathBuf>,
+    /// The Moonraker of the Klipper to restart once a recovered Beacon is back.
+    #[command(flatten)]
+    pub(crate) moonraker: MoonrakerArgs,
 }
 
 #[derive(Debug, Args)]
