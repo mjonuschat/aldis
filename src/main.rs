@@ -157,6 +157,7 @@ mod tests {
                 version: None,
                 mcu: "stm32h723xx".to_owned(),
                 canbus_frequency_hz: None,
+                build_versions: None,
                 transport: None,
                 kconfig: "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\n".to_owned(),
             }],

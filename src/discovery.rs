@@ -227,6 +227,7 @@ mod tests {
             version: None,
             mcu: "test".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: None,
             kconfig: String::new(),
         }

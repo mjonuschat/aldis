@@ -68,6 +68,7 @@ fn refuses_a_reported_kconfig_that_make_would_evaluate() {
             version: Some("v0.13.0-770-gce7002bed".to_owned()),
             mcu: "stm32h723xx".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: None,
             kconfig: "CONFIG_MACH_STM32=y\nCROSS_PREFIX=/tmp/evil/\n".to_owned(),
         }],

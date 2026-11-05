@@ -383,6 +383,7 @@ mod tests {
             version: Some(version.to_owned()),
             mcu: "stm32h723xx".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: Some(McuTransport::Can {
                 interface: "can0".to_owned(),
                 uuid: 0xe781_9ed8_e7d3,

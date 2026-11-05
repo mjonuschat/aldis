@@ -185,6 +185,8 @@ pub struct IdentifyData {
     pub version: String,
     pub mcu: String,
     pub canbus_frequency_hz: Option<u64>,
+    /// The dictionary's `build_versions`, when it has one.
+    pub build_versions: Option<String>,
     pub kconfig: String,
 }
 
@@ -215,6 +217,7 @@ impl IdentifyData {
             canbus_frequency_hz: json
                 .pointer("/config/CANBUS_FREQUENCY")
                 .and_then(Value::as_u64),
+            build_versions: text("/build_versions"),
             kconfig: text("/kconfig").unwrap_or_default(),
         })
     }
@@ -352,6 +355,7 @@ pub fn resolve_unreported(inventory: &mut McuInventory, prober: &impl IdentifyPo
                 version: Some(data.version),
                 mcu: data.mcu,
                 canbus_frequency_hz: data.canbus_frequency_hz,
+                build_versions: data.build_versions,
                 transport: unreported.transport,
                 kconfig: data.kconfig,
             }),

@@ -190,6 +190,7 @@ mod tests {
                     version: Some("Beacon 2.1.0".to_owned()),
                     mcu: "beacon".to_owned(),
                     canbus_frequency_hz: None,
+                    build_versions: None,
                     transport: None,
                     kconfig: String::new(),
                 },
@@ -199,6 +200,7 @@ mod tests {
                     version: Some("v0.12.0-500-gdeadbeef".to_owned()),
                     mcu: "rp2040".to_owned(),
                     canbus_frequency_hz: None,
+                    build_versions: None,
                     transport: None,
                     kconfig: String::new(),
                 },
@@ -341,6 +343,7 @@ mod tests {
             version: Some(version.to_owned()),
             mcu: "test".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: serial.map(|device| McuTransport::Serial {
                 device: device.to_owned(),
             }),

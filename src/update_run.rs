@@ -762,6 +762,7 @@ mod tests {
                 version: "v2".to_owned(),
                 mcu: "test".to_owned(),
                 canbus_frequency_hz: None,
+                build_versions: None,
                 kconfig: "CONFIG_TEST=y\n".to_owned(),
             }),
         )]));
@@ -895,6 +896,7 @@ mod tests {
             version: Some(version.to_owned()),
             mcu: "test".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: serial.map(|device| McuTransport::Serial {
                 device: device.to_owned(),
             }),

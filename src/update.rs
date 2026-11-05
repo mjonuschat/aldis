@@ -358,6 +358,7 @@ mod tests {
             version: Some(version.to_owned()),
             mcu: "test".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: serial.map(|device| aldis::moonraker::McuTransport::Serial {
                 device: device.to_owned(),
             }),

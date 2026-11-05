@@ -81,6 +81,7 @@ fn decodes_the_compressed_dictionary() {
     assert_eq!(data.mcu, "samd21g18a");
     assert_eq!(data.kconfig, "CONFIG_MACH_ATSAMD=y\n");
     assert_eq!(data.canbus_frequency_hz, None);
+    assert_eq!(data.build_versions.as_deref(), Some("gcc: 12"));
     assert_eq!(data.app, None);
 }
 

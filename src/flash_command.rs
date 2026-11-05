@@ -200,6 +200,7 @@ mod tests {
                 version: Some("v0.13.0-770-gce7002bed".to_owned()),
                 mcu: "samd21g18a".to_owned(),
                 canbus_frequency_hz: None,
+                build_versions: None,
                 transport: None,
                 kconfig: kconfig.to_owned(),
             }],

@@ -11,6 +11,7 @@ fn mcu(app: Option<&str>, version: Option<&str>, kconfig: &str) -> Mcu {
         version: version.map(str::to_owned),
         mcu: "rp2040".to_owned(),
         canbus_frequency_hz: None,
+        build_versions: None,
         transport: None,
         kconfig: kconfig.to_owned(),
     }

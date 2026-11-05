@@ -9,6 +9,7 @@ fn mcu(name: &str, transport: McuTransport, kconfig: &str) -> Mcu {
         version: Some("v1".to_owned()),
         mcu: "stm32".to_owned(),
         canbus_frequency_hz: None,
+        build_versions: None,
         transport: Some(transport),
         kconfig: kconfig.to_owned(),
     }

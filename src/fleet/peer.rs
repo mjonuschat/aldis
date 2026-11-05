@@ -144,6 +144,7 @@ mod tests {
             version: Some("v1".to_owned()),
             mcu: "stm32".to_owned(),
             canbus_frequency_hz: None,
+            build_versions: None,
             transport: Some(McuTransport::Can {
                 interface: interface.to_owned(),
                 uuid,

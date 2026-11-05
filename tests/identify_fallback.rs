@@ -57,6 +57,7 @@ fn identifies_serial_mcus_and_never_probes_can() {
                 version: "v0.13.0-770-gce7002bed".to_owned(),
                 mcu: "samd21g18a".to_owned(),
                 canbus_frequency_hz: None,
+                build_versions: None,
                 kconfig: "CONFIG_MACH_ATSAMD=y\n".to_owned(),
             }),
         ),

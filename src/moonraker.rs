@@ -44,6 +44,9 @@ pub struct Mcu {
     pub version: Option<String>,
     pub mcu: String,
     pub canbus_frequency_hz: Option<u64>,
+    /// The firmware's `build_versions`, which Klipper's own builds fill with toolchain versions
+    /// and FOCI with its build features.
+    pub build_versions: Option<String>,
     /// The configured host transport, if Moonraker exposed one for this MCU.
     pub transport: Option<McuTransport>,
     pub kconfig: String,
@@ -528,6 +531,7 @@ pub fn parse_inventory(response: &str) -> Result<McuInventory, MoonrakerError> {
                 .mcu_constants
                 .get("CANBUS_FREQUENCY")
                 .and_then(Value::as_u64),
+            build_versions: status.mcu_build_versions,
             transport,
             // Firmware not built by aldis (e.g. Beacon) has no Kconfig; `classify_mcu` treats an
             // empty one as `Unsupported` rather than failing discovery.
@@ -696,6 +700,8 @@ struct McuStatus {
     app: Option<String>,
     #[serde(default)]
     mcu_version: Option<String>,
+    #[serde(default)]
+    mcu_build_versions: Option<String>,
     #[serde(default)]
     mcu_constants: BTreeMap<String, Value>,
     #[serde(default)]

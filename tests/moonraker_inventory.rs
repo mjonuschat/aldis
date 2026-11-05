@@ -104,6 +104,50 @@ fn accepts_an_mcu_object_with_no_kconfig_as_unsupported_rather_than_failing() {
 }
 
 #[test]
+fn reads_the_build_versions_an_mcu_reports() {
+    let response = r#"{
+      "result": {
+        "status": {
+          "mcu ouroboros": {
+            "app": "FOCI",
+            "mcu_version": "v0.4.1-0-ga82de21d",
+            "mcu_build_versions": "rust=1.98.1 features=none board=a82de21d",
+            "mcu_constants": {
+              "MCU": "stm32h723xx"
+            }
+          },
+          "mcu": {
+            "app": "Klipper",
+            "mcu_version": "v0.13.0-770-gce7002bed",
+            "mcu_constants": {
+              "MCU": "stm32f429xx"
+            },
+            "mcu_kconfig": "CONFIG_MACH_STM32=y\n"
+          },
+          "configfile": {
+            "settings": {}
+          }
+        }
+      }
+    }"#;
+
+    let inventory = parse_inventory(response).expect("fixture should parse");
+
+    let build_versions = |name: &str| {
+        inventory
+            .mcus
+            .iter()
+            .find(|mcu| mcu.name == name)
+            .and_then(|mcu| mcu.build_versions.clone())
+    };
+    assert_eq!(
+        build_versions("mcu ouroboros").as_deref(),
+        Some("rust=1.98.1 features=none board=a82de21d")
+    );
+    assert_eq!(build_versions("mcu"), None);
+}
+
+#[test]
 fn keeps_empty_mcu_objects_as_unreported_with_their_configured_transport() {
     let response = r#"{
       "result": {
