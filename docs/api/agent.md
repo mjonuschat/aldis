@@ -92,10 +92,10 @@ first one that applies wins):
 
 | State | Meaning | Actions |
 | --- | --- | --- |
-| `current` | Matches the running host, or for FOCI, the latest FOCI release | none |
-| `update_available` | Differs from the running host, or for FOCI, is behind the latest FOCI release | `update` |
-| `indeterminate` | Revision cannot be compared, including a FOCI development build and a FOCI MCU while the latest release could not be looked up | none |
-| `externally_managed` | Non-Klipper application (e.g. Beacon), or a FOCI build no release matches (the message says why) | none |
+| `current` | Matches the running host, or for FOCI, the latest FOCI release, or for a Beacon, its image in the `beacon_klipper` checkout | none |
+| `update_available` | Differs from the running host, or for FOCI, is behind the latest FOCI release, or for a Beacon, differs from its image | `update` |
+| `indeterminate` | Revision cannot be compared, including a FOCI development build, a FOCI MCU while the latest release could not be looked up, and a Beacon without a known image (the message says why) | none |
+| `externally_managed` | Non-Klipper application (e.g. Cartographer), a Beacon whose version cannot be compared, or a FOCI build no release matches (the message says why) | none |
 | `unsupported_legacy` | No embedded kconfig | none |
 | `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD51); the message names the family | none |
 | `not_identified` | Empty object; fallback not attempted (CAN, host MCU, or port held) | none |
@@ -104,6 +104,11 @@ first one that applies wins):
 FOCI MCUs are compared with the latest FOCI release on GitHub, which the agent looks up at most
 once an hour and only while a FOCI MCU is configured. A FOCI update downloads the release image
 instead of building, so its run reports `downloading firmware` and `downloaded firmware`.
+
+Beacons are compared with the image for their revision in the `beacon_klipper` checkout. A Beacon
+newer than that image is `indeterminate` with no action; the agent never downgrades one. A Beacon
+update reads the image instead of building, so its run reports `reading firmware image` and
+`read firmware image`.
 
 Flashing a USB-CAN bridge resets its CAN bus, so the agent refuses while another printer on that
 bus is busy, starting up, or cannot be checked. The bridge MCU stays `update_available` but has

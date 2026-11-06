@@ -141,6 +141,7 @@ flashes only after it has. Requirements:
 Besides Klipper and Kalico, `aldis` updates:
 
 - [FOCI](https://github.com/foci-rs/foci)
+- [Beacon](https://github.com/beacon3d/beacon_klipper)
 
 ## License
 
