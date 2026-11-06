@@ -10,9 +10,7 @@ use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use aldis::config::{FleetConfig, instance_urls};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
-use aldis::eligibility::{
-    CheckoutRevision, TargetVersions, UpdateSelection, is_selected, removes_calibration,
-};
+use aldis::eligibility::{CheckoutRevision, TargetVersions, UpdateSelection, is_selected};
 use aldis::fleet::peer::{check_bridge, peers_excluding};
 use aldis::fleet::system::{other_urls, probe_peer};
 use aldis::logging::{self, LoggingCommandAdapter};
@@ -191,16 +189,9 @@ fn run_update(
         LoggingCommandAdapter::new(SystemCommandAdapter),
         unit,
     );
-    let recalibrate: Vec<String> = inventory
-        .mcus
-        .iter()
-        .filter(|mcu| offered.contains(&mcu.name) && removes_calibration(mcu))
-        .map(|mcu| mcu.name.clone())
-        .collect();
     let mut hooks = CliHooks {
         ui,
         auto: arguments.auto,
-        recalibrate: &recalibrate,
     };
     let outcome = aldis::update_run::run_updates(
         &coordinator,
@@ -228,39 +219,13 @@ fn run_update(
         mcu_count_label(outcome.updated.len()),
         run_log_path.display()
     ));
-    for name in outcome
-        .updated
-        .iter()
-        .filter(|name| recalibrate.contains(name))
-    {
-        ui.block(&format!(
-            "\nRecalibrate {name} before printing: Cartographer's plugin removed the scan and \
-             touch models made with its old firmware.\n"
-        ));
-    }
     ui.action("run completed successfully");
     Ok(())
-}
-
-/// The approval question for `name`, which for an MCU in `recalibrate` says what updating it
-/// costs.
-fn approval_question(name: &str, current: &str, next: &str, recalibrate: &[String]) -> String {
-    let question = format!("Update {name} from {current} to {next}?");
-    if recalibrate.iter().any(|candidate| candidate == name) {
-        format!(
-            "{question} Cartographer's plugin then removes its scan and touch models, so it must \
-             be recalibrated before printing."
-        )
-    } else {
-        question
-    }
 }
 
 struct CliHooks<'a> {
     ui: &'a mut UpdateUi,
     auto: bool,
-    /// MCUs whose update removes their calibration.
-    recalibrate: &'a [String],
 }
 
 impl RunHooks for CliHooks<'_> {
@@ -271,7 +236,7 @@ impl RunHooks for CliHooks<'_> {
             true
         } else {
             self.ui
-                .confirm(&approval_question(name, current, next, self.recalibrate))
+                .confirm(&format!("Update {name} from {current} to {next}?"))
         }
     }
 
@@ -338,45 +303,7 @@ fn confirm_pull(ui: &mut UpdateUi) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_question, mcu_count_label, selection_for, unknown_targets};
-
-    #[test]
-    fn warns_in_the_approval_question_when_an_update_removes_calibration() {
-        let recalibrate = ["mcu cartographer".to_owned()];
-
-        assert_eq!(
-            approval_question("mcu", "v1", "v2", &recalibrate),
-            "Update mcu from v1 to v2?"
-        );
-        let question = approval_question(
-            "mcu cartographer",
-            "CARTOGRAPHER V4 6.0.0",
-            "CARTOGRAPHER V4 6.1.0",
-            &recalibrate,
-        );
-        assert!(
-            question.starts_with(
-                "Update mcu cartographer from CARTOGRAPHER V4 6.0.0 to CARTOGRAPHER V4 6.1.0? "
-            ),
-            "{question}"
-        );
-        assert!(question.contains("must be recalibrated"), "{question}");
-    }
-
-    #[test]
-    fn words_the_calibration_prompt_exactly() {
-        assert_eq!(
-            approval_question(
-                "mcu cartographer",
-                "CARTOGRAPHER V4 6.0.0",
-                "CARTOGRAPHER V4 6.1.0",
-                &["mcu cartographer".to_owned()]
-            ),
-            "Update mcu cartographer from CARTOGRAPHER V4 6.0.0 to CARTOGRAPHER V4 6.1.0? \
-             Cartographer's plugin then removes its scan and touch models, so it must be \
-             recalibrated before printing."
-        );
-    }
+    use super::{mcu_count_label, selection_for, unknown_targets};
 
     #[test]
     fn without_a_config_there_are_no_peers_and_nothing_to_check() {

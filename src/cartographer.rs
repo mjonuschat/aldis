@@ -9,9 +9,6 @@
 //! its boot pins bridged by hand. So the manifest only nominates candidates: each image is matched
 //! to the probe by the identify dictionary embedded in the image itself, which names its version,
 //! build, MCU and CAN bitrate exactly as the probe will report them once it runs.
-//!
-//! Cartographer's plugin removes every scan and touch model calibrated under another firmware
-//! version, so every update means recalibrating the probe, which the user is told.
 
 use std::collections::BTreeMap;
 use std::io::Read;

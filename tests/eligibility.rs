@@ -652,12 +652,6 @@ fn selects_a_cartographer_only_with_a_known_image() {
         &TargetVersions::indeterminate(),
         &UpdateSelection::All
     ));
-    assert!(aldis::eligibility::removes_calibration(&outdated));
-    assert!(!aldis::eligibility::removes_calibration(&mcu(
-        Some("Klipper"),
-        Some("v0.13.0-770-gce7002bed"),
-        "CONFIG=x\n"
-    )));
 }
 
 #[test]

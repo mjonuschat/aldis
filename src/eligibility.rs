@@ -189,12 +189,6 @@ pub enum UpdateSelection {
     All,
 }
 
-/// Whether updating `mcu` removes its calibration, which the user must then redo: Cartographer's
-/// plugin removes every scan and touch model made with another firmware version.
-pub fn removes_calibration(mcu: &Mcu) -> bool {
-    crate::cartographer::is_cartographer(mcu)
-}
-
 /// How an MCU's running Klipper revision compares with the checkout's it would be built from.
 /// The same commit is current, whatever the length of its hash. Otherwise an older one is an
 /// update, a newer one cannot be placed relative to the checkout and is not replaced by an

@@ -110,8 +110,7 @@ newer than that image is `indeterminate` with no action; the agent never downgra
 update reads the image instead of building, so its run reports `reading firmware image` and
 `read firmware image`.
 
-Cartographers are compared with the image picked for them from `~/cartographer_firmware`. Updating
-one discards its calibration, and its `message` says it must be recalibrated afterwards.
+Cartographers are compared with the image picked for them from `~/cartographer_firmware`.
 
 Flashing a USB-CAN bridge resets its CAN bus, so the agent refuses while another printer on that
 bus is busy, starting up, or cannot be checked. The bridge MCU stays `update_available` but has

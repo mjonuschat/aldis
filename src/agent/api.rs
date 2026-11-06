@@ -279,7 +279,7 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
 }
 
 /// The state and message for a prebuilt-firmware MCU: current, behind its target, or why it
-/// cannot be compared. Updating a Cartographer removes its calibration, so its message says so.
+/// cannot be compared.
 fn assess_prebuilt(
     firmware: &Running,
     revision: Option<RevisionStatus>,
@@ -338,7 +338,7 @@ fn assess_prebuilt(
             Some(Ok(target)) if update_required => (
                 McuState::UpdateAvailable,
                 format!(
-                    "running {running}, {} holds {}; it must be recalibrated after the update",
+                    "running {running}, {} holds {}",
                     target.path.display(),
                     target.reported
                 ),
@@ -791,7 +791,7 @@ mod tests {
                 "beacon_new | Indeterminate | [] | running Beacon 2.2.0, newer than Beacon 2.1.0 in its beacon_klipper checkout",
                 "beacon_none | Indeterminate | [] | running Beacon 2.0.1; no Beacon firmware image is known: no beacon_klipper checkout was found",
                 "beacon_beta | ExternallyManaged | [] | managed by Beacon",
-                "carto_old | UpdateAvailable | [Update] | running CARTOGRAPHER V4 6.0.0, /home/pi/cartographer_firmware/firmware/x.bin holds CARTOGRAPHER V4 6.1.0; it must be recalibrated after the update",
+                "carto_old | UpdateAvailable | [Update] | running CARTOGRAPHER V4 6.0.0, /home/pi/cartographer_firmware/firmware/x.bin holds CARTOGRAPHER V4 6.1.0",
                 "carto_cur | Current | [] | running CARTOGRAPHER V4 6.1.0",
                 "carto_new | Indeterminate | [] | running CARTOGRAPHER V4 6.2.0, newer than CARTOGRAPHER V4 6.1.0 in its cartographer_firmware clone",
                 "carto_none | Indeterminate | [] | running CARTOGRAPHER V4 6.0.0; no Cartographer firmware image is known: no cartographer_firmware clone was found",
@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn offers_a_cartographer_update_and_says_it_needs_recalibrating() {
+    fn offers_a_cartographer_update_against_its_image() {
         let entry = cartographer_entry(&with_cartographer(
             ready_snapshot(),
             Some("CARTOGRAPHER V4 6.1.0"),
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(
             entry.message,
             "running CARTOGRAPHER V4 6.0.0, /home/pi/cartographer_firmware/firmware/x.bin holds \
-             CARTOGRAPHER V4 6.1.0; it must be recalibrated after the update"
+             CARTOGRAPHER V4 6.1.0"
         );
     }
 

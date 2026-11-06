@@ -24,14 +24,6 @@ pub enum Vendor {
     Cartographer,
 }
 
-impl Vendor {
-    /// Whether updating this vendor's firmware removes the MCU's calibration, so the user must
-    /// recalibrate it before printing.
-    pub fn removes_calibration(self) -> bool {
-        matches!(self, Self::Cartographer)
-    }
-}
-
 /// The MCU a request was prepared for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Destination {

@@ -140,7 +140,6 @@ fn takes_only_an_application_image_for_a_cartographers_own_mcu_and_link() {
     .unwrap()
     .expect("a suitable image");
     assert_eq!(request.vendor(), Vendor::Cartographer);
-    assert!(request.vendor().removes_calibration());
     assert!(matches!(
         request.protocol(),
         Protocol::Katapult {
@@ -160,7 +159,6 @@ fn sends_foci_to_its_boards_katapult_over_usb_only() {
         .unwrap()
         .expect("FOCI takes any image");
     assert_eq!(request.vendor(), Vendor::Foci);
-    assert!(!request.vendor().removes_calibration());
     assert!(matches!(
         request.protocol(),
         Protocol::Katapult {

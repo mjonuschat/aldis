@@ -68,9 +68,6 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
             .inspect_err(|error| ui.action(&format!("error: {error:#}")))?,
         None => None,
     };
-    let cartographer = prebuilt
-        .as_ref()
-        .is_some_and(|request| request.vendor().removes_calibration());
 
     crate::update::bridge_refusal(
         arguments.config.as_deref(),
@@ -98,7 +95,6 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
             &arguments.target,
             &arguments.firmware,
             firmware.len(),
-            cartographer,
         ))
     {
         ui.block("\nflash cancelled\n");
@@ -195,35 +191,15 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         return Err(anyhow::anyhow!(message));
     }
     ui.finish_success("Klipper ready");
-    if cartographer {
-        ui.block(&format!(
-            "\nRecalibrate {} before printing: Cartographer's plugin removes the scan and touch \
-             models made with other firmware.\n",
-            arguments.target
-        ));
-    }
     ui.action("run completed successfully");
     Ok(())
 }
 
-fn confirmation_prompt(
-    target: &str,
-    firmware: &Path,
-    byte_count: usize,
-    removes_calibration: bool,
-) -> String {
-    let prompt = format!(
+fn confirmation_prompt(target: &str, firmware: &Path, byte_count: usize) -> String {
+    format!(
         "Flash {} ({byte_count} bytes) to {target}? This skips Klipper's Kconfig validation.",
         firmware.display()
-    );
-    if removes_calibration {
-        format!(
-            "{prompt} Cartographer's plugin then removes its scan and touch models, so it must be \
-             recalibrated before printing."
-        )
-    } else {
-        prompt
-    }
+    )
 }
 
 fn flash_refusal(inventory: &McuInventory, target: &str) -> Option<String> {
@@ -299,23 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn words_the_flash_confirmation_exactly() {
-        assert_eq!(
-            confirmation_prompt("mcu toolhead", &PathBuf::from("custom.bin"), 4096, false),
-            "Flash custom.bin (4096 bytes) to mcu toolhead? This skips Klipper's Kconfig \
-             validation."
-        );
-        assert_eq!(
-            confirmation_prompt("mcu probe", &PathBuf::from("usb_full.bin"), 8192, true),
-            "Flash usb_full.bin (8192 bytes) to mcu probe? This skips Klipper's Kconfig \
-             validation. Cartographer's plugin then removes its scan and touch models, so it \
-             must be recalibrated before printing."
-        );
-    }
-
-    #[test]
     fn names_the_firmware_file_target_and_byte_count_in_the_confirmation_prompt() {
-        let prompt = confirmation_prompt("mcu toolhead", &PathBuf::from("custom.bin"), 4096, false);
+        let prompt = confirmation_prompt("mcu toolhead", &PathBuf::from("custom.bin"), 4096);
 
         assert!(prompt.contains("custom.bin"));
         assert!(prompt.contains("4096 bytes"));
