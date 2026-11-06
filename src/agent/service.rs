@@ -472,6 +472,8 @@ impl<B: AgentBackend> RunHooks for AgentHooks<'_, B> {
     fn progress(&mut self, _: &str, progress: UpdateProgress) {
         let (phase, message) = match progress {
             UpdateProgress::StoppingKlipper => (Phase::StopKlipper, "stopping Klipper"),
+            UpdateProgress::DownloadingFirmware => (Phase::Build, "downloading firmware"),
+            UpdateProgress::FirmwareDownloaded => (Phase::Build, "downloaded firmware"),
             UpdateProgress::ConfiguringFirmware => (Phase::Build, "configuring firmware"),
             UpdateProgress::CompilingFirmware => (Phase::Build, "compiling firmware"),
             UpdateProgress::EnteringBootloader => (Phase::EnterBootloader, "entering bootloader"),

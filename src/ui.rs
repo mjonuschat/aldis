@@ -16,6 +16,8 @@ pub(crate) struct UpdateUi {
     color: bool,
     interactive: bool,
     active: Option<ActiveProgress>,
+    /// Whether the MCU being updated has its firmware built rather than downloaded.
+    building: bool,
 }
 
 struct ActiveProgress {
@@ -35,6 +37,7 @@ impl UpdateUi {
             color: colors_enabled(color_mode, interactive),
             interactive: interactive && !no_progress,
             active: None,
+            building: true,
         }
     }
 
@@ -140,8 +143,14 @@ impl UpdateUi {
 
     pub(crate) fn progress(&mut self, progress: UpdateProgress) {
         match progress {
+            UpdateProgress::DownloadingFirmware => {
+                self.building = false;
+                self.begin("downloading firmware");
+            }
+            UpdateProgress::FirmwareDownloaded => self.finish_success("downloaded firmware"),
             UpdateProgress::StoppingKlipper => self.begin("stopping Klipper"),
             UpdateProgress::ConfiguringFirmware => {
+                self.building = true;
                 self.finish_success("stopped Klipper");
                 self.begin("configuring firmware");
             }
@@ -150,15 +159,25 @@ impl UpdateUi {
                 self.begin("compiling firmware");
             }
             UpdateProgress::EnteringBootloader => {
-                self.finish_success("compiled firmware");
+                self.finish_success(self.finished_before_flash());
                 self.begin("entering bootloader");
             }
             UpdateProgress::BootloaderReady => self.finish_success("bootloader ready"),
             UpdateProgress::StartingFlash => self.begin("flashing firmware"),
             UpdateProgress::Installing => {
-                self.finish_success("compiled firmware");
+                self.finish_success(self.finished_before_flash());
                 self.begin("installing host MCU");
             }
+        }
+    }
+
+    /// What the step still running when the bootloader is entered did: a build compiles
+    /// firmware last, a downloaded image's flash only stops Klipper first.
+    fn finished_before_flash(&self) -> &'static str {
+        if self.building {
+            "compiled firmware"
+        } else {
+            "stopped Klipper"
         }
     }
 
@@ -175,8 +194,11 @@ impl UpdateUi {
                 self.finish_success("stopped Klipper");
                 self.begin("installing host MCU");
             }
-            UpdateProgress::ConfiguringFirmware | UpdateProgress::CompilingFirmware => {
-                unreachable!("flashing without a build never reports build phases")
+            UpdateProgress::ConfiguringFirmware
+            | UpdateProgress::CompilingFirmware
+            | UpdateProgress::DownloadingFirmware
+            | UpdateProgress::FirmwareDownloaded => {
+                unreachable!("flashing a firmware file never reports build or download phases")
             }
         }
     }
