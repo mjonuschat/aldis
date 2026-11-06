@@ -162,7 +162,7 @@ fn names_release_assets_as_the_release_workflow_does() {
 }
 
 #[test]
-fn compares_only_release_builds_against_a_release() {
+fn compares_a_foci_build_with_a_release() {
     let release = Release::from_tag("v0.4.1").unwrap();
 
     assert_eq!(
@@ -179,7 +179,17 @@ fn compares_only_release_builds_against_a_release() {
     );
     assert_eq!(
         compare(&version("v0.5.0-0-gabcdef12"), &release),
-        RevisionStatus::Indeterminate
+        RevisionStatus::Newer
+    );
+    assert_eq!(
+        compare(&version("v0.4.1-16-g549ad3f8"), &release),
+        RevisionStatus::Newer,
+        "commits past the release's own tag are newer than it"
+    );
+    assert_eq!(
+        compare(&version("v0.4.1-0-gabcdef12-dirty"), &release),
+        RevisionStatus::Indeterminate,
+        "a modified build of the release cannot be placed"
     );
     assert_eq!(
         compare(&version("v0.4.0-7-gabcdef12"), &release),

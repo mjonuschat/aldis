@@ -142,7 +142,7 @@ fn supported_label(
 
 fn update_label(revision: Option<RevisionStatus>) -> String {
     match revision {
-        Some(RevisionStatus::Current) => "no".to_owned(),
+        Some(RevisionStatus::Current | RevisionStatus::Newer) => "no".to_owned(),
         Some(RevisionStatus::UpdateRequired) => "yes".to_owned(),
         Some(RevisionStatus::Indeterminate) => "unknown".to_owned(),
         None => "n/a".to_owned(),

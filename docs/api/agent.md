@@ -92,9 +92,9 @@ first one that applies wins):
 
 | State | Meaning | Actions |
 | --- | --- | --- |
-| `current` | Matches the running host, or for FOCI, the latest FOCI release, or for a Beacon or Cartographer, its image | none |
-| `update_available` | Differs from the running host, or for FOCI, is behind the latest FOCI release, or for a Beacon, differs from its image, or for a Cartographer, is behind its image | `update` |
-| `indeterminate` | Revision cannot be compared, including a FOCI development build, a FOCI MCU while the latest release could not be looked up, a Beacon or Cartographer without a known image, and a Cartographer newer than its image (the message says why) | none |
+| `current` | Matches the running host, or for FOCI, the latest FOCI release, or for a Beacon or Cartographer, its image; also newer than it, which no update replaces (the message says so) | none |
+| `update_available` | Older than the running host (or another commit of it), or for FOCI, the latest FOCI release, or for a Beacon or Cartographer, its image | `update` |
+| `indeterminate` | Revision cannot be compared, including a FOCI development build, a FOCI MCU while the latest release could not be looked up, and a Beacon or Cartographer without a known image (the message says why) | none |
 | `externally_managed` | Non-Klipper application, a Beacon whose version cannot be compared, a FOCI build no release matches, or a Cartographer no image can be matched to (the message says why) | none |
 | `unsupported_legacy` | No embedded kconfig | none |
 | `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD51); the message names the family | none |

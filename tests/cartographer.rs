@@ -655,7 +655,7 @@ fn does_not_downgrade_a_probe_newer_than_its_image() {
     );
     assert_eq!(
         compare(&running("CARTOGRAPHER v4 6.2.0"), &target),
-        RevisionStatus::Indeterminate
+        RevisionStatus::Newer
     );
 }
 

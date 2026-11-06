@@ -5,7 +5,7 @@
 //! aldis cannot build it. It can instead replace a release build with the same board's and
 //! flavor's build from a newer FOCI release.
 
-use crate::eligibility::{RevisionStatus, compare_versions};
+use crate::eligibility::RevisionStatus;
 use crate::moonraker::Mcu;
 
 /// The `app` FOCI reports in its identify dictionary.
@@ -220,10 +220,16 @@ impl Release {
 /// How a running build compares with `release`. Only release builds are compared: a local or
 /// development build cannot be placed relative to a release, and neither can one newer than it.
 pub fn compare(running: &Version, release: &Release) -> RevisionStatus {
-    if !running.is_release_build() {
-        return RevisionStatus::Indeterminate;
+    match running.package.cmp(&release.version) {
+        std::cmp::Ordering::Greater => RevisionStatus::Newer,
+        // Commits after the release's own tag are work past it.
+        std::cmp::Ordering::Equal if running.commits > 0 => RevisionStatus::Newer,
+        std::cmp::Ordering::Equal if running.dirty => RevisionStatus::Indeterminate,
+        std::cmp::Ordering::Equal => RevisionStatus::Current,
+        std::cmp::Ordering::Less if running.is_release_build() => RevisionStatus::UpdateRequired,
+        // A development build behind the release cannot be placed relative to it.
+        std::cmp::Ordering::Less => RevisionStatus::Indeterminate,
     }
-    compare_versions(&running.package, &release.version)
 }
 
 /// The repository FOCI publishes its releases from.

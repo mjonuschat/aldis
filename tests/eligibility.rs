@@ -500,8 +500,8 @@ fn compares_a_beacon_with_the_image_for_its_revision() {
     );
     assert_eq!(
         assess_mcu(&running, &beacon_target(0x2000)).revision,
-        Some(RevisionStatus::Indeterminate),
-        "an older image is never an update"
+        Some(RevisionStatus::Newer),
+        "a newer Beacon needs no update"
     );
     let unknown = TargetVersions::klipper(CheckoutRevision::Known("Beacon 2.0.1".to_owned()));
     assert_eq!(
@@ -607,7 +607,7 @@ fn compares_a_cartographer_with_its_image_and_never_downgrades_it() {
             &versions
         )
         .revision,
-        Some(RevisionStatus::Indeterminate)
+        Some(RevisionStatus::Newer)
     );
     assert_eq!(
         assess_mcu(
@@ -749,8 +749,8 @@ fn compares_any_ordered_version_the_same_way() {
     assert_eq!(compare_versions(&2, &2), RevisionStatus::Current);
     assert_eq!(
         compare_versions(&3, &2),
-        RevisionStatus::Indeterminate,
-        "a newer running version cannot be placed relative to its target"
+        RevisionStatus::Newer,
+        "a newer running version needs no update"
     );
 }
 
@@ -823,12 +823,12 @@ fn compares_a_klipper_mcu_with_the_checkout_it_is_built_from() {
     );
     assert_eq!(
         at(checkout, "v0.13.0-901-g1111111"),
-        Some(RevisionStatus::Indeterminate),
-        "a newer MCU is not replaced by an update"
+        Some(RevisionStatus::Newer),
+        "a newer MCU needs no update, and is not replaced by one"
     );
     assert_eq!(
         at(checkout, "v0.13.1-0-g1111111"),
-        Some(RevisionStatus::Indeterminate)
+        Some(RevisionStatus::Newer)
     );
     assert_eq!(
         at(checkout, "v0.13.0-900-g1111111"),

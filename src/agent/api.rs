@@ -301,12 +301,9 @@ fn assess_prebuilt(
                     crate::beacon::reported(&target.version)
                 ),
             ),
-            Some(Ok(target)) => (
+            Some(Ok(_)) => (
                 McuState::Indeterminate,
-                format!(
-                    "running {running}, newer than {} in its beacon_klipper checkout",
-                    crate::beacon::reported(&target.version)
-                ),
+                format!("cannot compare running {running} with its Beacon image"),
             ),
             Some(Err(reason)) => (
                 McuState::Indeterminate,
@@ -343,12 +340,9 @@ fn assess_prebuilt(
                     target.reported
                 ),
             ),
-            Some(Ok(target)) => (
+            Some(Ok(_)) => (
                 McuState::Indeterminate,
-                format!(
-                    "running {running}, newer than {} in its cartographer_firmware clone",
-                    target.reported
-                ),
+                format!("cannot compare running {running} with its Cartographer image"),
             ),
             Some(Err(reason)) => (
                 McuState::Indeterminate,
@@ -380,6 +374,14 @@ pub fn assess(snapshot: &Snapshot) -> StatusBody {
             let running = mcu.version.as_deref().unwrap_or("unknown");
             let status = assess_mcu(mcu, &target);
             let (state, message) = match (&status.eligibility, status.revision) {
+                // Newer than its target: nothing to update.
+                (_, Some(RevisionStatus::Newer)) => (
+                    McuState::Current,
+                    match crate::eligibility::newer_than(mcu, &target) {
+                        Some(description) => format!("running {running}, newer than {description}"),
+                        None => format!("running {running}"),
+                    },
+                ),
                 (Eligibility::Eligible, Some(RevisionStatus::Current)) => {
                     (McuState::Current, format!("running {running}"))
                 }
@@ -660,6 +662,13 @@ mod tests {
             prod,
         );
         add(
+            "mcu foci_ahead",
+            "FOCI",
+            "v0.4.1-16-g549ad3f8",
+            "stm32h723xx",
+            prod,
+        );
+        add(
             "mcu foci_flavor",
             "FOCI",
             "v0.4.0-0-g0fb68e1b",
@@ -785,15 +794,16 @@ mod tests {
                 "foci_old | UpdateAvailable | [Update] | running v0.4.0-0-g0fb68e1b, FOCI release is v0.4.1",
                 "foci_cur | Current | [] | running v0.4.1-0-g0fb68e1b",
                 "foci_dev | Indeterminate | [] | cannot compare running v0.4.0-3-gabcdef12 with FOCI release v0.4.1",
+                "foci_ahead | Current | [] | running v0.4.1-16-g549ad3f8, newer than the latest FOCI release, v0.4.1",
                 "foci_flavor | ExternallyManaged | [] | FOCI build features \"dev\" match no release flavor",
                 "beacon_old | UpdateAvailable | [Update] | running Beacon 2.0.1, /home/pi/beacon_klipper/firmware/revh.dfu holds Beacon 2.1.0",
                 "beacon_cur | Current | [] | running Beacon 2.1.0",
-                "beacon_new | Indeterminate | [] | running Beacon 2.2.0, newer than Beacon 2.1.0 in its beacon_klipper checkout",
+                "beacon_new | Current | [] | running Beacon 2.2.0, newer than the Beacon 2.1.0 in its beacon_klipper checkout",
                 "beacon_none | Indeterminate | [] | running Beacon 2.0.1; no Beacon firmware image is known: no beacon_klipper checkout was found",
                 "beacon_beta | ExternallyManaged | [] | managed by Beacon",
                 "carto_old | UpdateAvailable | [Update] | running CARTOGRAPHER V4 6.0.0, /home/pi/cartographer_firmware/firmware/x.bin holds CARTOGRAPHER V4 6.1.0",
                 "carto_cur | Current | [] | running CARTOGRAPHER V4 6.1.0",
-                "carto_new | Indeterminate | [] | running CARTOGRAPHER V4 6.2.0, newer than CARTOGRAPHER V4 6.1.0 in its cartographer_firmware clone",
+                "carto_new | Current | [] | running CARTOGRAPHER V4 6.2.0, newer than CARTOGRAPHER V4 6.1.0 in its cartographer_firmware clone",
                 "carto_none | Indeterminate | [] | running CARTOGRAPHER V4 6.0.0; no Cartographer firmware image is known: no cartographer_firmware clone was found",
                 "carto_odd | ExternallyManaged | [] | Cartographer version \"CARTOGRAPHER V3\" names no version number",
             ]
@@ -818,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_a_cartographer_at_newer_or_unknown_firmware_as_indeterminate() {
+    fn reports_a_cartographer_as_current_when_newer_and_indeterminate_when_its_image_is_unknown() {
         let current = cartographer_entry(&with_cartographer(
             ready_snapshot(),
             Some("CARTOGRAPHER V4 6.0.0"),
@@ -829,7 +839,8 @@ mod tests {
             ready_snapshot(),
             Some("CARTOGRAPHER V4 5.1.0"),
         ));
-        assert_eq!(newer.state, McuState::Indeterminate);
+        assert_eq!(newer.state, McuState::Current);
+        assert!(newer.actions.is_empty());
         assert_eq!(
             newer.message,
             "running CARTOGRAPHER V4 6.0.0, newer than CARTOGRAPHER V4 5.1.0 in its \

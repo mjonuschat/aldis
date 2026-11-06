@@ -222,30 +222,23 @@ impl Targets {
                 crate::agent::api::display_name(name)
             )
         };
-        match (running, self.target(running, name)?) {
-            (Running::Foci(firmware), Target::Foci(release)) => {
-                (firmware.version.package > release.version).then(|| Downgrade {
-                    description: format!("the latest FOCI release, {}", release.tag),
-                    advice: advice(),
-                })
-            }
-            (Running::Beacon(firmware), Target::Beacon(target)) => {
-                (firmware.version > target.version).then(|| Downgrade {
-                    description: format!(
-                        "the {} in its beacon_klipper checkout",
-                        crate::beacon::reported(&target.version)
-                    ),
-                    advice: advice(),
-                })
-            }
-            (Running::Cartographer(firmware), Target::Cartographer(target)) => {
-                (firmware.version > target.version).then(|| Downgrade {
-                    description: format!("{} in its cartographer_firmware clone", target.reported),
-                    advice: advice(),
-                })
-            }
-            _ => None,
+        if self.compare(running, name) != RevisionStatus::Newer {
+            return None;
         }
+        let description = match self.target(running, name)? {
+            Target::Foci(release) => format!("the latest FOCI release, {}", release.tag),
+            Target::Beacon(target) => format!(
+                "the {} in its beacon_klipper checkout",
+                crate::beacon::reported(&target.version)
+            ),
+            Target::Cartographer(target) => {
+                format!("{} in its cartographer_firmware clone", target.reported)
+            }
+        };
+        Some(Downgrade {
+            description,
+            advice: advice(),
+        })
     }
 
     /// The target version `mcu` is updated to, for display; `None` when `mcu` is not prebuilt

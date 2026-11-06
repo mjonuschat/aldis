@@ -120,7 +120,7 @@ fn compares_a_beacon_version_with_the_image_in_the_checkout() {
     );
     assert_eq!(
         compare_versions(&version(0x2010), &version(0x2000)),
-        RevisionStatus::Indeterminate,
+        RevisionStatus::Newer,
         "an older checkout is not a reason to downgrade"
     );
 }

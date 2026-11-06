@@ -64,20 +64,22 @@ const KALICO_MINIMUM_VERSION: &str = "v2026.09.00-3-g6127720c4";
 pub enum RevisionStatus {
     /// The running firmware revision equals the selected checkout revision.
     Current,
-    /// The known running and checkout revisions differ.
+    /// The running firmware is older than the checkout or image it would be updated to.
     UpdateRequired,
+    /// The running firmware is newer than its target: nothing to update, and an update never
+    /// replaces it with the older one.
+    Newer,
     /// One or both revisions cannot safely be compared.
     Indeterminate,
 }
 
-/// How a running version compares with the version it would be updated to. Older is an update and
-/// equal is current. A newer running version is not replaced by an update, so it cannot be placed
-/// relative to the target.
+/// How a running version compares with the version it would be updated to: older is an update,
+/// equal is current, and newer needs none.
 pub fn compare_versions<T: Ord>(running: &T, target: &T) -> RevisionStatus {
     match running.cmp(target) {
         std::cmp::Ordering::Less => RevisionStatus::UpdateRequired,
         std::cmp::Ordering::Equal => RevisionStatus::Current,
-        std::cmp::Ordering::Greater => RevisionStatus::Indeterminate,
+        std::cmp::Ordering::Greater => RevisionStatus::Newer,
     }
 }
 
@@ -191,8 +193,8 @@ pub enum UpdateSelection {
 
 /// How an MCU's running Klipper revision compares with the checkout's it would be built from.
 /// The same commit is current, whatever the length of its hash. Otherwise an older one is an
-/// update, a newer one cannot be placed relative to the checkout and is not replaced by an
-/// update, and a different commit at the same position, or a revision with no tag, is an update.
+/// update, a newer one needs none and is not replaced by an update, and a different commit at
+/// the same position, or a revision with no tag, is an update.
 fn compare_revisions(running: &str, selected: &str) -> RevisionStatus {
     if revisions_match(running, selected) {
         return RevisionStatus::Current;
@@ -215,11 +217,12 @@ pub struct Downgrade {
 }
 
 /// What `mcu` would be downgraded to by an update, when its target is older than what it runs.
+/// This is what [`RevisionStatus::Newer`] means.
 fn downgrade_of(mcu: &Mcu, versions: &TargetVersions) -> Option<Downgrade> {
     match classify_mcu(mcu) {
         Eligibility::Eligible => match (&mcu.version, &versions.klipper) {
             (Some(running), CheckoutRevision::Known(selected))
-                if compare_revisions(running, selected) == RevisionStatus::Indeterminate =>
+                if compare_revisions(running, selected) == RevisionStatus::Newer =>
             {
                 Some(Downgrade {
                     description: format!("the {} checkout", selected),
@@ -231,6 +234,12 @@ fn downgrade_of(mcu: &Mcu, versions: &TargetVersions) -> Option<Downgrade> {
         Eligibility::Prebuilt(running) => versions.prebuilt.downgrade(&running, &mcu.name),
         _ => None,
     }
+}
+
+/// What `mcu` runs newer firmware than, for saying so: the checkout, image or release it would
+/// otherwise be updated to.
+pub fn newer_than(mcu: &Mcu, versions: &TargetVersions) -> Option<String> {
+    downgrade_of(mcu, versions).map(|downgrade| downgrade.description)
 }
 
 /// Why an update will not replace `mcu`'s firmware with the build or image it would otherwise
