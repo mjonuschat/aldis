@@ -102,11 +102,7 @@ fn firmware_label(mcu: &aldis::moonraker::Mcu, eligibility: &Eligibility) -> Str
 }
 
 fn connection_label(transport: Option<&McuTransport>) -> String {
-    match transport {
-        Some(McuTransport::Serial { device }) => format!("serial ({device})"),
-        Some(McuTransport::Can { interface, uuid }) => format!("CAN ({interface}, {uuid:012x})"),
-        None => "not configured".to_owned(),
-    }
+    transport.map_or_else(|| "not configured".to_owned(), McuTransport::describe)
 }
 
 fn supported_label(eligibility: &Eligibility) -> String {

@@ -180,3 +180,24 @@ fn reads_the_logs_root_from_file_roots() {
     );
     assert_eq!(parse_logs_root(r#"{"result":[]}"#).unwrap(), None);
 }
+
+#[test]
+fn describes_each_transport_the_way_users_are_told_about_it() {
+    use aldis::moonraker::McuTransport;
+
+    assert_eq!(
+        McuTransport::Serial {
+            device: "/dev/serial/by-id/usb-Klipper_stm32-if00".to_owned()
+        }
+        .describe(),
+        "serial (/dev/serial/by-id/usb-Klipper_stm32-if00)"
+    );
+    assert_eq!(
+        McuTransport::Can {
+            interface: "can0".to_owned(),
+            uuid: 0xe781_9ed8_e7d3
+        }
+        .describe(),
+        "CAN (can0, e7819ed8e7d3)"
+    );
+}

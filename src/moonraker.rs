@@ -66,6 +66,17 @@ pub enum McuTransport {
     },
 }
 
+impl McuTransport {
+    /// The transport as people are told about it: `serial (/dev/serial/by-id/...)` or
+    /// `CAN (can0, e7819ed8e7d3)`.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Serial { device } => format!("serial ({device})"),
+            Self::Can { interface, uuid } => format!("CAN ({interface}, {uuid:012x})"),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum MoonrakerError {
     #[error("Moonraker request failed")]
