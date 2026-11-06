@@ -70,6 +70,13 @@ sudo ~/aldis/aldis setup --agent --moonraker http://127.0.0.1:7125 --moonraker h
 
 Each printer has its own MCU status, firmware updates and history. Updates run one at a time across the host.
 
+The same file can tell the agent where Beacon and Cartographer firmware lives when it is not in the default places:
+
+```toml
+beacon_source = "/home/pi/beacon_klipper"
+cartographer_source = "/home/pi/cartographer_firmware"
+```
+
 Klipper services other than `klipper` (such as `klipper-2` or `klipper@voron`) need sudo 1.9.10 or newer: Debian 12, Raspberry Pi OS Bookworm, Ubuntu 24.04. The default `klipper` service works with any sudo. With several printers configured, `setup --check` prints the sudo version.
 
 Flashing a USB-CAN bridge resets its CAN bus, so aldis refuses while another printer on that bus is printing, starting up, or cannot be checked. It stops nothing on the other printers, and their Klipper may need a `FIRMWARE_RESTART` once the bridge is back. `update` and `flash` run the same check when given `--config PATH` (or `ALDIS_CONFIG`). Without it they look only at the printer named by `--moonraker`.
@@ -142,6 +149,7 @@ Besides Klipper and Kalico, `aldis` updates:
 
 - [FOCI](https://github.com/foci-rs/foci)
 - [Beacon](https://github.com/beacon3d/beacon_klipper)
+- [Cartographer](https://github.com/Cartographer3D/cartographer_firmware)
 
 ## License
 

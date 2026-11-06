@@ -92,10 +92,10 @@ first one that applies wins):
 
 | State | Meaning | Actions |
 | --- | --- | --- |
-| `current` | Matches the running host, or for FOCI, the latest FOCI release, or for a Beacon, its image in the `beacon_klipper` checkout | none |
-| `update_available` | Differs from the running host, or for FOCI, is behind the latest FOCI release, or for a Beacon, differs from its image | `update` |
-| `indeterminate` | Revision cannot be compared, including a FOCI development build, a FOCI MCU while the latest release could not be looked up, and a Beacon without a known image (the message says why) | none |
-| `externally_managed` | Non-Klipper application (e.g. Cartographer), a Beacon whose version cannot be compared, or a FOCI build no release matches (the message says why) | none |
+| `current` | Matches the running host, or for FOCI, the latest FOCI release, or for a Beacon or Cartographer, its image | none |
+| `update_available` | Differs from the running host, or for FOCI, is behind the latest FOCI release, or for a Beacon, differs from its image, or for a Cartographer, is behind its image | `update` |
+| `indeterminate` | Revision cannot be compared, including a FOCI development build, a FOCI MCU while the latest release could not be looked up, a Beacon or Cartographer without a known image, and a Cartographer newer than its image (the message says why) | none |
+| `externally_managed` | Non-Klipper application, a Beacon whose version cannot be compared, a FOCI build no release matches, or a Cartographer no image can be matched to (the message says why) | none |
 | `unsupported_legacy` | No embedded kconfig | none |
 | `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD51); the message names the family | none |
 | `not_identified` | Empty object; fallback not attempted (CAN, host MCU, or port held) | none |
@@ -109,6 +109,9 @@ Beacons are compared with the image for their revision in the `beacon_klipper` c
 newer than that image is `indeterminate` with no action; the agent never downgrades one. A Beacon
 update reads the image instead of building, so its run reports `reading firmware image` and
 `read firmware image`.
+
+Cartographers are compared with the image picked for them from `~/cartographer_firmware`. Updating
+one discards its calibration, and its `message` says it must be recalibrated afterwards.
 
 Flashing a USB-CAN bridge resets its CAN bus, so the agent refuses while another printer on that
 bus is busy, starting up, or cannot be checked. The bridge MCU stays `update_available` but has
