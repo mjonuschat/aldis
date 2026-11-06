@@ -1,12 +1,16 @@
 //! Read-only MCU update eligibility and revision comparison.
 
 use crate::moonraker::Mcu;
+use crate::prebuilt::{self, Running};
 
 /// Whether this updater may manage a discovered MCU.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Eligibility {
     /// A Klipper-family MCU with the embedded configuration required to build it.
     Eligible,
+    /// Firmware not built from the Klipper checkout that this updater can replace with a
+    /// prebuilt image: a FOCI release build.
+    Prebuilt(Running),
     /// Firmware managed by another project, named as Moonraker reported it (e.g. "Beacon").
     ExternallyManaged(String),
     /// Legacy or unidentified Klipper-family firmware without required updater metadata.
@@ -45,6 +49,9 @@ pub enum UnsupportedReason {
         running: String,
         minimum: &'static str,
     },
+    /// Prebuilt firmware no update image can be matched to.
+    #[error(transparent)]
+    Prebuilt(prebuilt::Unsupported),
 }
 
 /// Minimum Klipper version required to reliably report `mcu_kconfig`; see README.md.
@@ -82,6 +89,64 @@ impl CheckoutRevision {
     }
 }
 
+/// What each MCU is compared against and updated to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetVersions {
+    /// The Klipper checkout revision Klipper-family MCUs are built from.
+    pub klipper: CheckoutRevision,
+    /// What the prebuilt-firmware MCUs (FOCI) are updated to.
+    pub prebuilt: prebuilt::Targets,
+}
+
+impl TargetVersions {
+    /// Targets for Klipper-family MCUs built from `checkout`, and no known prebuilt targets.
+    pub fn klipper(checkout: CheckoutRevision) -> Self {
+        Self {
+            klipper: checkout,
+            prebuilt: prebuilt::Targets::default(),
+        }
+    }
+
+    /// These targets with the prebuilt-firmware MCUs updated to `targets`.
+    pub fn with_prebuilt(mut self, targets: prebuilt::Targets) -> Self {
+        self.prebuilt = targets;
+        self
+    }
+
+    /// These targets with FOCI MCUs updated to `release`.
+    pub fn with_foci_release(mut self, release: Option<crate::foci::Release>) -> Self {
+        self.prebuilt.foci = release;
+        self
+    }
+
+    /// Targets nothing is compared against, for a run that only verifies reconnection.
+    pub fn indeterminate() -> Self {
+        Self::klipper(CheckoutRevision::Indeterminate)
+    }
+
+    /// The target `mcu` is updated to, for display; `unknown` when indeterminate.
+    pub fn label_for(&self, mcu: &Mcu) -> String {
+        self.prebuilt
+            .label_for(mcu)
+            .unwrap_or_else(|| self.klipper.label().to_owned())
+    }
+
+    /// Whether `mcu` runs its target: `None` when there is no known target to check against.
+    pub fn reached_by(&self, mcu: &Mcu) -> Option<bool> {
+        if let Some(reached) = self.prebuilt.reached_by(mcu) {
+            return reached;
+        }
+        match &self.klipper {
+            CheckoutRevision::Known(revision) => Some(
+                mcu.version
+                    .as_deref()
+                    .is_some_and(|version| revisions_match(version, revision)),
+            ),
+            CheckoutRevision::Indeterminate => None,
+        }
+    }
+}
+
 /// Read-only eligibility and revision result for one MCU.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McuStatus {
@@ -102,9 +167,16 @@ pub enum UpdateSelection {
 }
 
 /// Returns whether one MCU is eligible for the requested update selection.
-pub fn is_selected(mcu: &Mcu, checkout: &CheckoutRevision, selection: &UpdateSelection) -> bool {
-    let status = assess_mcu(mcu, checkout);
-    if status.eligibility != Eligibility::Eligible {
+pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelection) -> bool {
+    let status = assess_mcu(mcu, versions);
+    let updatable = match status.eligibility {
+        Eligibility::Eligible => true,
+        // Prebuilt firmware is flashed with its target image, so even `All` needs one to be
+        // known: the FOCI release.
+        Eligibility::Prebuilt(ref running) => versions.prebuilt.target(running).is_some(),
+        _ => false,
+    };
+    if !updatable {
         return false;
     }
     match selection {
@@ -114,17 +186,21 @@ pub fn is_selected(mcu: &Mcu, checkout: &CheckoutRevision, selection: &UpdateSel
 }
 
 /// Classifies one MCU and compares its revision when eligible.
-pub fn assess_mcu(mcu: &Mcu, checkout: &CheckoutRevision) -> McuStatus {
+pub fn assess_mcu(mcu: &Mcu, versions: &TargetVersions) -> McuStatus {
     let eligibility = classify_mcu(mcu);
-    let revision = (eligibility == Eligibility::Eligible).then(|| match (&mcu.version, checkout) {
-        (Some(running), CheckoutRevision::Known(selected))
-            if revisions_match(running, selected) =>
-        {
-            RevisionStatus::Current
-        }
-        (Some(_), CheckoutRevision::Known(_)) => RevisionStatus::UpdateRequired,
-        _ => RevisionStatus::Indeterminate,
-    });
+    let revision = match &eligibility {
+        Eligibility::Eligible => Some(match (&mcu.version, &versions.klipper) {
+            (Some(running), CheckoutRevision::Known(selected))
+                if revisions_match(running, selected) =>
+            {
+                RevisionStatus::Current
+            }
+            (Some(_), CheckoutRevision::Known(_)) => RevisionStatus::UpdateRequired,
+            _ => RevisionStatus::Indeterminate,
+        }),
+        Eligibility::Prebuilt(running) => Some(versions.prebuilt.compare(running)),
+        _ => None,
+    };
     McuStatus {
         eligibility,
         revision,
@@ -182,6 +258,13 @@ fn is_klipper_build_timestamp(candidate: &str) -> bool {
 
 /// Classifies eligibility without inferring from MCU family or transport.
 pub fn classify_mcu(mcu: &Mcu) -> Eligibility {
+    match prebuilt::identify(mcu) {
+        Some(Ok(running)) => return Eligibility::Prebuilt(running),
+        Some(Err(reason)) => {
+            return Eligibility::Unsupported(UnsupportedReason::Prebuilt(reason));
+        }
+        None => {}
+    }
     // Real Klipper and Kalico always populate `app`; third-party firmware such as Beacon
     // reports it as an empty string instead of omitting it, so treat blank the same as absent.
     match mcu.app_name() {

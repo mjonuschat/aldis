@@ -19,6 +19,7 @@ pub mod kconfig;
 pub mod lock;
 pub mod logging;
 pub mod moonraker;
+pub mod prebuilt;
 pub mod prepare;
 pub mod retry;
 pub mod self_update;

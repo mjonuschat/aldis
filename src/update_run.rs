@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use crate::build::CommandPort;
 use crate::coordinator::{BuildCoordinator, FlashCoordinatorError, UpdateProgress};
-use crate::eligibility::{CheckoutRevision, revisions_match};
+use crate::eligibility::TargetVersions;
 use crate::flash::linux_host::HOST_MCU_UNIT_FILE;
 use crate::flash::system::{SystemFlashOptions, SystemKatapultOptions};
+use crate::foci::ReleasePort;
 use crate::moonraker::{HostPort, McuInventory, McuTransport, MoonrakerPort, PrinterStatePort};
 use crate::retry::retry_until_available;
 use crate::workspace::RunWorkspace;
@@ -65,17 +66,17 @@ fn wait_for_application_in(
     .map_err(|()| format!("{} did not come back at {description}", mcu.name))
 }
 
-/// Waits for Klipper to report every MCU in `selected` again, at `checkout`'s revision when it is
-/// known; with an indeterminate revision only reconnection is verified.
+/// Waits for Klipper to report every MCU in `selected` again, at its target version when that is
+/// known; without one only reconnection is verified.
 pub fn wait_for_mcus(
     client: &(impl MoonrakerPort + HostPort),
     selected: &[String],
-    checkout: &CheckoutRevision,
+    versions: &TargetVersions,
 ) -> Result<(), String> {
     wait_for_mcus_with(
         client,
         selected,
-        checkout,
+        versions,
         &crate::identify::SerialIdentify::default(),
     )
 }
@@ -90,13 +91,13 @@ pub fn wait_for_mcus(
 fn wait_for_mcus_with(
     client: &(impl MoonrakerPort + HostPort),
     selected: &[String],
-    checkout: &CheckoutRevision,
+    versions: &TargetVersions,
     prober: &impl crate::identify::IdentifyPort,
 ) -> Result<(), String> {
     wait_for_mcus_with_params(
         client,
         selected,
-        checkout,
+        versions,
         prober,
         Duration::from_secs(30),
         Duration::from_millis(250),
@@ -106,7 +107,7 @@ fn wait_for_mcus_with(
 fn wait_for_mcus_with_params(
     client: &(impl MoonrakerPort + HostPort),
     selected: &[String],
-    checkout: &CheckoutRevision,
+    versions: &TargetVersions,
     prober: &impl crate::identify::IdentifyPort,
     timeout: Duration,
     poll_interval: Duration,
@@ -115,7 +116,7 @@ fn wait_for_mcus_with_params(
         let attempt_result = match client.discover_mcus() {
             Ok(mut inventory) => {
                 probe_unreported(client, &mut inventory, prober);
-                match pending_mcus(&inventory, selected, checkout) {
+                match pending_mcus(&inventory, selected, versions) {
                     pending if pending.is_empty() => Ok(()),
                     pending => Err(format!("still waiting on: {}", pending.join(", "))),
                 }
@@ -152,32 +153,23 @@ fn probe_unreported(
     }
 }
 
-/// Selected MCU names not yet reporting `checkout`'s revision, each annotated with its
+/// Selected MCU names not yet reporting their target version, each annotated with its
 /// current state so a timeout explains what was actually observed.
 fn pending_mcus(
     inventory: &McuInventory,
     selected: &[String],
-    checkout: &CheckoutRevision,
+    versions: &TargetVersions,
 ) -> Vec<String> {
     selected
         .iter()
         .filter_map(
             |name| match inventory.mcus.iter().find(|mcu| &mcu.name == name) {
                 None => Some(format!("{name} (not reported by Moonraker)")),
-                Some(mcu) => match checkout {
-                    CheckoutRevision::Known(revision)
-                        if !mcu
-                            .version
-                            .as_deref()
-                            .is_some_and(|version| revisions_match(version, revision)) =>
-                    {
-                        Some(format!(
-                            "{name} (reports {})",
-                            mcu.version.as_deref().unwrap_or("unknown")
-                        ))
-                    }
-                    _ => None,
-                },
+                Some(mcu) if versions.reached_by(mcu) == Some(false) => Some(format!(
+                    "{name} (reports {})",
+                    mcu.version.as_deref().unwrap_or("unknown")
+                )),
+                Some(_) => None,
             },
         )
         .collect()
@@ -271,10 +263,12 @@ pub trait RunHooks {
     fn failed(&mut self, message: &str);
 }
 
-/// What to update: `targets` in flashing order, all against `target_revision`.
+/// What to update: `targets` in flashing order, each to its version in `target_versions`.
 pub struct RunRequest<'a> {
     pub targets: &'a [String],
-    pub target_revision: &'a CheckoutRevision,
+    pub target_versions: &'a TargetVersions,
+    /// Where FOCI MCUs' firmware is downloaded from.
+    pub foci_releases: &'a dyn ReleasePort,
     pub clean: bool,
 }
 
@@ -351,8 +345,9 @@ fn post_flash_failure(
     )
 }
 
-/// Builds and flashes each approved target in order, then starts Klipper and waits for every
-/// updated MCU to reconnect at `target_revision`. The first failure ends the run.
+/// Builds (or, for FOCI, downloads) and flashes each approved target in order, then starts
+/// Klipper and waits for every updated MCU to reconnect at its target version. The first failure
+/// ends the run.
 pub fn run_updates<B: CommandPort, S: CommandPort>(
     coordinator: &BuildCoordinator<B, S>,
     moonraker: &(impl MoonrakerPort + PrinterStatePort + HostPort),
@@ -373,7 +368,7 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
             ));
         };
         let current = mcu.version.as_deref().unwrap_or("unknown");
-        if !hooks.approve(name, current, request.target_revision.label()) {
+        if !hooks.approve(name, current, &request.target_versions.label_for(mcu)) {
             continue;
         }
         let pending = match coordinator.prepare(inventory, workspace, name, request.clean) {
@@ -393,13 +388,42 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
             }
             printer_checked = true;
         }
-        match coordinator.execute_and_flash_system_with_progress(
-            pending.approve(),
-            standard_flash_options(),
-            |progress| hooks.progress(name, progress),
-        ) {
-            Ok(completed) => {
-                hooks.flashed(name, &mcu.kconfig, completed.flash.padded_bytes);
+        let prepared = crate::prebuilt::prepare_automatic(
+            mcu,
+            request.target_versions,
+            request.foci_releases,
+            &pending,
+            &mut |progress| hooks.progress(name, progress),
+        );
+        let flashed = match prepared {
+            Some(Ok(flash_request)) => coordinator.flash_prebuilt(
+                pending.approve(),
+                &flash_request,
+                standard_flash_options(),
+                |progress| hooks.progress(name, progress),
+            ),
+            Some(Err(detail)) => {
+                // Nothing was written to this MCU; Klipper goes back to how it was found.
+                let restore = coordinator.restore_after_failure();
+                return Err(fail_with_detail(
+                    hooks,
+                    detail.clone(),
+                    failure_message(Operation::Update, detail, Some(restore)),
+                    Some(name),
+                    &updated,
+                ));
+            }
+            None => coordinator
+                .execute_and_flash_system_with_progress(
+                    pending.approve(),
+                    standard_flash_options(),
+                    |progress| hooks.progress(name, progress),
+                )
+                .map(|completed| completed.flash),
+        };
+        match flashed {
+            Ok(flash) => {
+                hooks.flashed(name, &mcu.kconfig, flash.padded_bytes);
                 hooks.step_started(RunStep::WaitForApplication);
                 if let Err(message) = wait_for_application(mcu) {
                     tracing::debug!(error = %message, "waiting for MCU restart failed");
@@ -442,7 +466,7 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
     }
     hooks.step_succeeded(RunStep::StartKlipper);
     hooks.step_started(RunStep::Reconnect);
-    if let Err(message) = wait_for_mcus(moonraker, &updated, request.target_revision) {
+    if let Err(message) = wait_for_mcus(moonraker, &updated, request.target_versions) {
         tracing::debug!(error = %message, "waiting for updated MCUs to reconnect failed");
         return Err(fail(hooks, message, None, &updated));
     }
@@ -460,7 +484,7 @@ mod tests {
     use super::*;
     use crate::build::{BuildCommand, BuildError, CommandError, CommandOutput};
     use crate::coordinator::{BuildCoordinator, CoordinatorError, FlashCoordinatorError};
-    use crate::eligibility::CheckoutRevision;
+    use crate::eligibility::{CheckoutRevision, TargetVersions};
     use crate::flash::system::SystemFlashError;
     use crate::moonraker::{
         HostInfo, KlippyState, Mcu, McuInventory, McuTransport, MoonrakerError, MoonrakerPort,
@@ -708,7 +732,7 @@ mod tests {
     #[test]
     fn requires_every_selected_mcu_at_the_built_revision() {
         let selected = vec!["mcu h723".to_owned(), "mcu rp2040".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
+        let checkout = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()));
         let only_one = McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
             unreported: Vec::new(),
@@ -735,7 +759,7 @@ mod tests {
     #[test]
     fn wait_for_mcus_succeeds_once_the_injected_source_reports_readiness() {
         let selected = vec!["mcu h723".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
+        let checkout = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()));
         let moonraker = FakeMoonraker::new(Ok(McuInventory {
             mcus: vec![mcu("mcu h723", "v2", None)],
             unreported: Vec::new(),
@@ -747,7 +771,7 @@ mod tests {
     #[test]
     fn wait_for_mcus_resolves_a_still_unreported_mcu_via_direct_identify() {
         let selected = vec!["mcu expander".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
+        let checkout = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()));
         let moonraker = FakeMoonraker::in_state(
             Ok(McuInventory {
                 mcus: Vec::new(),
@@ -782,7 +806,7 @@ mod tests {
     #[test]
     fn wait_for_mcus_still_fails_when_direct_identify_cannot_resolve_the_mcu() {
         let selected = vec!["mcu expander".to_owned()];
-        let checkout = CheckoutRevision::Known("v2".to_owned());
+        let checkout = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()));
         let moonraker = FakeMoonraker::in_state(
             Ok(McuInventory {
                 mcus: Vec::new(),
@@ -967,6 +991,245 @@ mod tests {
         }
     }
 
+    /// A FOCI release source that must not be asked.
+    struct NoReleases;
+
+    impl ReleasePort for NoReleases {
+        fn latest_release(&self) -> Result<crate::foci::Release, crate::foci::ReleaseError> {
+            panic!("runs never look up a release");
+        }
+
+        fn download_firmware(
+            &self,
+            _: &crate::foci::Release,
+            _: &str,
+        ) -> Result<Vec<u8>, crate::foci::ReleaseError> {
+            panic!("no FOCI MCU is updated");
+        }
+    }
+
+    /// Serves one FOCI firmware download and records the asset asked for.
+    struct OneDownload {
+        result: fn() -> Result<Vec<u8>, crate::foci::ReleaseError>,
+        asked: RefCell<Vec<String>>,
+    }
+
+    impl ReleasePort for OneDownload {
+        fn latest_release(&self) -> Result<crate::foci::Release, crate::foci::ReleaseError> {
+            panic!("runs never look up a release");
+        }
+
+        fn download_firmware(
+            &self,
+            release: &crate::foci::Release,
+            asset: &str,
+        ) -> Result<Vec<u8>, crate::foci::ReleaseError> {
+            self.asked
+                .borrow_mut()
+                .push(format!("{}/{asset}", release.tag));
+            (self.result)()
+        }
+    }
+
+    /// Answers every `systemctl is-active` with `inactive`, so nothing needs stopping.
+    #[derive(Clone, Default)]
+    struct InactiveKlipper(Arc<Mutex<Vec<BuildCommand>>>);
+
+    impl CommandPort for InactiveKlipper {
+        fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
+            self.0.lock().unwrap().push(command.clone());
+            Ok(CommandOutput {
+                success: false,
+                stdout: b"inactive\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn foci_mcu(transport: McuTransport) -> Mcu {
+        Mcu {
+            name: "mcu ouroboros".to_owned(),
+            app: Some("FOCI".to_owned()),
+            version: Some("v0.4.0-0-g0fb68e1b".to_owned()),
+            mcu: "stm32h723xx".to_owned(),
+            canbus_frequency_hz: None,
+            build_versions: Some("rust=1.98.1 features=none board=0fb68e1b".to_owned()),
+            transport: Some(transport),
+            kconfig: String::new(),
+        }
+    }
+
+    fn foci_target() -> TargetVersions {
+        TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()))
+            .with_foci_release(crate::foci::Release::from_tag("v0.4.1"))
+    }
+
+    fn approving() -> Recorder {
+        Recorder {
+            approve: true,
+            ..Recorder::default()
+        }
+    }
+
+    #[test]
+    fn downloads_the_foci_release_image_and_sends_it_to_katapult_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let inventory = McuInventory {
+            mcus: vec![foci_mcu(McuTransport::Can {
+                interface: "can0".to_owned(),
+                uuid: 0xe781_9ed8_e7d3,
+            })],
+            unreported: Vec::new(),
+        };
+        let runner = InactiveKlipper::default();
+        let coordinator = BuildCoordinator::new("/nonexistent", runner.clone(), runner.clone());
+        let releases = OneDownload {
+            result: || Ok(vec![0xab; 16]),
+            asked: RefCell::new(Vec::new()),
+        };
+        let mut hooks = approving();
+
+        let failure = run_updates(
+            &coordinator,
+            &Printer(PrintState::Standby),
+            &inventory,
+            &workspace,
+            RunRequest {
+                targets: &["mcu ouroboros".to_owned()],
+                target_versions: &foci_target(),
+                foci_releases: &releases,
+                clean: false,
+            },
+            &mut hooks,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            *releases.asked.borrow(),
+            vec!["v0.4.1/ouroboros-fw-v0.4.1-prod.bin".to_owned()]
+        );
+        let paths = workspace.build_paths("mcu ouroboros").unwrap();
+        assert_eq!(
+            std::fs::read(
+                paths
+                    .artifact_path
+                    .with_file_name("ouroboros-fw-v0.4.1-prod.bin")
+            )
+            .unwrap(),
+            vec![0xab; 16],
+            "the run keeps the image it flashed"
+        );
+        assert!(
+            failure
+                .detail
+                .contains("only through Katapult on a USB serial device"),
+            "{}",
+            failure.detail
+        );
+        assert!(
+            failure
+                .message
+                .ends_with("Klipper has been left in its state from before this update"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            runner
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|command| !format!("{command:?}").contains("make")),
+            "a FOCI update never builds"
+        );
+    }
+
+    #[test]
+    fn a_failed_foci_download_flashes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let inventory = McuInventory {
+            mcus: vec![foci_mcu(McuTransport::Serial {
+                device: "/dev/serial/by-id/usb-foci_FOCI_Ouroboros-if00".to_owned(),
+            })],
+            unreported: Vec::new(),
+        };
+        let runner = RecordingRunner::default();
+        let coordinator = BuildCoordinator::new("/nonexistent", runner.clone(), runner.clone());
+        let releases = OneDownload {
+            result: || {
+                Err(crate::foci::ReleaseError::ChecksumMismatch(
+                    "ouroboros-fw-v0.4.1-prod.bin".to_owned(),
+                ))
+            },
+            asked: RefCell::new(Vec::new()),
+        };
+        let mut hooks = approving();
+
+        let failure = run_updates(
+            &coordinator,
+            &Printer(PrintState::Standby),
+            &inventory,
+            &workspace,
+            RunRequest {
+                targets: &["mcu ouroboros".to_owned()],
+                target_versions: &foci_target(),
+                foci_releases: &releases,
+                clean: false,
+            },
+            &mut hooks,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            failure.detail,
+            "could not download ouroboros-fw-v0.4.1-prod.bin from FOCI v0.4.1: downloaded \
+             ouroboros-fw-v0.4.1-prod.bin does not match its published SHA-256 digest"
+        );
+        assert_eq!(failure.mcu.as_deref(), Some("mcu ouroboros"));
+        assert!(
+            runner.0.lock().unwrap().is_empty(),
+            "Klipper is neither stopped nor restarted"
+        );
+    }
+
+    #[test]
+    fn refuses_a_foci_update_without_a_known_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let inventory = McuInventory {
+            mcus: vec![foci_mcu(McuTransport::Serial {
+                device: "/dev/serial/by-id/usb-foci_FOCI_Ouroboros-if00".to_owned(),
+            })],
+            unreported: Vec::new(),
+        };
+        let runner = RecordingRunner::default();
+        let coordinator = BuildCoordinator::new("/nonexistent", runner.clone(), runner.clone());
+        let mut hooks = approving();
+
+        let failure = run_updates(
+            &coordinator,
+            &Printer(PrintState::Standby),
+            &inventory,
+            &workspace,
+            RunRequest {
+                targets: &["mcu ouroboros".to_owned()],
+                target_versions: &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
+                foci_releases: &NoReleases,
+                clean: false,
+            },
+            &mut hooks,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            failure.detail,
+            "no FOCI release is known to update mcu ouroboros to"
+        );
+        assert!(runner.0.lock().unwrap().is_empty());
+    }
+
     fn fixture() -> (
         tempfile::TempDir,
         RunWorkspace,
@@ -1020,7 +1283,8 @@ mod tests {
             &workspace,
             RunRequest {
                 targets: &["mcu".to_owned()],
-                target_revision: &CheckoutRevision::Known("v2".to_owned()),
+                target_versions: &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
+                foci_releases: &NoReleases,
                 clean: false,
             },
             &mut hooks,
@@ -1046,7 +1310,8 @@ mod tests {
             &workspace,
             RunRequest {
                 targets: &["mcu".to_owned()],
-                target_revision: &CheckoutRevision::Known("v2".to_owned()),
+                target_versions: &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
+                foci_releases: &NoReleases,
                 clean: false,
             },
             &mut hooks,
@@ -1061,5 +1326,254 @@ mod tests {
         assert_eq!(failure.mcu.as_deref(), Some("mcu"));
         assert_eq!(hooks.failures, vec![failure.detail.clone()]);
         assert!(runner.0.lock().unwrap().is_empty());
+    }
+
+    // ----- Event-order characterization -----
+    //
+    // The order of hooks, downloads and commands in a run, frozen so that sharing the code that
+    // acquires and flashes an image cannot move a download after Klipper is stopped, skip the
+    // printer check, or reorder what a caller sees.
+
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    /// Logs every command and keeps a Klipper unit that `stop` and `start` really change.
+    #[derive(Clone)]
+    struct LoggingRunner {
+        log: Log,
+        active: Arc<Mutex<bool>>,
+    }
+
+    impl CommandPort for LoggingRunner {
+        fn run(&self, command: &BuildCommand) -> Result<CommandOutput, CommandError> {
+            self.log.lock().unwrap().push(format!(
+                "command: {} {}",
+                command.program,
+                command.arguments.join(" ")
+            ));
+            let has = |word: &str| command.arguments.iter().any(|argument| argument == word);
+            let mut active = self.active.lock().unwrap();
+            if has("stop") {
+                *active = false;
+            } else if has("start") {
+                *active = true;
+            }
+            let asking = has("is-active");
+            Ok(CommandOutput {
+                success: !asking || *active,
+                stdout: match (asking, *active) {
+                    (true, true) => b"active\n".to_vec(),
+                    (true, false) => b"inactive\n".to_vec(),
+                    _ => Vec::new(),
+                },
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    struct LogHooks {
+        log: Log,
+        approve: bool,
+    }
+
+    impl RunHooks for LogHooks {
+        fn approve(&mut self, name: &str, current: &str, next: &str) -> bool {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("approve {name}: {current} -> {next}"));
+            self.approve
+        }
+        fn progress(&mut self, name: &str, progress: UpdateProgress) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("progress {name}: {progress:?}"));
+        }
+        fn flashed(&mut self, name: &str, _: &str, bytes: usize) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("flashed {name}: {bytes}"));
+        }
+        fn step_started(&mut self, step: RunStep) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("step started {step:?}"));
+        }
+        fn step_succeeded(&mut self, step: RunStep) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("step succeeded {step:?}"));
+        }
+        fn failed(&mut self, message: &str) {
+            self.log.lock().unwrap().push(format!("failed: {message}"));
+        }
+    }
+
+    /// A FOCI release source that logs the asset it is asked for.
+    struct LoggingReleases {
+        log: Log,
+        corrupt: bool,
+    }
+
+    impl ReleasePort for LoggingReleases {
+        fn latest_release(&self) -> Result<crate::foci::Release, crate::foci::ReleaseError> {
+            panic!("runs never look up a release");
+        }
+
+        fn download_firmware(
+            &self,
+            _: &crate::foci::Release,
+            asset: &str,
+        ) -> Result<Vec<u8>, crate::foci::ReleaseError> {
+            self.log.lock().unwrap().push(format!("download {asset}"));
+            if self.corrupt {
+                Err(crate::foci::ReleaseError::ChecksumMismatch(
+                    asset.to_owned(),
+                ))
+            } else {
+                Ok(vec![0xab; 16])
+            }
+        }
+    }
+
+    struct Scenario {
+        mcu: Mcu,
+        versions: TargetVersions,
+        state: PrintState,
+        klipper_active: bool,
+        approve: bool,
+        corrupt_download: bool,
+    }
+
+    /// Runs `scenario` and returns the ordered log, ending with the failure detail and message.
+    fn trace(scenario: Scenario) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let log = Log::default();
+        let runner = LoggingRunner {
+            log: log.clone(),
+            active: Arc::new(Mutex::new(scenario.klipper_active)),
+        };
+        let coordinator = BuildCoordinator::new("/nonexistent", runner.clone(), runner);
+        let releases = LoggingReleases {
+            log: log.clone(),
+            corrupt: scenario.corrupt_download,
+        };
+        let name = scenario.mcu.name.clone();
+        let mut hooks = LogHooks {
+            log: log.clone(),
+            approve: scenario.approve,
+        };
+        let result = run_updates(
+            &coordinator,
+            &Printer(scenario.state),
+            &McuInventory {
+                mcus: vec![scenario.mcu],
+                unreported: Vec::new(),
+            },
+            &workspace,
+            RunRequest {
+                targets: &[name],
+                target_versions: &scenario.versions,
+                foci_releases: &releases,
+                clean: false,
+            },
+            &mut hooks,
+        );
+        let mut events = log.lock().unwrap().clone();
+        match result {
+            Ok(outcome) => events.push(format!("outcome: updated {:?}", outcome.updated)),
+            Err(failure) => {
+                events.push(format!("detail: {}", failure.detail));
+                events.push(format!("message: {}", failure.message));
+                events.push(format!(
+                    "mcu: {:?}, updated {:?}",
+                    failure.mcu, failure.updated
+                ));
+            }
+        }
+        events
+    }
+
+    fn foci_scenario(transport: McuTransport) -> Scenario {
+        Scenario {
+            mcu: foci_mcu(transport),
+            versions: foci_target(),
+            state: PrintState::Standby,
+            klipper_active: true,
+            approve: true,
+            corrupt_download: false,
+        }
+    }
+
+    fn foci_can() -> McuTransport {
+        McuTransport::Can {
+            interface: "can0".to_owned(),
+            uuid: 0xe781_9ed8_e7d3,
+        }
+    }
+
+    #[test]
+    fn traces_a_foci_download_then_a_refused_link_with_klipper_running() {
+        let events = trace(foci_scenario(foci_can()));
+        assert_eq!(events, [
+                "approve mcu ouroboros: v0.4.0-0-g0fb68e1b -> v0.4.1",
+                "progress mcu ouroboros: DownloadingFirmware",
+                "download ouroboros-fw-v0.4.1-prod.bin",
+                "progress mcu ouroboros: FirmwareDownloaded",
+                "command: sudo -n /bin/systemctl is-active klipper",
+                "progress mcu ouroboros: StoppingKlipper",
+                "command: sudo -n /bin/systemctl stop klipper",
+                "command: sudo -n /bin/systemctl is-active klipper",
+                "command: sudo -n /bin/systemctl start klipper",
+                "command: sudo -n /bin/systemctl is-active klipper",
+                "failed: this firmware is flashed only through Katapult on a USB serial device, and the MCU is configured on CAN (can0, e7819ed8e7d3)",
+                "detail: this firmware is flashed only through Katapult on a USB serial device, and the MCU is configured on CAN (can0, e7819ed8e7d3)",
+                "message: update failed: this firmware is flashed only through Katapult on a USB serial device, and the MCU is configured on CAN (can0, e7819ed8e7d3). Klipper has been left in its state from before this update",
+                "mcu: Some(\"mcu ouroboros\"), updated []",
+            ].map(String::from).to_vec());
+    }
+
+    #[test]
+    fn traces_a_corrupt_foci_download_with_klipper_running() {
+        let mut scenario = foci_scenario(foci_can());
+        scenario.corrupt_download = true;
+        assert_eq!(trace(scenario), [
+                "approve mcu ouroboros: v0.4.0-0-g0fb68e1b -> v0.4.1",
+                "progress mcu ouroboros: DownloadingFirmware",
+                "download ouroboros-fw-v0.4.1-prod.bin",
+                "failed: could not download ouroboros-fw-v0.4.1-prod.bin from FOCI v0.4.1: downloaded ouroboros-fw-v0.4.1-prod.bin does not match its published SHA-256 digest",
+                "detail: could not download ouroboros-fw-v0.4.1-prod.bin from FOCI v0.4.1: downloaded ouroboros-fw-v0.4.1-prod.bin does not match its published SHA-256 digest",
+                "message: update failed: could not download ouroboros-fw-v0.4.1-prod.bin from FOCI v0.4.1: downloaded ouroboros-fw-v0.4.1-prod.bin does not match its published SHA-256 digest. Klipper has been left in its state from before this update",
+                "mcu: Some(\"mcu ouroboros\"), updated []",
+            ].map(String::from).to_vec());
+    }
+
+    #[test]
+    fn traces_a_busy_printer_and_a_declined_approval() {
+        let mut busy = foci_scenario(foci_can());
+        busy.state = PrintState::Printing;
+        assert_eq!(trace(busy), [
+                "approve mcu ouroboros: v0.4.0-0-g0fb68e1b -> v0.4.1",
+                "failed: the printer is printing; refusing to stop Klipper, run again when it is idle",
+                "detail: the printer is printing; refusing to stop Klipper, run again when it is idle",
+                "message: the printer is printing; refusing to stop Klipper, run again when it is idle",
+                "mcu: Some(\"mcu ouroboros\"), updated []",
+            ].map(String::from).to_vec());
+
+        let mut declined = foci_scenario(foci_can());
+        declined.approve = false;
+        assert_eq!(
+            trace(declined),
+            [
+                "approve mcu ouroboros: v0.4.0-0-g0fb68e1b -> v0.4.1",
+                "outcome: updated []",
+            ]
+            .map(String::from)
+            .to_vec()
+        );
     }
 }

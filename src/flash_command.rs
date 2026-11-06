@@ -5,7 +5,7 @@ use anyhow::Context;
 
 use aldis::build::SystemCommandAdapter;
 use aldis::coordinator::BuildCoordinator;
-use aldis::eligibility::{CheckoutRevision, Eligibility, classify_mcu};
+use aldis::eligibility::{Eligibility, TargetVersions, classify_mcu};
 use aldis::logging::LoggingCommandAdapter;
 use aldis::moonraker::{McuInventory, MoonrakerAdapter};
 use aldis::update_run::{Operation, failure_detail, failure_message};
@@ -48,6 +48,18 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         ui.action(&format!("error: {reason}"));
         anyhow::bail!(reason);
     }
+    // Prebuilt firmware (FOCI) takes only a file that suits the MCU, sent by the protocol its
+    // vendor allows; refuse anything else before the MCU is touched.
+    let prebuilt = match inventory
+        .mcus
+        .iter()
+        .find(|mcu| mcu.name == arguments.target)
+    {
+        Some(mcu) => aldis::prebuilt::prepare_explicit(mcu, &firmware)
+            .map_err(|error| anyhow::anyhow!("refusing to flash {}: {error}", arguments.target))
+            .inspect_err(|error| ui.action(&format!("error: {error:#}")))?,
+        None => None,
+    };
 
     crate::update::bridge_refusal(
         arguments.config.as_deref(),
@@ -92,13 +104,21 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         ui.action(&format!("error: {message}"));
         anyhow::anyhow!(message)
     })?;
-    match coordinator.flash_firmware_system_with_progress(
-        pending.approve(),
-        &firmware,
-        options,
-        arguments.force,
-        |progress| ui.progress_without_build(progress),
-    ) {
+    let flashed = match &prebuilt {
+        Some(request) => {
+            coordinator.flash_prebuilt(pending.approve(), request, options, |progress| {
+                ui.progress_without_build(progress)
+            })
+        }
+        None => coordinator.flash_firmware_system_with_progress(
+            pending.approve(),
+            &firmware,
+            options,
+            arguments.force,
+            |progress| ui.progress_without_build(progress),
+        ),
+    };
+    match flashed {
         Ok(result) => {
             ui.finish_success(crate::ui::transfer_summary(
                 &target_kconfig,
@@ -152,7 +172,7 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     if let Err(message) = aldis::update_run::wait_for_mcus(
         &moonraker,
         std::slice::from_ref(&arguments.target),
-        &CheckoutRevision::Indeterminate,
+        &TargetVersions::indeterminate(),
     ) {
         ui.finish_failure();
         let message = format!(
@@ -176,6 +196,13 @@ fn confirmation_prompt(target: &str, firmware: &Path, byte_count: usize) -> Stri
 
 fn flash_refusal(inventory: &McuInventory, target: &str) -> Option<String> {
     let mcu = inventory.mcus.iter().find(|mcu| mcu.name == target)?;
+    if aldis::foci::is_foci(mcu) && aldis::foci::Board::from_mcu(&mcu.mcu).is_none() {
+        return Some(format!(
+            "refusing to flash {target}: FOCI publishes no builds for {} boards, so aldis cannot \
+             tell where its firmware must start",
+            mcu.mcu
+        ));
+    }
     match classify_mcu(mcu) {
         Eligibility::UnsupportedMcu(family) => Some(format!(
             "refusing to flash {target}: {family} boards have no bootloader aldis can flash"
@@ -222,6 +249,29 @@ mod tests {
         assert_eq!(
             flash_refusal(&inventory_with("CONFIG_MACH_ATSAMD=y\n"), "mcu other"),
             None
+        );
+    }
+
+    #[test]
+    fn refuses_to_flash_foci_on_a_board_without_a_known_application_start() {
+        let mut inventory = inventory_with("");
+        let foci = &mut inventory.mcus[0];
+        foci.app = Some("FOCI".to_owned());
+        foci.mcu = "stm32g474xx".to_owned();
+
+        let reason = flash_refusal(&inventory, "mcu xiao").expect("an unknown FOCI board");
+        assert!(reason.contains("stm32g474xx"), "{reason}");
+
+        inventory.mcus[0].mcu = "stm32h723xx".to_owned();
+        assert_eq!(flash_refusal(&inventory, "mcu xiao"), None);
+    }
+
+    #[test]
+    fn words_the_flash_confirmation_exactly() {
+        assert_eq!(
+            confirmation_prompt("mcu toolhead", &PathBuf::from("custom.bin"), 4096),
+            "Flash custom.bin (4096 bytes) to mcu toolhead? This skips Klipper's Kconfig \
+             validation."
         );
     }
 

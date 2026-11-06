@@ -2,32 +2,40 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::agent::api::{HostSnapshot, Snapshot};
 use crate::agent::service::AgentBackend;
 use crate::build::SystemCommandAdapter;
 use crate::checkout;
 use crate::coordinator::BuildCoordinator;
-use crate::eligibility::CheckoutRevision;
+use crate::eligibility::{CheckoutRevision, TargetVersions};
 use crate::flash_order::is_usb_can_bridge;
 use crate::fleet::peer::{PeerState, peers_excluding};
 use crate::fleet::system::probe_peer;
+use crate::foci::{GithubReleases, Release, ReleaseCache, ReleasePort, is_foci};
 use crate::host::{check_host, is_loopback_url};
 use crate::identify::{SerialIdentify, resolve_unreported, should_probe};
 use crate::lock::{LockError, UpdateLock};
 use crate::logging::{LoggingCommandAdapter, RunLogSink};
 use crate::moonraker::{
-    HostInfo, HostPort, KlippyState, MoonrakerAdapter, MoonrakerError, PrinterStatePort,
+    HostInfo, HostPort, KlippyState, McuInventory, MoonrakerAdapter, MoonrakerError,
+    PrinterStatePort,
 };
 use crate::service::{DEFAULT_KLIPPER_UNIT, KlipperService, KlipperUnit, ServiceState};
 use crate::update_run::{RunFailure, RunHooks, RunOutcome, RunRequest, run_updates};
 use crate::workspace::RunWorkspace;
+
+/// How long the agent's lookup of the latest FOCI release may take; the `status` request that
+/// triggers it waits for it.
+const FOCI_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct SystemBackend {
     url: String,
     log_sink: RunLogSink,
     used_unit: Mutex<Option<KlipperUnit>>,
     peer_urls: Vec<String>,
+    foci_release: Mutex<ReleaseCache>,
 }
 
 impl SystemBackend {
@@ -37,6 +45,7 @@ impl SystemBackend {
             log_sink,
             used_unit: Mutex::new(None),
             peer_urls: Vec::new(),
+            foci_release: Mutex::default(),
         }
     }
 
@@ -53,6 +62,18 @@ impl SystemBackend {
 
     fn adapter(&self) -> MoonrakerAdapter {
         MoonrakerAdapter::new(&self.url)
+    }
+
+    /// The latest FOCI release when `inventory` has a FOCI MCU, through the cache so that
+    /// frequent `status` requests ask GitHub only now and then.
+    fn foci_release(&self, inventory: &McuInventory) -> Option<Release> {
+        if !inventory.mcus.iter().any(is_foci) {
+            return None;
+        }
+        let mut cache = self.foci_release.lock().ok()?;
+        cache.get(Instant::now(), || {
+            GithubReleases::with_timeout(FOCI_LOOKUP_TIMEOUT).latest_release()
+        })
     }
 }
 
@@ -114,6 +135,7 @@ impl AgentBackend for SystemBackend {
             },
             inventory: None,
             peers: Vec::new(),
+            prebuilt: crate::prebuilt::Targets::default(),
         };
         if snapshot.host.info.state == KlippyState::Disconnected {
             return snapshot;
@@ -128,6 +150,12 @@ impl AgentBackend for SystemBackend {
                 if inventory.mcus.iter().any(is_usb_can_bridge) {
                     snapshot.peers = self.peers(snapshot.host.klipper_unit.as_deref());
                 }
+                snapshot.prebuilt = crate::prebuilt::resolve_targets(
+                    &inventory,
+                    &crate::prebuilt::ResolveContext {
+                        foci: self.foci_release(&inventory),
+                    },
+                );
                 snapshot.inventory = Some(inventory);
             }
             Err(MoonrakerError::ConfigError(_)) => snapshot.host.config_error = true,
@@ -241,7 +269,9 @@ impl SystemBackend {
             &workspace,
             RunRequest {
                 targets,
-                target_revision: &CheckoutRevision::Known(version.clone()),
+                target_versions: &TargetVersions::klipper(CheckoutRevision::Known(version.clone()))
+                    .with_prebuilt(snapshot.prebuilt.clone()),
+                foci_releases: &GithubReleases::new(),
                 clean: false,
             },
             hooks,

@@ -66,7 +66,12 @@ pub struct FlashRequest {
 
 impl FlashRequest {
     /// Firmware for `mcu` sent to its Katapult.
-    pub fn katapult(vendor: Vendor, mcu: &Mcu, image: Vec<u8>, application_start: u32) -> Self {
+    pub(crate) fn katapult(
+        vendor: Vendor,
+        mcu: &Mcu,
+        image: Vec<u8>,
+        application_start: u32,
+    ) -> Self {
         Self {
             vendor,
             destination: Destination::of(mcu),

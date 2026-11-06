@@ -3,13 +3,15 @@
 use serde::Serialize;
 
 use crate::eligibility::{
-    CheckoutRevision, Eligibility, RevisionStatus, assess_mcu, revisions_match,
+    CheckoutRevision, Eligibility, RevisionStatus, TargetVersions, UnsupportedReason, assess_mcu,
+    revisions_match,
 };
 use crate::flash_order::is_usb_can_bridge;
 use crate::fleet::peer::{PeerState, check_bridge};
 use crate::moonraker::{
     HostInfo, KlippyState, McuInventory, McuTransport, PrintState, UnreportedReason,
 };
+use crate::prebuilt::{Running, Targets};
 use crate::service::KlipperUnit;
 
 pub const API_VERSION: u32 = 1;
@@ -33,6 +35,8 @@ pub struct Snapshot {
     pub inventory: Option<McuInventory>,
     /// The other printers on this host, as last read; only consulted for USB-CAN bridge updates.
     pub peers: Vec<PeerState>,
+    /// What the FOCI MCUs are updated to; empty when there is no FOCI MCU here.
+    pub prebuilt: crate::prebuilt::Targets,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -273,14 +277,50 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
     None
 }
 
+/// The state and message for a prebuilt-firmware MCU: current, behind its target, or why it
+/// cannot be compared.
+fn assess_prebuilt(
+    firmware: &Running,
+    revision: Option<RevisionStatus>,
+    targets: &Targets,
+    running: &str,
+) -> (McuState, String) {
+    if revision == Some(RevisionStatus::Current) {
+        return (McuState::Current, format!("running {running}"));
+    }
+    let update_required = revision == Some(RevisionStatus::UpdateRequired);
+    match firmware {
+        Running::Foci(_) => match &targets.foci {
+            Some(release) if update_required => (
+                McuState::UpdateAvailable,
+                format!("running {running}, FOCI release is {}", release.tag),
+            ),
+            Some(release) => (
+                McuState::Indeterminate,
+                format!(
+                    "cannot compare running {running} with FOCI release {}",
+                    release.tag
+                ),
+            ),
+            None => (
+                McuState::Indeterminate,
+                format!("running {running}; the latest FOCI release could not be looked up"),
+            ),
+        },
+    }
+}
+
 /// Derives the `status` body; `run` is filled in by the service.
 pub fn assess(snapshot: &Snapshot) -> StatusBody {
     let host = &snapshot.host;
     let blocker = blocker(host);
     let software = host.info.software_version.clone();
-    let target = software
-        .clone()
-        .map_or(CheckoutRevision::Indeterminate, CheckoutRevision::Known);
+    let target = TargetVersions::klipper(
+        software
+            .clone()
+            .map_or(CheckoutRevision::Indeterminate, CheckoutRevision::Known),
+    )
+    .with_prebuilt(snapshot.prebuilt.clone());
     let software_label = software.as_deref().unwrap_or("unknown");
     let mut mcus = Vec::new();
     if let Some(inventory) = &snapshot.inventory {
@@ -301,6 +341,12 @@ pub fn assess(snapshot: &Snapshot) -> StatusBody {
                 ),
                 (Eligibility::ExternallyManaged(app), _) => {
                     (McuState::ExternallyManaged, format!("managed by {app}"))
+                }
+                (Eligibility::Prebuilt(firmware), revision) => {
+                    assess_prebuilt(firmware, revision, &target.prebuilt, running)
+                }
+                (Eligibility::Unsupported(UnsupportedReason::Prebuilt(reason)), _) => {
+                    (McuState::ExternallyManaged, reason.to_string())
                 }
                 (Eligibility::Unsupported(reason), _) => {
                     (McuState::UnsupportedLegacy, reason.to_string())
@@ -374,6 +420,7 @@ mod tests {
 
     use super::*;
     use crate::fleet::peer::PeerState;
+    use crate::foci::Release;
     use crate::moonraker::{Mcu, McuTransport, UnreportedMcu};
 
     fn mcu(name: &str, version: &str, kconfig: &str) -> Mcu {
@@ -421,6 +468,7 @@ mod tests {
                 }],
             }),
             peers: Vec::new(),
+            prebuilt: crate::prebuilt::Targets::default(),
         }
     }
 
@@ -441,6 +489,160 @@ mod tests {
         assert_eq!(
             entry.message,
             "ATSAMD boards have no bootloader aldis can flash"
+        );
+    }
+
+    fn with_foci(mut snapshot: Snapshot, version: &str, features: &str) -> Snapshot {
+        let mut foci = mcu("mcu ouroboros", version, "");
+        foci.app = Some("FOCI".to_owned());
+        foci.build_versions = Some(format!("rust=1.98.1 features={features} board=0fb68e1b"));
+        snapshot.inventory.as_mut().unwrap().mcus.push(foci);
+        snapshot
+    }
+
+    fn foci_entry(snapshot: &Snapshot) -> McuEntry {
+        assess(snapshot)
+            .mcus
+            .into_iter()
+            .find(|entry| entry.name == "ouroboros")
+            .unwrap()
+    }
+
+    /// Every vendor state at once, as the agent serializes it, so the shared prebuilt-firmware
+    /// path cannot alter a state, message or action unnoticed.
+    #[test]
+    fn serializes_every_prebuilt_firmware_state() {
+        let mut snapshot = ready_snapshot();
+        snapshot.inventory.as_mut().unwrap().unreported.clear();
+        let mut add =
+            |name: &str, app: &str, version: &str, model: &str, features: Option<&str>| {
+                let mut mcu = mcu(name, version, "");
+                mcu.app = Some(app.to_owned());
+                mcu.mcu = model.to_owned();
+                mcu.build_versions = features.map(str::to_owned);
+                snapshot.inventory.as_mut().unwrap().mcus.push(mcu);
+            };
+        let prod = Some("rust=1.98.1 features=none board=0fb68e1b");
+        add(
+            "mcu foci_old",
+            "FOCI",
+            "v0.4.0-0-g0fb68e1b",
+            "stm32h723xx",
+            prod,
+        );
+        add(
+            "mcu foci_cur",
+            "FOCI",
+            "v0.4.1-0-g0fb68e1b",
+            "stm32h723xx",
+            prod,
+        );
+        add(
+            "mcu foci_dev",
+            "FOCI",
+            "v0.4.0-3-gabcdef12",
+            "stm32h723xx",
+            prod,
+        );
+        add(
+            "mcu foci_flavor",
+            "FOCI",
+            "v0.4.0-0-g0fb68e1b",
+            "stm32h723xx",
+            Some("rust=1.98.1 features=dev board=0fb68e1b"),
+        );
+        snapshot.prebuilt.foci = Release::from_tag("v0.4.1");
+
+        let entries: Vec<String> = assess(&snapshot)
+            .mcus
+            .iter()
+            .skip(2)
+            .map(|entry| {
+                format!(
+                    "{} | {:?} | {:?} | {}",
+                    entry.name, entry.state, entry.actions, entry.message
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            entries.join("\n"),
+            [
+                "foci_old | UpdateAvailable | [Update] | running v0.4.0-0-g0fb68e1b, FOCI release is v0.4.1",
+                "foci_cur | Current | [] | running v0.4.1-0-g0fb68e1b",
+                "foci_dev | Indeterminate | [] | cannot compare running v0.4.0-3-gabcdef12 with FOCI release v0.4.1",
+                "foci_flavor | ExternallyManaged | [] | FOCI build features \"dev\" match no release flavor",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn offers_an_update_for_a_foci_mcu_behind_the_foci_release() {
+        let mut snapshot = with_foci(ready_snapshot(), "v0.4.0-0-g0fb68e1b", "none");
+        snapshot.prebuilt.foci = Release::from_tag("v0.4.1");
+
+        let entry = foci_entry(&snapshot);
+
+        assert_eq!(entry.state, McuState::UpdateAvailable);
+        assert_eq!(entry.actions, vec![Action::Update]);
+        assert_eq!(
+            entry.message,
+            "running v0.4.0-0-g0fb68e1b, FOCI release is v0.4.1"
+        );
+
+        snapshot.host.print_state = Some(PrintState::Printing);
+        assert!(
+            foci_entry(&snapshot).actions.is_empty(),
+            "a blocker withholds FOCI updates too"
+        );
+    }
+
+    #[test]
+    fn reports_a_foci_mcu_at_the_release_as_current() {
+        let mut snapshot = with_foci(ready_snapshot(), "v0.4.1-0-ga82de21d", "none");
+        snapshot.prebuilt.foci = Release::from_tag("v0.4.1");
+
+        let entry = foci_entry(&snapshot);
+
+        assert_eq!(entry.state, McuState::Current);
+        assert!(entry.actions.is_empty());
+        assert_eq!(entry.message, "running v0.4.1-0-ga82de21d");
+    }
+
+    #[test]
+    fn cannot_compare_a_foci_dev_build_or_one_without_a_known_release() {
+        let mut snapshot = with_foci(ready_snapshot(), "v0.4.0-3-gabcdef12", "none");
+        snapshot.prebuilt.foci = Release::from_tag("v0.4.1");
+        let dev = foci_entry(&snapshot);
+        assert_eq!(dev.state, McuState::Indeterminate);
+        assert!(dev.actions.is_empty());
+        assert_eq!(
+            dev.message,
+            "cannot compare running v0.4.0-3-gabcdef12 with FOCI release v0.4.1"
+        );
+
+        let unknown = foci_entry(&with_foci(ready_snapshot(), "v0.4.0-0-g0fb68e1b", "none"));
+        assert_eq!(unknown.state, McuState::Indeterminate);
+        assert!(unknown.actions.is_empty());
+        assert_eq!(
+            unknown.message,
+            "running v0.4.0-0-g0fb68e1b; the latest FOCI release could not be looked up"
+        );
+    }
+
+    #[test]
+    fn reports_a_foci_build_no_release_matches_as_externally_managed() {
+        let mut snapshot = with_foci(ready_snapshot(), "v0.4.0-0-g0fb68e1b", "dev");
+        snapshot.prebuilt.foci = Release::from_tag("v0.4.1");
+
+        let entry = foci_entry(&snapshot);
+
+        assert_eq!(entry.state, McuState::ExternallyManaged);
+        assert!(entry.actions.is_empty());
+        assert_eq!(
+            entry.message,
+            "FOCI build features \"dev\" match no release flavor"
         );
     }
 

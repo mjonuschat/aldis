@@ -36,6 +36,7 @@ impl AgentBackend for Idle {
                 unreported: Vec::new(),
             }),
             peers: Vec::new(),
+            prebuilt: aldis::prebuilt::Targets::default(),
         }
     }
     fn try_lock(&self) -> Result<UpdateLock, LockError> {

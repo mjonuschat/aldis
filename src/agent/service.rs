@@ -471,9 +471,9 @@ impl<B: AgentBackend> RunHooks for AgentHooks<'_, B> {
 
     fn progress(&mut self, _: &str, progress: UpdateProgress) {
         let (phase, message) = match progress {
-            UpdateProgress::StoppingKlipper => (Phase::StopKlipper, "stopping Klipper"),
             UpdateProgress::DownloadingFirmware => (Phase::Build, "downloading firmware"),
             UpdateProgress::FirmwareDownloaded => (Phase::Build, "downloaded firmware"),
+            UpdateProgress::StoppingKlipper => (Phase::StopKlipper, "stopping Klipper"),
             UpdateProgress::ConfiguringFirmware => (Phase::Build, "configuring firmware"),
             UpdateProgress::CompilingFirmware => (Phase::Build, "compiling firmware"),
             UpdateProgress::EnteringBootloader => (Phase::EnterBootloader, "entering bootloader"),
@@ -568,6 +568,7 @@ mod tests {
                 unreported: Vec::new(),
             }),
             peers: Vec::new(),
+            prebuilt: crate::prebuilt::Targets::default(),
         }
     }
 
@@ -768,6 +769,47 @@ mod tests {
         assert_eq!(events.last().unwrap().phase, Phase::Done);
         assert!(events.last().unwrap().complete);
         assert_eq!(run.messages.last(), events.last());
+    }
+
+    #[test]
+    fn updates_a_foci_mcu_by_name_once_a_foci_release_is_known() {
+        let mut snapshot = snapshot(PrintState::Standby);
+        let mut foci = mcu("mcu ouroboros", "v0.4.0-0-g0fb68e1b", "");
+        foci.app = Some("FOCI".to_owned());
+        foci.mcu = "stm32h723xx".to_owned();
+        foci.build_versions = Some("rust=1.98.1 features=none board=0fb68e1b".to_owned());
+        snapshot.inventory.as_mut().unwrap().mcus.push(foci);
+
+        let unknown = AgentService::new(
+            FakeBackend::new(snapshot.clone(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+        let error = unknown
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["ouroboros".to_owned()],
+            })
+            .unwrap_err();
+        assert_eq!(reason(&error), "not_updatable");
+
+        snapshot.prebuilt.foci = crate::foci::Release::from_tag("v0.4.1");
+        let backend = FakeBackend::new(
+            snapshot,
+            Ok(RunOutcome {
+                updated: vec!["mcu ouroboros".to_owned()],
+            }),
+        );
+        let service = AgentService::new(backend, sink().0);
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["ouroboros".to_owned()],
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+        assert_eq!(
+            *service.backend.seen_targets.lock().unwrap(),
+            vec!["mcu ouroboros"]
+        );
     }
 
     #[test]
