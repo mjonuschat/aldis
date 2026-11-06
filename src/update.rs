@@ -11,8 +11,7 @@ use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision
 use aldis::config::{FleetConfig, instance_urls};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
 use aldis::eligibility::{
-    CheckoutRevision, TargetVersions, UpdateSelection, classify_mcu, is_selected,
-    removes_calibration,
+    CheckoutRevision, TargetVersions, UpdateSelection, is_selected, removes_calibration,
 };
 use aldis::fleet::peer::{check_bridge, peers_excluding};
 use aldis::fleet::system::{other_urls, probe_peer};
@@ -162,9 +161,7 @@ fn run_update(
         .iter()
         .filter(|mcu| arguments.targets.contains(&mcu.name))
     {
-        if let aldis::eligibility::Eligibility::Prebuilt(running) = classify_mcu(mcu)
-            && let Some(refusal) = versions.prebuilt.downgrade_refusal(&running, &mcu.name)
-        {
+        if let Some(refusal) = aldis::eligibility::downgrade_refusal(mcu, &versions) {
             ui.block(&format!("\n{refusal}\n"));
         }
     }

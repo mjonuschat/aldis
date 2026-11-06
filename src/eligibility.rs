@@ -195,11 +195,54 @@ pub fn removes_calibration(mcu: &Mcu) -> bool {
     crate::cartographer::is_cartographer(mcu)
 }
 
+/// How an MCU's running Klipper revision compares with the checkout's it would be built from.
+/// The same commit is current, whatever the length of its hash. Otherwise an older one is an
+/// update, a newer one cannot be placed relative to the checkout and is not replaced by an
+/// update, and a different commit at the same position, or a revision with no tag, is an update.
+fn compare_revisions(running: &str, selected: &str) -> RevisionStatus {
+    if revisions_match(running, selected) {
+        return RevisionStatus::Current;
+    }
+    match (klipper_version(running), klipper_version(selected)) {
+        (Some(running), Some(selected)) => match compare_versions(&running, &selected) {
+            RevisionStatus::Current => RevisionStatus::UpdateRequired,
+            status => status,
+        },
+        _ => RevisionStatus::UpdateRequired,
+    }
+}
+
+/// Whether the MCU runs a newer Klipper revision than the checkout it would be rebuilt from.
+fn downgrades_klipper(mcu: &Mcu, versions: &TargetVersions) -> bool {
+    matches!(
+        (&mcu.version, &versions.klipper),
+        (Some(running), CheckoutRevision::Known(selected))
+            if compare_revisions(running, selected) == RevisionStatus::Indeterminate
+    )
+}
+
+/// Why an update will not replace `mcu`'s firmware with the build or image it would otherwise
+/// get, when it is because that would be a downgrade.
+pub fn downgrade_refusal(mcu: &Mcu, versions: &TargetVersions) -> Option<String> {
+    match classify_mcu(mcu) {
+        Eligibility::Eligible if downgrades_klipper(mcu, versions) => Some(format!(
+            "{} runs {}, newer than the {} checkout, and an update never downgrades it: update \
+             the checkout first",
+            mcu.name,
+            mcu.version.as_deref().unwrap_or("unknown"),
+            versions.klipper.label()
+        )),
+        Eligibility::Prebuilt(running) => versions.prebuilt.downgrade_refusal(&running, &mcu.name),
+        _ => None,
+    }
+}
+
 /// Returns whether one MCU is eligible for the requested update selection.
 pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelection) -> bool {
     let status = assess_mcu(mcu, versions);
     let updatable = match status.eligibility {
-        Eligibility::Eligible => true,
+        // A Klipper MCU is never replaced with an older build, whatever the selection.
+        Eligibility::Eligible => !downgrades_klipper(mcu, versions),
         // Prebuilt firmware is flashed with its target image, so even `All` needs one to be
         // known: the FOCI release, or the Beacon's or Cartographer's image from its checkout.
         Eligibility::Prebuilt(ref running) => {
@@ -222,12 +265,9 @@ pub fn assess_mcu(mcu: &Mcu, versions: &TargetVersions) -> McuStatus {
     let eligibility = classify_mcu(mcu);
     let revision = match &eligibility {
         Eligibility::Eligible => Some(match (&mcu.version, &versions.klipper) {
-            (Some(running), CheckoutRevision::Known(selected))
-                if revisions_match(running, selected) =>
-            {
-                RevisionStatus::Current
+            (Some(running), CheckoutRevision::Known(selected)) => {
+                compare_revisions(running, selected)
             }
-            (Some(_), CheckoutRevision::Known(_)) => RevisionStatus::UpdateRequired,
             _ => RevisionStatus::Indeterminate,
         }),
         Eligibility::Prebuilt(running) => Some(versions.prebuilt.compare(running, &mcu.name)),
@@ -340,8 +380,8 @@ fn classify_known_firmware(
     minimum_version: &'static str,
 ) -> Eligibility {
     if let Some(running) = mcu.version.as_deref()
-        && let Some(running_parsed) = parse_git_describe(running)
-        && let Some(minimum_parsed) = parse_git_describe(minimum_version)
+        && let Some(running_parsed) = klipper_version(running)
+        && let Some(minimum_parsed) = klipper_version(minimum_version)
         && running_parsed < minimum_parsed
     {
         return Eligibility::Unsupported(UnsupportedReason::VersionTooOld {
@@ -401,34 +441,28 @@ fn classify_by_embedded_config(mcu: &Mcu) -> Eligibility {
     }
 }
 
-/// A parsed `git describe --tags --long` version: `vMAJOR.MINOR.PATCH[-COMMITS[-gHASH]]`.
+/// A Klipper or Kalico revision, `git describe --tags --long`'s `vMAJOR.MINOR.PATCH[-COMMITS[-gHASH]]`,
+/// as a semver version that orders like the history it names: the tags themselves, and then the
+/// commits since the latest one. Commits after a tag are work towards the next release, so
+/// `v0.13.0-756-g2d7717e3` is `0.13.1-dev.756`, newer than `v0.13.0` and older than `v0.13.1`.
+/// The hash and the dirty marker carry no order and are left out, so equal versions may still be
+/// different commits (see [`revisions_match`]). `None` when the revision names no tag.
 ///
-/// Ordered by `(major, minor, patch, commits)` so a version on a newer tag always outranks
-/// one on an older tag regardless of commit count, matching how the tags themselves are cut.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-struct ParsedVersion {
-    major: u32,
-    minor: u32,
-    patch: u32,
-    commits: u32,
-}
-
-fn parse_git_describe(version: &str) -> Option<ParsedVersion> {
-    let version = version.strip_prefix('v')?;
-    let mut segments = version.splitn(3, '-');
+/// Counting commits orders one branch's history only. Versions from different branches or forks
+/// compare by their counts, which says nothing about which has the other's changes.
+pub fn klipper_version(revision: &str) -> Option<semver::Version> {
+    let revision = revision.strip_prefix('v')?;
+    let mut segments = revision.splitn(3, '-');
     let core = segments.next()?;
-    let commits = segments.next().unwrap_or("0");
-
-    let mut core_parts = core.splitn(3, '.');
-    let major = core_parts.next()?.parse().ok()?;
-    let minor = core_parts.next()?.parse().ok()?;
-    let patch = core_parts.next()?.parse().ok()?;
-    let commits = commits.parse().ok()?;
-
-    Some(ParsedVersion {
-        major,
-        minor,
-        patch,
-        commits,
-    })
+    let commits: u64 = segments.next().unwrap_or("0").parse().ok()?;
+    let mut core = core.splitn(3, '.');
+    let major: u64 = core.next()?.parse().ok()?;
+    let minor: u64 = core.next()?.parse().ok()?;
+    let patch: u64 = core.next()?.parse().ok()?;
+    if commits == 0 {
+        return Some(semver::Version::new(major, minor, patch));
+    }
+    let mut version = semver::Version::new(major, minor, patch + 1);
+    version.pre = semver::Prerelease::new(&format!("dev.{commits}")).ok()?;
+    Some(version)
 }

@@ -761,3 +761,121 @@ fn compares_any_ordered_version_the_same_way() {
         "a newer running version cannot be placed relative to its target"
     );
 }
+
+#[test]
+fn turns_a_klipper_revision_into_a_version_that_orders_like_its_history() {
+    use aldis::eligibility::klipper_version;
+    use semver::Version;
+
+    let version = |text: &str| klipper_version(text).unwrap_or_else(|| panic!("{text:?}"));
+
+    assert_eq!(version("v0.13.0-0-g2d7717e3"), Version::new(0, 13, 0));
+    assert_eq!(version("v0.13.0"), Version::new(0, 13, 0));
+    assert_eq!(
+        version("v0.13.0-756-g2d7717e3").to_string(),
+        "0.13.1-dev.756"
+    );
+    // The hash and the dirty marker carry no order, however the build spells them.
+    assert_eq!(
+        version("v0.13.0-756-g2d7717e3-dirty"),
+        version("v0.13.0-756-gabcdef0")
+    );
+    assert_eq!(
+        version("v0.13.0-756-g2d7717e3-dirty-20250102_153012-printer"),
+        version("v0.13.0-756-g2d7717e3")
+    );
+
+    let history = [
+        "v0.12.0-900-gaaaaaaa",
+        "v0.13.0-0-gbbbbbbb",
+        "v0.13.0-9-gccccccc",
+        "v0.13.0-756-gddddddd",
+        "v0.13.1-0-geeeeeee",
+        "v0.13.1-2-gfffffff",
+    ];
+    for pair in history.windows(2) {
+        assert!(version(pair[0]) < version(pair[1]), "{pair:?}");
+    }
+
+    for unparsable in [
+        "2d7717e3",
+        "0.13.0-1-gabc",
+        "v0.13-1-gabc",
+        "v0.13.0-rc1-3-gabc",
+        "",
+    ] {
+        assert_eq!(klipper_version(unparsable), None, "{unparsable:?}");
+    }
+}
+
+#[test]
+fn compares_a_klipper_mcu_with_the_checkout_it_is_built_from() {
+    let at = |checkout: &str, running: &str| {
+        assess_mcu(
+            &mcu(Some("Klipper"), Some(running), "CONFIG=x\n"),
+            &TargetVersions::klipper(CheckoutRevision::Known(checkout.to_owned())),
+        )
+        .revision
+    };
+    let checkout = "v0.13.0-900-g2d7717e3";
+
+    assert_eq!(
+        at(checkout, "v0.13.0-900-g2d7717e"),
+        Some(RevisionStatus::Current),
+        "the same commit, whatever the length of its hash"
+    );
+    assert_eq!(
+        at(checkout, "v0.13.0-800-g1111111"),
+        Some(RevisionStatus::UpdateRequired),
+        "an older MCU is updated"
+    );
+    assert_eq!(
+        at(checkout, "v0.13.0-901-g1111111"),
+        Some(RevisionStatus::Indeterminate),
+        "a newer MCU is not replaced by an update"
+    );
+    assert_eq!(
+        at(checkout, "v0.13.1-0-g1111111"),
+        Some(RevisionStatus::Indeterminate)
+    );
+    assert_eq!(
+        at(checkout, "v0.13.0-900-g1111111"),
+        Some(RevisionStatus::UpdateRequired),
+        "another commit at the same position is not the checkout's"
+    );
+    assert_eq!(
+        at(checkout, "v0.13.0-900-g2d7717e3-dirty"),
+        Some(RevisionStatus::UpdateRequired),
+        "a dirty build is not the clean checkout"
+    );
+    assert_eq!(
+        at("g2d7717e3", "v0.13.0-880-g1111111"),
+        Some(RevisionStatus::UpdateRequired),
+        "a revision with no tag has no order, so a difference is an update"
+    );
+}
+
+#[test]
+fn never_selects_a_klipper_mcu_for_an_older_build_than_it_runs() {
+    use aldis::eligibility::downgrade_refusal;
+
+    let versions =
+        TargetVersions::klipper(CheckoutRevision::Known("v0.13.0-900-g2d7717e3".to_owned()));
+    let newer = mcu(Some("Klipper"), Some("v0.13.0-950-g1111111"), "CONFIG=x\n");
+    let older = mcu(Some("Klipper"), Some("v0.13.0-800-g1111111"), "CONFIG=x\n");
+
+    for selection in [UpdateSelection::Required, UpdateSelection::All] {
+        assert!(!is_selected(&newer, &versions, &selection));
+    }
+    assert!(is_selected(&older, &versions, &UpdateSelection::Required));
+    assert!(is_selected(&older, &versions, &UpdateSelection::All));
+    assert_eq!(
+        downgrade_refusal(&newer, &versions),
+        Some(
+            "mcu runs v0.13.0-950-g1111111, newer than the v0.13.0-900-g2d7717e3 checkout, and \
+             an update never downgrades it: update the checkout first"
+                .to_owned()
+        )
+    );
+    assert_eq!(downgrade_refusal(&older, &versions), None);
+}
