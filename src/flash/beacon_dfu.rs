@@ -186,8 +186,8 @@ pub fn flash(
             .map_err(BeaconDfuError::Transport)?;
         match dfu.manifest() {
             Ok(_) => {}
-            Err(error @ (dfu_nusb::Error::Transfer(_) | dfu_nusb::Error::Nusb(_))) => {
-                tracing::debug!(%error, "beacon bootloader dropped off the bus during manifestation");
+            Err(error) if manifestation_finished_early(&error) => {
+                tracing::debug!(%error, "beacon bootloader finished manifestation before it was polled");
             }
             Err(error) => return Err(BeaconDfuError::Transport(error)),
         }
@@ -198,9 +198,26 @@ pub fn flash(
     })
 }
 
+/// Whether an error from asking for the manifestation only means the bootloader acted on it
+/// before the host could watch: it dropped off the bus to restart into the new firmware, or it
+/// answered the status poll from `DfuIdle`, having already finished (it never reports
+/// `DfuManifest`). The image has been downloaded in full by then; success is confirmed by the
+/// Beacon reporting the image's version once its application runs.
+fn manifestation_finished_early(error: &dfu_nusb::Error) -> bool {
+    use dfu_core::State;
+    match error {
+        dfu_nusb::Error::Transfer(_) | dfu_nusb::Error::Nusb(_) => true,
+        dfu_nusb::Error::Dfu(dfu_core::Error::InvalidState { got, expected }) => {
+            *got == State::DfuIdle
+                && matches!(expected, State::DfuManifest | State::DfuManifestSync)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{bootloader_at, is_bootloader};
+    use super::{bootloader_at, is_bootloader, manifestation_finished_early};
 
     #[test]
     fn recognizes_the_bootloader_only_by_its_identity_and_product_name() {
@@ -274,6 +291,34 @@ mod tests {
             &stuck,
             short,
             Duration::from_millis(5)
+        ));
+    }
+
+    #[test]
+    fn counts_a_bootloader_that_is_already_idle_after_the_last_block_as_finished() {
+        use dfu_core::State;
+
+        let invalid =
+            |got, expected| dfu_nusb::Error::Dfu(dfu_core::Error::InvalidState { got, expected });
+
+        assert!(manifestation_finished_early(&invalid(
+            State::DfuIdle,
+            State::DfuManifest
+        )));
+        assert!(manifestation_finished_early(&invalid(
+            State::DfuIdle,
+            State::DfuManifestSync
+        )));
+        assert!(
+            !manifestation_finished_early(&invalid(State::DfuError, State::DfuManifest)),
+            "a device in error did not finish"
+        );
+        assert!(
+            !manifestation_finished_early(&invalid(State::DfuIdle, State::DfuDnbusy)),
+            "only the manifestation may end this early"
+        );
+        assert!(!manifestation_finished_early(
+            &dfu_nusb::Error::DeviceNotFound
         ));
     }
 }
