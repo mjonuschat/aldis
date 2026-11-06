@@ -6,3 +6,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="0003", MODE="0660", 
 
 # RP2350 ROM PicoBoot bootloader.
 SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000f", MODE="0660", GROUP="dialout"
+
+# Beacon probe DFU bootloader (RevD and RevH).
+SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="beac", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="bea1", MODE="0660", GROUP="dialout"

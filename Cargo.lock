@@ -377,7 +377,7 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 [[package]]
 name = "dfu-core"
 version = "0.11.1"
-source = "git+https://github.com/mjonuschat/dfu-core?rev=e0150206498cbb2b1f06c897ba129b5daa841f7a#e0150206498cbb2b1f06c897ba129b5daa841f7a"
+source = "git+https://github.com/mjonuschat/dfu-core?rev=14badb3f178cc2a9afa157e2b9d6186cdc46e024#14badb3f178cc2a9afa157e2b9d6186cdc46e024"
 dependencies = [
  "bytes",
  "displaydoc",
