@@ -136,6 +136,12 @@ flashes only after it has. Requirements:
 - `aldis reboot` finds stuck bootloaders by scanning USB, so a Katapult left waiting on a UART is not
   listed. Run `flash` against the MCU again to recover it.
 
+## Third-party firmware
+
+Besides Klipper and Kalico, `aldis` updates:
+
+- [FOCI](https://github.com/foci-rs/foci)
+
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).
