@@ -37,6 +37,33 @@ fn recognizes_foci_by_its_app_name() {
 }
 
 #[test]
+fn recognizes_foci_by_its_build_versions_when_the_host_passes_on_no_app() {
+    let mut mcu = foci_mcu("stm32h723xx", "v0.4.2-0-ga32ed047", Some(PROD));
+    mcu.app = None;
+    assert!(is_foci(&mcu));
+    let firmware = identify(&mcu).expect("a release build");
+    assert_eq!(firmware.board, Board::Ouroboros);
+    assert_eq!(firmware.flavor, Flavor::Prod);
+
+    mcu.app = Some(String::new());
+    assert!(is_foci(&mcu), "a blank app is no app");
+
+    for other in [
+        None,
+        Some("gcc: (15:14.2.rel1-1) 14.2.1 20241119 binutils: (2.44-3+23+b2) 2.44"),
+        Some("rust=1.98.1 features=none"),
+        Some("features=none board=a82de21d"),
+    ] {
+        mcu.build_versions = other.map(str::to_owned);
+        assert!(!is_foci(&mcu), "{other:?}");
+    }
+
+    mcu.app = Some("Klipper".to_owned());
+    mcu.build_versions = Some(PROD.to_owned());
+    assert!(!is_foci(&mcu), "another app is another firmware");
+}
+
+#[test]
 fn identifies_the_board_flavor_and_version_of_a_release_build() {
     let firmware = identify(&foci_mcu("stm32h723xx", "v0.4.1-0-ga82de21d", Some(PROD))).unwrap();
 

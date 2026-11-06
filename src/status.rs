@@ -106,6 +106,7 @@ pub(crate) fn format_status(
 fn firmware_label(mcu: &aldis::moonraker::Mcu, eligibility: &Eligibility) -> String {
     match eligibility {
         Eligibility::ExternallyManaged(name) => return name.clone(),
+        Eligibility::Prebuilt(Running::Foci(_)) => return "FOCI".to_owned(),
         Eligibility::Prebuilt(Running::Beacon(_)) => return "Beacon".to_owned(),
         Eligibility::Prebuilt(Running::Cartographer(_)) => return "Cartographer".to_owned(),
         _ => {}

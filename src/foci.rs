@@ -151,10 +151,20 @@ pub enum Unsupported {
     UnparsableVersion(String),
 }
 
-/// Whether `mcu` runs FOCI.
+/// Whether `mcu` runs FOCI: it reports `app` `FOCI`, or, when the host's Klipper does not pass
+/// `app` on (older ones do not), build versions only FOCI's build writes: its Rust toolchain, its
+/// cargo features and its board.
 pub fn is_foci(mcu: &Mcu) -> bool {
-    mcu.app_name()
-        .is_some_and(|app| app.eq_ignore_ascii_case(APP))
+    match mcu.app_name() {
+        Some(app) => app.eq_ignore_ascii_case(APP),
+        None => mcu.build_versions.as_deref().is_some_and(|versions| {
+            ["rust=", "features=", "board="].iter().all(|key| {
+                versions
+                    .split_whitespace()
+                    .any(|field| field.starts_with(key))
+            })
+        }),
+    }
 }
 
 /// Matches a FOCI MCU's identify data to a board, flavor and version.
