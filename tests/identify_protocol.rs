@@ -386,3 +386,28 @@ fn gives_up_when_nothing_answers() {
         Err(IdentifyError::NoResponse)
     ));
 }
+
+#[test]
+fn reads_an_identity_from_an_inflated_dictionary() {
+    use aldis::identify::DictionaryIdentity;
+
+    let json = serde_json::json!({
+        "app": "Cartographer",
+        "version": "CARTOGRAPHER V4 6.1.0",
+        "config": { "MCU": "stm32g431xx", "CANBUS_FREQUENCY": 1_000_000 },
+    });
+    assert_eq!(
+        DictionaryIdentity::from_json(&json),
+        DictionaryIdentity {
+            app: Some("Cartographer".to_owned()),
+            version: Some("CARTOGRAPHER V4 6.1.0".to_owned()),
+            mcu: Some("stm32g431xx".to_owned()),
+            canbus_frequency_hz: Some(1_000_000),
+        }
+    );
+    assert_eq!(
+        DictionaryIdentity::from_json(&serde_json::json!({ "version": 1, "config": [] })),
+        DictionaryIdentity::default(),
+        "a field of the wrong type counts as missing"
+    );
+}

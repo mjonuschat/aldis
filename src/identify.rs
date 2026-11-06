@@ -209,17 +209,48 @@ impl IdentifyData {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         };
+        let identity = DictionaryIdentity::from_json(&json);
         Ok(Self {
-            app: text("/app"),
-            version: text("/version")
+            app: identity.app,
+            version: identity
+                .version
                 .ok_or_else(|| IdentifyError::Decode("no version".to_owned()))?,
-            mcu: text("/config/MCU").ok_or_else(|| IdentifyError::Decode("no MCU".to_owned()))?,
-            canbus_frequency_hz: json
-                .pointer("/config/CANBUS_FREQUENCY")
-                .and_then(Value::as_u64),
+            mcu: identity
+                .mcu
+                .ok_or_else(|| IdentifyError::Decode("no MCU".to_owned()))?,
+            canbus_frequency_hz: identity.canbus_frequency_hz,
             build_versions: text("/build_versions"),
             kconfig: text("/kconfig").unwrap_or_default(),
         })
+    }
+}
+
+/// What a firmware's identify dictionary says about itself, as the MCU's `identify` reply and a
+/// firmware image's embedded copy both hold it. Each field is `None` when the dictionary lacks it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DictionaryIdentity {
+    pub app: Option<String>,
+    pub version: Option<String>,
+    pub mcu: Option<String>,
+    pub canbus_frequency_hz: Option<u64>,
+}
+
+impl DictionaryIdentity {
+    /// Reads the identity from an inflated dictionary.
+    pub fn from_json(json: &Value) -> Self {
+        let text = |pointer: &str| {
+            json.pointer(pointer)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        Self {
+            app: text("/app"),
+            version: text("/version"),
+            mcu: text("/config/MCU"),
+            canbus_frequency_hz: json
+                .pointer("/config/CANBUS_FREQUENCY")
+                .and_then(Value::as_u64),
+        }
     }
 }
 
