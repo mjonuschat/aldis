@@ -748,3 +748,16 @@ fn selects_prebuilt_vendors_by_how_the_running_version_compares_with_the_target(
         "a newer probe is not offered, but naming it with --force still reflashes"
     );
 }
+
+#[test]
+fn compares_any_ordered_version_the_same_way() {
+    use aldis::eligibility::compare_versions;
+
+    assert_eq!(compare_versions(&1, &2), RevisionStatus::UpdateRequired);
+    assert_eq!(compare_versions(&2, &2), RevisionStatus::Current);
+    assert_eq!(
+        compare_versions(&3, &2),
+        RevisionStatus::Indeterminate,
+        "a newer running version cannot be placed relative to its target"
+    );
+}

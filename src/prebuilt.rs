@@ -228,7 +228,7 @@ impl Targets {
                 crate::foci::compare(&firmware.version, release)
             }
             (Running::Beacon(firmware), Some(Target::Beacon(target))) => {
-                crate::beacon::compare(&firmware.version, &target.version)
+                crate::eligibility::compare_versions(&firmware.version, &target.version)
             }
             (Running::Cartographer(firmware), Some(Target::Cartographer(target))) => {
                 crate::cartographer::compare(firmware, target)

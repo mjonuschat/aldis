@@ -70,6 +70,17 @@ pub enum RevisionStatus {
     Indeterminate,
 }
 
+/// How a running version compares with the version it would be updated to. Older is an update and
+/// equal is current. A newer running version is not replaced by an update, so it cannot be placed
+/// relative to the target.
+pub fn compare_versions<T: Ord>(running: &T, target: &T) -> RevisionStatus {
+    match running.cmp(target) {
+        std::cmp::Ordering::Less => RevisionStatus::UpdateRequired,
+        std::cmp::Ordering::Equal => RevisionStatus::Current,
+        std::cmp::Ordering::Greater => RevisionStatus::Indeterminate,
+    }
+}
+
 /// A selected Klipper checkout revision suitable for comparison.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckoutRevision {

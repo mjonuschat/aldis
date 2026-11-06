@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::eligibility::RevisionStatus;
+use crate::eligibility::{RevisionStatus, compare_versions};
 use crate::identify::DictionaryIdentity;
 use crate::moonraker::{Mcu, McuInventory, McuTransport};
 
@@ -171,11 +171,7 @@ fn identify_cartographer(mcu: &Mcu) -> Result<Firmware, Unsupported> {
 /// How a running probe compares with the image it would be updated to. A probe newer than the
 /// image is not downgraded unless asked to be.
 pub fn compare(running: &Firmware, target: &Target) -> RevisionStatus {
-    match running.version.cmp(&target.version) {
-        std::cmp::Ordering::Equal => RevisionStatus::Current,
-        std::cmp::Ordering::Less => RevisionStatus::UpdateRequired,
-        std::cmp::Ordering::Greater => RevisionStatus::Indeterminate,
-    }
+    compare_versions(&running.version, &target.version)
 }
 
 /// What a firmware image says about itself in its embedded identify dictionary: what the probe

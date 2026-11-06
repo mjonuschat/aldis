@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 
 use semver::Version;
 
-use crate::eligibility::RevisionStatus;
 use crate::moonraker::{Mcu, McuInventory, McuTransport};
 
 /// The USB vendor Beacon's application and bootloader use (Microchip's).
@@ -98,16 +97,6 @@ pub fn names_itself_beacon(mcu: &Mcu) -> bool {
         && mcu
             .version_name()
             .is_some_and(|word| word.eq_ignore_ascii_case(NAME))
-}
-
-/// How a running Beacon compares with the image in the checkout. A Beacon newer than the image
-/// is not downgraded by an update, so it cannot be placed relative to it.
-pub fn compare(running: &Version, target: &Version) -> RevisionStatus {
-    match running.cmp(target) {
-        std::cmp::Ordering::Equal => RevisionStatus::Current,
-        std::cmp::Ordering::Less => RevisionStatus::UpdateRequired,
-        std::cmp::Ordering::Greater => RevisionStatus::Indeterminate,
-    }
 }
 
 /// Whether an update may replace the running Beacon with the image holding `target`: never with

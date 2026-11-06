@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use aldis::beacon::{
-    ImageError, Target, Unavailable, compare, config_section, identify, image_path, is_beacon,
+    ImageError, Target, Unavailable, config_section, identify, image_path, is_beacon,
     locate_checkout, parse_image, parse_reported, reported, resolve_targets, revision_from_product,
     version_from_bcd,
 };
-use aldis::eligibility::RevisionStatus;
+use aldis::eligibility::{RevisionStatus, compare_versions};
 use aldis::moonraker::{Mcu, McuInventory, McuTransport};
 
 fn beacon_mcu(name: &str, app: Option<&str>, version: &str) -> Mcu {
@@ -108,18 +108,18 @@ fn recognizes_beacon_by_its_version_with_a_blank_or_beacon_app() {
 }
 
 #[test]
-fn treats_any_difference_as_an_update_as_upstream_does() {
+fn compares_a_beacon_version_with_the_image_in_the_checkout() {
     let version = |bcd| version_from_bcd(bcd);
     assert_eq!(
-        compare(&version(0x2010), &version(0x2010)),
+        compare_versions(&version(0x2010), &version(0x2010)),
         RevisionStatus::Current
     );
     assert_eq!(
-        compare(&version(0x2000), &version(0x2010)),
+        compare_versions(&version(0x2000), &version(0x2010)),
         RevisionStatus::UpdateRequired
     );
     assert_eq!(
-        compare(&version(0x2010), &version(0x2000)),
+        compare_versions(&version(0x2010), &version(0x2000)),
         RevisionStatus::Indeterminate,
         "an older checkout is not a reason to downgrade"
     );
