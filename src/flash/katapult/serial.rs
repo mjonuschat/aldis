@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use super::session::Transport;
 use super::{AssemblyError, MAX_RESPONSE_FRAME_BYTES, ResponseAssembler};
 use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
-use crate::flash::usb_sysfs::{UsbIdentity, usb_device_ancestor, usb_identity, usb_tty};
+use crate::flash::usb_sysfs::{
+    UsbIdentity, UsbIdentitySettler, usb_device_ancestor, usb_identity, usb_tty,
+};
 use crate::retry::retry_until_available;
 
 /// Klipper's explicit request to reboot a serial MCU into its bootloader.
@@ -261,39 +263,14 @@ impl SystemSerialIo {
             usb_id: initial_usb_id.to_owned(),
             manufacturer: initial_manufacturer.to_owned(),
         };
-        let mut last_identity = initial_identity.clone();
-        retry_until_available(timeout, poll_interval, || {
-            let identity = usb_identity(usb_path);
-            last_identity = identity.clone();
-            // A disappearing bridge may briefly retain its VID:PID while its
-            // manufacturer attribute vanishes; that is not a new USB device.
-            let changed = if initial_identity.usb_id == "1d50:606f" {
-                identity.usb_id != initial_identity.usb_id
-            } else {
-                identity != initial_identity
-            };
-            if changed && identity.is_complete() {
-                match observed_if_ready(usb_path, &identity) {
-                    Some(observed) => Ok(observed),
-                    None => {
-                        tracing::debug!(
-                            usb_id = %identity.usb_id,
-                            manufacturer = %identity.manufacturer,
-                            "katapult usb bootloader observed without a serial device yet, still waiting"
-                        );
-                        Err(())
-                    }
-                }
-            } else {
-                tracing::debug!(
-                    usb_id = %identity.usb_id,
-                    manufacturer = %identity.manufacturer,
-                    "usb bootloader not yet observed, still waiting"
-                );
-                Err(())
-            }
-        })
-        .map_err(|()| timeout_outcome(&initial_identity, &last_identity, usb_path, None))
+        wait_for_settled_identity(
+            &initial_identity,
+            timeout,
+            poll_interval,
+            || usb_identity(usb_path),
+            |identity| observed_if_ready(usb_path, identity),
+        )
+        .map_err(|last_identity| timeout_outcome(&initial_identity, &last_identity, usb_path, None))
     }
 
     fn request_usb_bootloader_and_wait<T>(
@@ -311,27 +288,55 @@ impl SystemSerialIo {
             .err()
             .map(|error| error.to_string());
 
-        let mut last_identity = initial_identity.clone();
-        retry_until_available(timeout, poll_interval, || {
-            let identity = usb_identity(&usb_path);
-            last_identity = identity.clone();
-            if identity != initial_identity
-                && identity.is_complete()
-                && matches(&identity.usb_id, &identity.manufacturer)
-                && let Some(result) = ready(&usb_path, &identity)
-            {
-                Ok(result)
-            } else {
-                tracing::debug!(
-                    usb_id = %identity.usb_id,
-                    manufacturer = %identity.manufacturer,
-                    "usb bootloader identity not yet matched, still waiting"
-                );
-                Err(())
-            }
+        wait_for_settled_identity(
+            &initial_identity,
+            timeout,
+            poll_interval,
+            || usb_identity(&usb_path),
+            |identity| {
+                matches(&identity.usb_id, &identity.manufacturer)
+                    .then(|| ready(&usb_path, identity))
+                    .flatten()
+            },
+        )
+        .map_err(|last_identity| {
+            timeout_outcome(&initial_identity, &last_identity, path, reset_error)
         })
-        .map_err(|()| timeout_outcome(&initial_identity, &last_identity, path, reset_error))
     }
+}
+
+/// Polls `read_identity` until the device settles on an identity other than `initial` and
+/// `accept` produces a result for it; on timeout returns the last identity read.
+///
+/// Every read passes through [`UsbIdentitySettler`], so a single sysfs read taken mid
+/// re-enumeration is never mistaken for the device's new identity. The reader and the
+/// acceptance step are injected so tests can script the exact read sequence.
+fn wait_for_settled_identity<T>(
+    initial: &UsbIdentity,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut read_identity: impl FnMut() -> UsbIdentity,
+    mut accept: impl FnMut(&UsbIdentity) -> Option<T>,
+) -> Result<T, UsbIdentity> {
+    let mut settler = UsbIdentitySettler::new(initial.clone());
+    let mut last_identity = initial.clone();
+    retry_until_available(timeout, poll_interval, || {
+        let identity = read_identity();
+        last_identity = identity.clone();
+        if let Some(settled) = settler.observe(&identity)
+            && let Some(result) = accept(settled)
+        {
+            Ok(result)
+        } else {
+            tracing::debug!(
+                usb_id = %identity.usb_id,
+                manufacturer = %identity.manufacturer,
+                "usb bootloader not yet observed, still waiting"
+            );
+            Err(())
+        }
+    })
+    .map_err(|()| last_identity)
 }
 
 fn timeout_outcome(
@@ -433,7 +438,7 @@ impl SerialIo for SystemSerialIo {
 
 #[cfg(test)]
 mod tests {
-    use super::{SystemSerialIo, UsbBootloaderError, UsbIdentity};
+    use super::{SystemSerialIo, UsbBootloaderError, UsbIdentity, wait_for_settled_identity};
     use std::fs;
     use std::path::PathBuf;
     use std::thread;
@@ -481,33 +486,6 @@ mod tests {
         writer.join().expect("writer thread should not panic");
         assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
 
-        fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
-    }
-
-    #[test]
-    fn waits_through_transient_bridge_manufacturer_loss() {
-        let usb_path = unique_temporary_path();
-        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
-        write_identity(&usb_path, "1d50:606f", "");
-        let watched_path = usb_path.clone();
-        let writer = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(30));
-            write_tty(&watched_path, "ttyACM0");
-            write_identity(&watched_path, "1d50:6177", "katapult");
-        });
-
-        let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
-            &usb_path,
-            "1d50:606f",
-            "klipper",
-            Duration::from_secs(2),
-            Duration::from_millis(5),
-        )
-        .expect("transient bridge identity should not be treated as a bootloader");
-
-        writer.join().expect("writer thread should not panic");
-        assert_eq!(observed.usb_id, "1d50:6177");
-        assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
         fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
     }
 
@@ -570,6 +548,123 @@ mod tests {
         assert_eq!(observed.serial_device, None);
 
         fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    fn id(usb_id: &str, manufacturer: &str) -> UsbIdentity {
+        UsbIdentity {
+            usb_id: usb_id.to_owned(),
+            manufacturer: manufacturer.to_owned(),
+        }
+    }
+
+    /// Replays `script` one read per call, repeating its last entry forever.
+    fn scripted(script: Vec<UsbIdentity>) -> impl FnMut() -> UsbIdentity {
+        let mut reads = 0;
+        move || {
+            let identity = script[reads.min(script.len() - 1)].clone();
+            reads += 1;
+            identity
+        }
+    }
+
+    fn wait(
+        script: Vec<UsbIdentity>,
+        accept: impl FnMut(&UsbIdentity) -> Option<String>,
+    ) -> Result<String, UsbIdentity> {
+        wait_for_settled_identity(
+            &id("1d50:606f", "klipper"),
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+            scripted(script),
+            accept,
+        )
+    }
+
+    fn accept_any(identity: &UsbIdentity) -> Option<String> {
+        Some(identity.usb_id.clone())
+    }
+
+    #[test]
+    fn a_one_read_manufacturer_loss_is_not_taken_for_the_bootloader() {
+        let script = vec![
+            id("1d50:606f", "klipper"),
+            id("1d50:606f", ""),
+            id("1d50:6177", "katapult"),
+        ];
+
+        assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
+    }
+
+    #[test]
+    fn a_brief_manufacturer_loss_is_tolerated() {
+        let mut script = vec![id("1d50:606f", "klipper")];
+        script.extend(vec![id("1d50:606f", ""); 4]);
+        script.push(id("1d50:6177", "katapult"));
+
+        assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
+    }
+
+    #[test]
+    fn a_sustained_manufacturer_loss_is_not_taken_for_the_bootloader() {
+        let mut script = vec![id("1d50:606f", "klipper")];
+        script.extend(vec![id("1d50:606f", ""); 30]);
+        script.push(id("1d50:6177", "katapult"));
+
+        assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
+    }
+
+    #[test]
+    fn empty_reads_between_the_two_identities_never_settle() {
+        let script = vec![
+            id("1d50:606f", "klipper"),
+            id(":", ""),
+            id(":", ""),
+            id("1d50:6177", "katapult"),
+        ];
+
+        assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
+    }
+
+    #[test]
+    fn keeps_waiting_while_the_settled_identity_is_not_yet_accepted() {
+        let mut rejections = 3;
+        let result = wait(vec![id("1d50:6177", "katapult")], |identity| {
+            if rejections > 0 {
+                rejections -= 1;
+                None
+            } else {
+                Some(identity.usb_id.clone())
+            }
+        });
+
+        assert_eq!(result, Ok("1d50:6177".to_owned()));
+        assert_eq!(rejections, 0);
+    }
+
+    #[test]
+    fn times_out_with_the_last_identity_when_the_device_never_changes() {
+        let result = wait_for_settled_identity(
+            &id("1d50:606f", "klipper"),
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            scripted(vec![id("1d50:606f", "klipper")]),
+            accept_any,
+        );
+
+        assert_eq!(result, Err(id("1d50:606f", "klipper")));
+    }
+
+    #[test]
+    fn rejects_an_identity_the_caller_does_not_accept() {
+        let result = wait_for_settled_identity(
+            &id("1d50:606f", "klipper"),
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            scripted(vec![id("1d50:614e", "klipper")]),
+            |_| None::<String>,
+        );
+
+        assert_eq!(result, Err(id("1d50:614e", "klipper")));
     }
 
     fn write_identity(usb_path: &std::path::Path, usb_id: &str, manufacturer: &str) {
