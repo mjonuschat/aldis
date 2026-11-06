@@ -38,8 +38,13 @@ pub fn dedupe_by_unit(found: Vec<Found>) -> (Vec<Found>, Vec<Found>) {
     (kept, refused)
 }
 
-/// Serves every Moonraker in `urls`, each on its own connection, and never returns.
-pub fn run_instances(urls: Vec<String>, sink: RunLogSink) -> ! {
+/// Serves every Moonraker in `urls`, each on its own connection, and never returns. Firmware that
+/// is not built from Klipper is read from `sources`.
+pub fn run_instances(
+    urls: Vec<String>,
+    sources: crate::config::FirmwareSources,
+    sink: RunLogSink,
+) -> ! {
     let found = urls
         .into_iter()
         .map(|url| {
@@ -71,7 +76,8 @@ pub fn run_instances(urls: Vec<String>, sink: RunLogSink) -> ! {
         let events = Arc::new(Mutex::new(None));
         let service = AgentService::new(
             SystemBackend::new(instance.url.clone(), sink.clone())
-                .with_peers(other_urls(&instance.url, &kept_urls)),
+                .with_peers(other_urls(&instance.url, &kept_urls))
+                .with_firmware_sources(sources.clone()),
             Arc::clone(&events),
         )
         .with_identity(name, holders.clone());

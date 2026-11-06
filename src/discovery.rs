@@ -47,11 +47,13 @@ pub(crate) fn probe_unreported_with(
 
 /// What the prebuilt-firmware MCUs of `inventory` are updated to: the latest FOCI release (a
 /// failed lookup is reported and leaves the FOCI MCUs indeterminate rather than failing the
-/// command) and the Beacon images from their checkout. Looks only for the vendors present.
+/// command), and the Beacon and Cartographer images from their checkouts. Looks only for the
+/// vendors present.
 pub(crate) fn prebuilt_targets(
     inventory: &McuInventory,
+    moonraker: &impl aldis::moonraker::HostPort,
     releases: &impl aldis::foci::ReleasePort,
-    beacon_source: Option<&std::path::Path>,
+    sources: &aldis::config::FirmwareSources,
     klipper_source: &std::path::Path,
 ) -> aldis::prebuilt::Targets {
     let foci = aldis::foci::release_for(inventory, releases)
@@ -63,12 +65,19 @@ pub(crate) fn prebuilt_targets(
         })
         .ok()
         .flatten();
+    let python_path = inventory
+        .mcus
+        .iter()
+        .any(aldis::cartographer::is_cartographer)
+        .then(|| moonraker.host_info().ok().and_then(|info| info.python_path))
+        .flatten();
     aldis::prebuilt::resolve_targets(
         inventory,
         &aldis::prebuilt::ResolveContext {
             foci,
-            beacon_source,
+            sources,
             klipper_source: Some(klipper_source),
+            python_path: python_path.as_deref(),
         },
     )
 }

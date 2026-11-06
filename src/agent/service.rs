@@ -862,6 +862,54 @@ mod tests {
     }
 
     #[test]
+    fn updates_a_cartographer_by_name_once_its_image_is_known() {
+        let mut snapshot = snapshot(PrintState::Standby);
+        let mut probe = mcu("mcu cartographer", "CARTOGRAPHER V4 6.0.0", "");
+        probe.app = Some("Cartographer".to_owned());
+        probe.mcu = "stm32g431xx".to_owned();
+        snapshot.inventory.as_mut().unwrap().mcus.push(probe);
+
+        let unknown = AgentService::new(
+            FakeBackend::new(snapshot.clone(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+        let error = unknown
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["cartographer".to_owned()],
+            })
+            .unwrap_err();
+        assert_eq!(reason(&error), "not_updatable");
+
+        snapshot.prebuilt.cartographer.mcus.insert(
+            "mcu cartographer".to_owned(),
+            Ok(crate::cartographer::Target {
+                path: std::path::PathBuf::from("/home/pi/cartographer_firmware/firmware/x.bin"),
+                version: semver::Version::new(6, 1, 0),
+                reported: "CARTOGRAPHER V4 6.1.0".to_owned(),
+                held_back: None,
+            }),
+        );
+        let backend = FakeBackend::new(
+            snapshot,
+            Ok(RunOutcome {
+                updated: vec!["mcu cartographer".to_owned()],
+            }),
+        );
+        let service = AgentService::new(backend, sink().0);
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["cartographer".to_owned()],
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+        assert_eq!(
+            *service.backend.seen_targets.lock().unwrap(),
+            vec!["mcu cartographer"]
+        );
+    }
+
+    #[test]
     fn resolves_display_names_case_insensitively() {
         let backend = FakeBackend::new(
             snapshot(PrintState::Standby),

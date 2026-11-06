@@ -1,4 +1,4 @@
-//! Preparing the firmware of FOCI and Beacon MCUs for a flash.
+//! Preparing the firmware of FOCI, Beacon and Cartographer MCUs for a flash.
 //!
 //! These MCUs are not built from the Klipper checkout. For an update, the image is acquired from
 //! where its vendor publishes it and checked again against what the user approved; for an
@@ -21,6 +21,7 @@ use crate::moonraker::{Mcu, McuInventory};
 pub enum Running {
     Foci(crate::foci::Firmware),
     Beacon(crate::beacon::Firmware),
+    Cartographer(crate::cartographer::Firmware),
 }
 
 /// Why prebuilt firmware cannot be matched to an update image.
@@ -29,14 +30,24 @@ pub enum Unsupported {
     /// FOCI firmware whose build no FOCI release asset matches.
     #[error(transparent)]
     Foci(crate::foci::Unsupported),
+    /// Cartographer firmware no update image can be matched to.
+    #[error(transparent)]
+    Cartographer(crate::cartographer::Unsupported),
 }
 
 /// Identifies `mcu` as prebuilt firmware: `None` when it is not any vendor's, otherwise the
-/// running build or why it cannot be matched. A Beacon is recognized first, then FOCI by its
-/// reported `app`.
+/// running build or why it cannot be matched. A Beacon is recognized first, then a Cartographer,
+/// then FOCI by its reported `app`.
 pub fn identify(mcu: &Mcu) -> Option<Result<Running, Unsupported>> {
     if let Some(firmware) = crate::beacon::identify(mcu) {
         return Some(Ok(Running::Beacon(firmware)));
+    }
+    if let Some(result) = crate::cartographer::identify(mcu) {
+        return Some(
+            result
+                .map(Running::Cartographer)
+                .map_err(Unsupported::Cartographer),
+        );
     }
     if crate::foci::is_foci(mcu) {
         return Some(
@@ -53,6 +64,7 @@ impl Running {
         match self {
             Self::Foci(_) => Vendor::Foci,
             Self::Beacon(_) => Vendor::Beacon,
+            Self::Cartographer(_) => Vendor::Cartographer,
         }
     }
 }
@@ -64,6 +76,8 @@ pub struct Targets {
     pub foci: Option<crate::foci::Release>,
     /// The image each Beacon is updated to, or why none is known.
     pub beacon: crate::beacon::Targets,
+    /// The image each Cartographer is updated to, or why none is known.
+    pub cartographer: crate::cartographer::Targets,
 }
 
 impl Running {
@@ -78,6 +92,24 @@ impl Running {
                 ),
                 Some(Err(reason)) => format!("yes (no Beacon image known: {reason})"),
                 None => "yes (no Beacon image known)".to_owned(),
+            },
+            Self::Cartographer(_) => match targets.cartographer.mcus.get(name) {
+                Some(Ok(target)) => {
+                    let mut label = format!(
+                        "yes ({} holds {}",
+                        file_label(&target.path),
+                        target.reported
+                    );
+                    if let Some((version, plugin)) = &target.held_back {
+                        label.push_str(&format!(
+                            "; {version} needs cartographer3d-plugin {plugin} or newer"
+                        ));
+                    }
+                    label.push(')');
+                    label
+                }
+                Some(Err(reason)) => format!("yes (no image known: {reason})"),
+                None => "yes (no image known)".to_owned(),
             },
             Self::Foci(firmware) => format!(
                 "yes (FOCI {} {} release builds)",
@@ -118,6 +150,24 @@ impl Targets {
                 )
             ));
         }
+        if inventory
+            .mcus
+            .iter()
+            .any(crate::cartographer::is_cartographer)
+        {
+            let targets = &self.cartographer;
+            header.push_str(&format!(
+                "Cartographer firmware: {}\nCartographer plugin:   {}\n",
+                targets.checkout.as_ref().map_or_else(
+                    || "no cartographer_firmware clone found".to_owned(),
+                    |checkout| checkout.display().to_string()
+                ),
+                targets
+                    .plugin
+                    .as_ref()
+                    .map_or_else(|| "not found".to_owned(), ToString::to_string)
+            ));
+        }
         header
     }
 }
@@ -127,28 +177,36 @@ impl Targets {
 pub enum Target<'a> {
     Foci(&'a crate::foci::Release),
     Beacon(&'a crate::beacon::Target),
+    Cartographer(&'a crate::cartographer::Target),
 }
 
 /// What `resolve_targets` needs to find the targets of an inventory's prebuilt-firmware MCUs.
 pub struct ResolveContext<'a> {
     /// The latest FOCI release, already looked up (see [`crate::foci::release_for`]).
     pub foci: Option<crate::foci::Release>,
-    /// Where Beacon firmware is read from, when configured.
-    pub beacon_source: Option<&'a Path>,
+    /// Where Beacon and Cartographer firmware is read from, when configured.
+    pub sources: &'a crate::config::FirmwareSources,
     /// The Klipper checkout, which Beacon's installer links its module from.
     pub klipper_source: Option<&'a Path>,
+    /// The Python Klippy runs under, beside which Cartographer's plugin is installed.
+    pub python_path: Option<&'a Path>,
 }
 
 /// Finds what each prebuilt-firmware MCU of `inventory` is updated to: the FOCI release in
-/// `context` and the Beacon image for each revision from its checkout. Looks only for the vendors
-/// present.
+/// `context`, the Beacon image for each revision from its checkout, and the Cartographer image
+/// from its clone. Looks only for the vendors present.
 pub fn resolve_targets(inventory: &McuInventory, context: &ResolveContext<'_>) -> Targets {
     Targets {
         foci: context.foci.clone(),
         beacon: crate::beacon::targets_for(
             inventory,
-            context.beacon_source,
+            context.sources.beacon.as_deref(),
             context.klipper_source,
+        ),
+        cartographer: crate::cartographer::targets_for(
+            inventory,
+            context.sources.cartographer.as_deref(),
+            context.python_path,
         ),
     }
 }
@@ -159,6 +217,7 @@ impl Targets {
         match running {
             Running::Foci(_) => self.foci.as_ref().map(Target::Foci),
             Running::Beacon(_) => self.beacon.target(name).map(Target::Beacon),
+            Running::Cartographer(_) => self.cartographer.target(name).map(Target::Cartographer),
         }
     }
 
@@ -170,6 +229,9 @@ impl Targets {
             }
             (Running::Beacon(firmware), Some(Target::Beacon(target))) => {
                 crate::beacon::compare(&firmware.version, &target.version)
+            }
+            (Running::Cartographer(firmware), Some(Target::Cartographer(target))) => {
+                crate::cartographer::compare(firmware, target)
             }
             _ => RevisionStatus::Indeterminate,
         }
@@ -227,12 +289,27 @@ impl Targets {
                     .map_or_else(unknown, |target| crate::beacon::reported(&target.version)),
             );
         }
+        if crate::cartographer::is_cartographer(mcu) {
+            return Some(
+                self.cartographer
+                    .target(&mcu.name)
+                    .map_or_else(unknown, |target| target.reported.clone()),
+            );
+        }
         None
     }
 
     /// Whether `mcu` runs its target: the outer `None` when `mcu` is not prebuilt firmware, the
     /// inner `None` when no target is known to check against.
     pub fn reached_by(&self, mcu: &Mcu) -> Option<Option<bool>> {
+        if crate::cartographer::is_cartographer(mcu) {
+            // The plugin keeps calibrations by the exact version string, so confirm that.
+            return Some(
+                self.cartographer
+                    .target(&mcu.name)
+                    .map(|target| mcu.version.as_deref() == Some(target.reported.as_str())),
+            );
+        }
         if crate::beacon::is_beacon(mcu) {
             return Some(self.beacon.target(&mcu.name).map(|target| {
                 crate::beacon::identify(mcu)
@@ -256,6 +333,9 @@ pub enum ExplicitError {
     /// A Beacon takes only a Beacon DFU image.
     #[error(transparent)]
     NotBeaconImage(#[from] crate::beacon::ImageError),
+    /// A Cartographer takes only an application image for its own MCU and link.
+    #[error("{0}")]
+    Cartographer(String),
     /// FOCI publishes nothing for this board, so the address its firmware starts at is unknown.
     #[error(
         "FOCI publishes no builds for {0} boards, so aldis cannot tell where its firmware must start"
@@ -289,6 +369,17 @@ pub fn prepare_automatic(
                 PrebuiltLinks::UsbOnly,
             )
         }),
+        Ok(Running::Cartographer(firmware)) => {
+            read_cartographer_image(&firmware, versions, pending, progress, name).map(|image| {
+                FlashRequest::katapult(
+                    Vendor::Cartographer,
+                    mcu,
+                    image,
+                    crate::cartographer::APPLICATION_START,
+                    PrebuiltLinks::UsbOrCan,
+                )
+            })
+        }
         Ok(Running::Beacon(firmware)) => {
             read_beacon_image(&firmware, versions, pending, progress, name)
                 .map(|image| FlashRequest::beacon(mcu, image))
@@ -298,15 +389,38 @@ pub fn prepare_automatic(
     })
 }
 
-/// Prepares the file the user named for `aldis flash`: `bytes`, read before the user was asked,
-/// checked against `mcu`. `None` when `mcu` is not prebuilt firmware, so any file may
+/// Prepares the file the user named for `aldis flash`: `bytes`, read from `file` before the user
+/// was asked, checked against `mcu`. `None` when `mcu` is not prebuilt firmware, so any file may
 /// go through the ordinary flash. A recognized MCU whose file does not suit it is an error; it
 /// never falls through to the ordinary flash.
-pub fn prepare_explicit(mcu: &Mcu, bytes: &[u8]) -> Result<Option<FlashRequest>, ExplicitError> {
+pub fn prepare_explicit(
+    mcu: &Mcu,
+    file: &Path,
+    bytes: &[u8],
+) -> Result<Option<FlashRequest>, ExplicitError> {
     // A Beacon whose version aldis cannot compare (a beta) still takes only a Beacon image.
     if crate::beacon::names_itself_beacon(mcu) {
         let image = crate::beacon::parse_image(bytes)?;
         return Ok(Some(FlashRequest::beacon(mcu, image)));
+    }
+    match crate::cartographer::identify(mcu) {
+        Some(Err(reason)) => return Err(ExplicitError::Cartographer(reason.to_string())),
+        Some(Ok(running)) => {
+            crate::cartographer::check_image(bytes, &running).map_err(|reason| {
+                ExplicitError::Cartographer(format!(
+                    "{} does not suit it: {reason}",
+                    file.display()
+                ))
+            })?;
+            return Ok(Some(FlashRequest::katapult(
+                Vendor::Cartographer,
+                mcu,
+                bytes.to_vec(),
+                crate::cartographer::APPLICATION_START,
+                PrebuiltLinks::UsbOrCan,
+            )));
+        }
+        None => {}
     }
     if crate::foci::is_foci(mcu) {
         let board = crate::foci::Board::from_mcu(&mcu.mcu)
@@ -404,6 +518,44 @@ fn read_beacon_image(
     if let Some(file) = target.path.file_name() {
         let copy = pending.artifact_path().with_file_name(file);
         if let Err(error) = std::fs::copy(&target.path, &copy) {
+            tracing::debug!(?error, path = %copy.display(), "could not keep a copy of the firmware");
+        }
+    }
+    Ok(image)
+}
+
+/// Reads the Cartographer image `name` was approved for from the clone, checks it once more
+/// against the running probe, and keeps a copy beside the run's other artifacts. Returns the
+/// failure's description when there is no image to flash, including when the clone now holds
+/// another image than the one approved.
+fn read_cartographer_image(
+    firmware: &crate::cartographer::Firmware,
+    versions: &TargetVersions,
+    pending: &PendingBuild,
+    progress: &mut dyn FnMut(UpdateProgress),
+    name: &str,
+) -> Result<Vec<u8>, String> {
+    let target =
+        versions.prebuilt.cartographer.target(name).ok_or_else(|| {
+            format!("no Cartographer firmware image is known to update {name} with")
+        })?;
+    progress(UpdateProgress::ReadingFirmware);
+    let image = std::fs::read(&target.path)
+        .map_err(|error| format!("could not read {}: {error}", target.path.display()))?;
+    let identity = crate::cartographer::check_image(&image, firmware)
+        .map_err(|reason| format!("refusing {} for {name}: {reason}", target.path.display()))?;
+    if identity.version != target.reported {
+        return Err(format!(
+            "{} now holds {:?}, not the {:?} {name} was to be updated to",
+            target.path.display(),
+            identity.version,
+            target.reported
+        ));
+    }
+    progress(UpdateProgress::FirmwareRead);
+    if let Some(file) = target.path.file_name() {
+        let copy = pending.artifact_path().with_file_name(file);
+        if let Err(error) = std::fs::write(&copy, &image) {
             tracing::debug!(?error, path = %copy.display(), "could not keep a copy of the firmware");
         }
     }

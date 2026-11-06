@@ -14,6 +14,32 @@ pub struct FleetConfig {
     /// Moonraker URLs, one per printer.
     #[serde(default)]
     pub moonraker: Vec<String>,
+    /// The `beacon_klipper` checkout Beacon firmware is read from, when it is not the one
+    /// Klipper's `beacon.py` is linked from or `~/beacon_klipper`.
+    #[serde(default)]
+    pub beacon_source: Option<PathBuf>,
+    /// The `cartographer_firmware` clone Cartographer firmware is read from, when it is not
+    /// `~/cartographer_firmware`.
+    #[serde(default)]
+    pub cartographer_source: Option<PathBuf>,
+}
+
+/// Where firmware that is not built from Klipper is read from on this host; `None` looks in
+/// each project's default place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FirmwareSources {
+    pub beacon: Option<PathBuf>,
+    pub cartographer: Option<PathBuf>,
+}
+
+impl FirmwareSources {
+    /// The sources a configuration file names, if any.
+    pub fn from_config(file: Option<&FleetConfig>) -> Self {
+        Self {
+            beacon: file.and_then(|file| file.beacon_source.clone()),
+            cartographer: file.and_then(|file| file.cartographer_source.clone()),
+        }
+    }
 }
 
 /// Why a configuration file could not be used.
@@ -135,6 +161,34 @@ mod tests {
                 &strings(&["http://127.0.0.1:7125", "http://127.0.0.1:7126/", " "]),
             ),
             strings(&["http://127.0.0.1:7125", "http://127.0.0.1:7126"])
+        );
+    }
+
+    #[test]
+    fn reads_where_beacon_and_cartographer_firmware_come_from() {
+        let file = FleetConfig::parse(
+            r#"
+            moonraker = ["http://127.0.0.1:7125"]
+            beacon_source = "/opt/beacon_klipper"
+            cartographer_source = "/opt/cartographer_firmware"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            FirmwareSources::from_config(Some(&file)),
+            FirmwareSources {
+                beacon: Some(PathBuf::from("/opt/beacon_klipper")),
+                cartographer: Some(PathBuf::from("/opt/cartographer_firmware")),
+            }
+        );
+        assert_eq!(
+            FirmwareSources::from_config(Some(&FleetConfig::default())),
+            FirmwareSources::default()
+        );
+        assert_eq!(
+            FirmwareSources::from_config(None),
+            FirmwareSources::default()
         );
     }
 

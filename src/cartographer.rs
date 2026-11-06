@@ -11,8 +11,7 @@
 //! build, MCU and CAN bitrate exactly as the probe will report them once it runs.
 //!
 //! Cartographer's plugin removes every scan and touch model calibrated under another firmware
-//! version, so every update means recalibrating the probe; callers update a Cartographer only
-//! when it is asked for by name.
+//! version, so every update means recalibrating the probe, which the user is told.
 
 use std::collections::BTreeMap;
 use std::io::Read;

@@ -9,7 +9,7 @@ pub enum Eligibility {
     /// A Klipper-family MCU with the embedded configuration required to build it.
     Eligible,
     /// Firmware not built from the Klipper checkout that this updater can replace with a
-    /// prebuilt image: a FOCI release build or a Beacon.
+    /// prebuilt image: a FOCI release build, a Beacon, or a Cartographer probe.
     Prebuilt(Running),
     /// Firmware managed by another project, named as Moonraker reported it (e.g. "Beacon").
     ExternallyManaged(String),
@@ -94,7 +94,7 @@ impl CheckoutRevision {
 pub struct TargetVersions {
     /// The Klipper checkout revision Klipper-family MCUs are built from.
     pub klipper: CheckoutRevision,
-    /// What the prebuilt-firmware MCUs (FOCI and Beacon) are updated to.
+    /// What the prebuilt-firmware MCUs (FOCI, Beacon, Cartographer) are updated to.
     pub prebuilt: prebuilt::Targets,
 }
 
@@ -122,6 +122,12 @@ impl TargetVersions {
     /// These targets with each Beacon updated to its image in `targets`.
     pub fn with_beacon_targets(mut self, targets: crate::beacon::Targets) -> Self {
         self.prebuilt.beacon = targets;
+        self
+    }
+
+    /// These targets with each Cartographer updated to its image in `targets`.
+    pub fn with_cartographer_targets(mut self, targets: crate::cartographer::Targets) -> Self {
+        self.prebuilt.cartographer = targets;
         self
     }
 
@@ -172,13 +178,19 @@ pub enum UpdateSelection {
     All,
 }
 
+/// Whether updating `mcu` removes its calibration, which the user must then redo: Cartographer's
+/// plugin removes every scan and touch model made with another firmware version.
+pub fn removes_calibration(mcu: &Mcu) -> bool {
+    crate::cartographer::is_cartographer(mcu)
+}
+
 /// Returns whether one MCU is eligible for the requested update selection.
 pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelection) -> bool {
     let status = assess_mcu(mcu, versions);
     let updatable = match status.eligibility {
         Eligibility::Eligible => true,
         // Prebuilt firmware is flashed with its target image, so even `All` needs one to be
-        // known: the FOCI release, or the Beacon's image from its checkout.
+        // known: the FOCI release, or the Beacon's or Cartographer's image from its checkout.
         Eligibility::Prebuilt(ref running) => {
             versions.prebuilt.target(running, &mcu.name).is_some()
                 && versions.prebuilt.admits(running, &mcu.name)

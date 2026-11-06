@@ -27,7 +27,7 @@ pub(crate) fn status(arguments: ConnectionArgs) -> ExitCode {
         &aldis::foci::GithubReleases::new(),
         versions,
         &source,
-        arguments.beacon_source.as_deref(),
+        &arguments.sources.sources(),
     ) {
         Ok(report) => {
             print!("{report}");
@@ -43,17 +43,14 @@ fn status_report(
     releases: &impl aldis::foci::ReleasePort,
     versions: TargetVersions,
     source: &std::path::Path,
-    beacon_source: Option<&std::path::Path>,
+    sources: &aldis::config::FirmwareSources,
 ) -> anyhow::Result<String> {
     tracing::info!("discovering MCUs from Moonraker");
     let mut inventory =
         crate::discovery::discover_mcus_with_retry(moonraker).context("failed to discover MCUs")?;
     crate::discovery::probe_unreported(url, moonraker, &mut inventory);
     let versions = versions.with_prebuilt(crate::discovery::prebuilt_targets(
-        &inventory,
-        releases,
-        beacon_source,
-        source,
+        &inventory, moonraker, releases, sources, source,
     ));
     Ok(format_status(source, &versions, &inventory, None))
 }
@@ -110,6 +107,7 @@ fn firmware_label(mcu: &aldis::moonraker::Mcu, eligibility: &Eligibility) -> Str
     match eligibility {
         Eligibility::ExternallyManaged(name) => return name.clone(),
         Eligibility::Prebuilt(Running::Beacon(_)) => return "Beacon".to_owned(),
+        Eligibility::Prebuilt(Running::Cartographer(_)) => return "Cartographer".to_owned(),
         _ => {}
     }
     if let Some(app) = mcu.app.as_deref().filter(|app| !app.trim().is_empty()) {
@@ -211,10 +209,10 @@ mod tests {
         let inventory = McuInventory {
             mcus: vec![
                 Mcu {
-                    name: "cartographer".to_owned(),
-                    app: Some("Cartographer".to_owned()),
-                    version: Some("CARTOGRAPHER V4 6.1.0".to_owned()),
-                    mcu: "stm32g431xx".to_owned(),
+                    name: "probe".to_owned(),
+                    app: Some("Eddyprobe".to_owned()),
+                    version: Some("EDDYPROBE 1.2.0".to_owned()),
+                    mcu: "rp2040".to_owned(),
                     canbus_frequency_hz: None,
                     build_versions: None,
                     transport: None,
@@ -241,8 +239,8 @@ mod tests {
             None,
         );
 
-        assert!(output.contains("  firmware:     Cartographer\n"));
-        assert!(output.contains("  supported:    no (third-party firmware: Cartographer)\n"));
+        assert!(output.contains("  firmware:     Eddyprobe\n"));
+        assert!(output.contains("  supported:    no (third-party firmware: Eddyprobe)\n"));
         assert!(output.contains(
             "  supported:    no (Klipper version too old (v0.12.0-500-gdeadbeef < v0.13.0-753-g8c29c0a8e))\n"
         ));
@@ -333,6 +331,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shows_the_cartographer_clone_plugin_and_image_each_probe_takes() {
+        let probe = |name: &str| Mcu {
+            name: name.to_owned(),
+            app: Some("Cartographer".to_owned()),
+            version: Some("CARTOGRAPHER V4 6.0.0".to_owned()),
+            mcu: "stm32g431xx".to_owned(),
+            canbus_frequency_hz: None,
+            build_versions: Some(String::new()),
+            transport: Some(McuTransport::Serial {
+                device: "/dev/serial/by-id/usb-Cartographer_614e-if00".to_owned(),
+            }),
+            kconfig: String::new(),
+        };
+        let inventory = McuInventory {
+            mcus: vec![probe("mcu cartographer"), probe("mcu scanner")],
+            unreported: Vec::new(),
+        };
+        let clone = std::path::PathBuf::from("/home/pi/cartographer_firmware");
+        let versions = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()))
+            .with_cartographer_targets(aldis::cartographer::Targets {
+                checkout: Some(clone.clone()),
+                plugin: Some(semver::Version::new(1, 5, 3)),
+                mcus: [
+                    (
+                        "mcu cartographer".to_owned(),
+                        Ok(aldis::cartographer::Target {
+                            path: clone.join("firmware/v4/firmware/6.1.0/usb_full.bin"),
+                            version: semver::Version::new(6, 1, 0),
+                            reported: "CARTOGRAPHER V4 6.1.0".to_owned(),
+                            held_back: Some((
+                                semver::Version::new(6, 2, 0),
+                                semver::Version::new(1, 6, 0),
+                            )),
+                        }),
+                    ),
+                    (
+                        "mcu scanner".to_owned(),
+                        Err(aldis::cartographer::Unavailable::NoCheckout),
+                    ),
+                ]
+                .into(),
+            });
+
+        let output = format_status(
+            std::path::Path::new("/home/pi/klipper"),
+            &versions,
+            &inventory,
+            None,
+        );
+
+        assert!(
+            output.contains(concat!(
+                "Cartographer firmware: /home/pi/cartographer_firmware\n",
+                "Cartographer plugin:   1.5.3\n",
+            )),
+            "{output}"
+        );
+        assert!(
+            output.contains(concat!(
+                "  firmware:     Cartographer\n",
+                "  version:      CARTOGRAPHER V4 6.0.0\n",
+                "  model:        stm32g431xx\n",
+                "  connection:   serial (/dev/serial/by-id/usb-Cartographer_614e-if00)\n",
+                "  supported:    yes (usb_full.bin holds CARTOGRAPHER V4 6.1.0; ",
+                "6.2.0 needs cartographer3d-plugin 1.6.0 or newer)\n",
+                "  needs update: yes\n",
+            )),
+            "{output}"
+        );
+        assert!(
+            output.contains(concat!(
+                "  supported:    yes (no image known: no cartographer_firmware ",
+                "clone was found)\n",
+                "  needs update: unknown\n",
+            )),
+            "{output}"
+        );
+    }
+
     /// A mixed inventory of every kind of MCU aldis tells apart, so a change to the shared
     /// prebuilt-firmware path cannot alter any line of `aldis status` unnoticed.
     #[test]
@@ -366,6 +444,15 @@ mod tests {
             "samd21g18a",
         );
         let beacon_none = base("mcu beacon sensor rear", "", "Beacon 2.0.1", "samd21g18a");
+        let mut probe = base(
+            "mcu cartographer",
+            "Cartographer",
+            "CARTOGRAPHER V4 6.0.0",
+            "stm32g431xx",
+        );
+        probe.build_versions = Some(String::new());
+        probe.transport = usb("/dev/serial/by-id/usb-Cartographer_614e-if00");
+        let probe_old = base("mcu probe", "", "CARTOGRAPHER V3", "stm32f042x6");
         let inventory = McuInventory {
             mcus: vec![
                 mcu(
@@ -378,10 +465,13 @@ mod tests {
                 beacon,
                 beacon_beta,
                 beacon_none,
+                probe,
+                probe_old,
             ],
             unreported: Vec::new(),
         };
         let beacon_checkout = std::path::PathBuf::from("/home/pi/beacon_klipper");
+        let clone = std::path::PathBuf::from("/home/pi/cartographer_firmware");
         let versions = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()))
             .with_foci_release(Release::from_tag("v0.4.1"))
             .with_beacon_targets(aldis::beacon::Targets {
@@ -401,6 +491,20 @@ mod tests {
                     ),
                 ]
                 .into(),
+            })
+            .with_cartographer_targets(aldis::cartographer::Targets {
+                checkout: Some(clone.clone()),
+                plugin: Some(semver::Version::new(1, 5, 3)),
+                mcus: [(
+                    "mcu cartographer".to_owned(),
+                    Ok(aldis::cartographer::Target {
+                        path: clone.join("firmware/v4/firmware/6.1.0/usb_full.bin"),
+                        version: semver::Version::new(6, 1, 0),
+                        reported: "CARTOGRAPHER V4 6.1.0".to_owned(),
+                        held_back: None,
+                    }),
+                )]
+                .into(),
             });
 
         let output = format_status(
@@ -417,6 +521,8 @@ mod tests {
                 "Checkout revision: v2\n",
                 "FOCI release:      v0.4.1\n",
                 "Beacon firmware:   /home/pi/beacon_klipper\n",
+                "Cartographer firmware: /home/pi/cartographer_firmware\n",
+                "Cartographer plugin:   1.5.3\n",
                 "\n",
                 "mcu\n",
                 "  firmware:     Klipper\n",
@@ -465,6 +571,22 @@ mod tests {
                 "  connection:   not configured\n",
                 "  supported:    yes (no Beacon image known: could not read the USB product name of /dev/x)\n",
                 "  needs update: unknown\n",
+                "\n",
+                "mcu cartographer\n",
+                "  firmware:     Cartographer\n",
+                "  version:      CARTOGRAPHER V4 6.0.0\n",
+                "  model:        stm32g431xx\n",
+                "  connection:   serial (/dev/serial/by-id/usb-Cartographer_614e-if00)\n",
+                "  supported:    yes (usb_full.bin holds CARTOGRAPHER V4 6.1.0)\n",
+                "  needs update: yes\n",
+                "\n",
+                "mcu probe\n",
+                "  firmware:     unknown\n",
+                "  version:      CARTOGRAPHER V3\n",
+                "  model:        stm32f042x6\n",
+                "  connection:   not configured\n",
+                "  supported:    no (Cartographer version \"CARTOGRAPHER V3\" names no version number)\n",
+                "  needs update: n/a\n",
             )
         );
     }
@@ -536,7 +658,7 @@ mod tests {
             &NoReleases,
             TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
             std::path::Path::new("/klipper"),
-            None,
+            &aldis::config::FirmwareSources::default(),
         )
         .expect("status report should succeed");
 
@@ -553,7 +675,7 @@ mod tests {
             &NoReleases,
             TargetVersions::indeterminate(),
             std::path::Path::new("/klipper"),
-            None,
+            &aldis::config::FirmwareSources::default(),
         )
         .expect_err("status report should fail");
 
@@ -578,7 +700,7 @@ mod tests {
                 &FakeReleases(releases),
                 TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
                 std::path::Path::new("/klipper"),
-                None,
+                &aldis::config::FirmwareSources::default(),
             )
             .expect("status report should succeed")
         };
@@ -618,7 +740,7 @@ mod tests {
             &NoReleases,
             TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
             std::path::Path::new("/klipper"),
-            None,
+            &aldis::config::FirmwareSources::default(),
         )
         .expect("status report should succeed");
 

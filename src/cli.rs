@@ -73,10 +73,30 @@ pub(crate) struct ConnectionArgs {
     /// Klipper source checkout.
     #[arg(long)]
     pub(crate) klipper_source: Option<PathBuf>,
+    #[command(flatten)]
+    pub(crate) sources: FirmwareSourceArgs,
+}
+
+/// Where firmware that is not built from Klipper is read from.
+#[derive(Debug, Args)]
+pub(crate) struct FirmwareSourceArgs {
     /// beacon_klipper checkout to flash Beacon firmware from. Defaults to the checkout
     /// klippy/extras/beacon.py is linked from, then ~/beacon_klipper.
     #[arg(long, env = "ALDIS_BEACON_SOURCE")]
     pub(crate) beacon_source: Option<PathBuf>,
+    /// cartographer_firmware clone to flash Cartographer firmware from. Defaults to
+    /// ~/cartographer_firmware.
+    #[arg(long, env = "ALDIS_CARTOGRAPHER_SOURCE")]
+    pub(crate) cartographer_source: Option<PathBuf>,
+}
+
+impl FirmwareSourceArgs {
+    pub(crate) fn sources(&self) -> aldis::config::FirmwareSources {
+        aldis::config::FirmwareSources {
+            beacon: self.beacon_source.clone(),
+            cartographer: self.cartographer_source.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Args)]

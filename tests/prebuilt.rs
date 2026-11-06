@@ -1,6 +1,8 @@
 //! Preparing a file for prebuilt-firmware MCUs, and the coordinator's refusal of a request made
 //! for another MCU.
 
+use std::io::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use aldis::beacon::ImageError;
@@ -52,22 +54,45 @@ fn beacon_file() -> Vec<u8> {
     file
 }
 
+/// An application image linked above Cartographer's Katapult, embedding its identify dictionary.
+fn cartographer_file(can: Option<u64>) -> Vec<u8> {
+    let mut image = Vec::new();
+    image.extend_from_slice(&0x2000_8000_u32.to_le_bytes());
+    image.extend_from_slice(&0x0800_2101_u32.to_le_bytes());
+    image.resize(0x200, 0);
+    let mut config = serde_json::json!({ "MCU": "stm32g431xx" });
+    if let Some(can) = can {
+        config["CANBUS_FREQUENCY"] = can.into();
+    }
+    let dictionary = serde_json::json!({ "version": "CARTOGRAPHER V4 6.1.0", "config": config });
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(dictionary.to_string().as_bytes())
+        .unwrap();
+    image.extend(encoder.finish().unwrap());
+    image
+}
+
+fn file() -> &'static Path {
+    Path::new("klipper.bin")
+}
+
 #[test]
 fn takes_only_a_beacon_dfu_image_for_a_beacon() {
     let beacon = mcu("mcu beacon", "", "Beacon 2.0.1", "samd21g18a");
 
     assert_eq!(
-        prepare_explicit(&beacon, b"\x00\x10\x00\x20 plain binary"),
+        prepare_explicit(&beacon, file(), b"\x00\x10\x00\x20 plain binary"),
         Err(ExplicitError::NotBeaconImage(ImageError::NoSuffix))
     );
     let beta = mcu("mcu beacon", "", "Beacon 2.2.0-beta", "samd21g18a");
     assert_eq!(
-        prepare_explicit(&beta, b"\x00\x10\x00\x20 plain binary"),
+        prepare_explicit(&beta, file(), b"\x00\x10\x00\x20 plain binary"),
         Err(ExplicitError::NotBeaconImage(ImageError::NoSuffix)),
         "a Beacon whose version aldis cannot compare still takes only a Beacon image"
     );
 
-    let request = prepare_explicit(&beacon, &beacon_file())
+    let request = prepare_explicit(&beacon, file(), &beacon_file())
         .unwrap()
         .expect("a Beacon image for a Beacon");
     assert_eq!(request.vendor(), Vendor::Beacon);
@@ -77,14 +102,65 @@ fn takes_only_a_beacon_dfu_image_for_a_beacon() {
 }
 
 #[test]
+fn takes_only_an_application_image_for_a_cartographers_own_mcu_and_link() {
+    let probe = |version: &str, can: Option<u64>| {
+        let mut probe = mcu("mcu probe", "Cartographer", version, "stm32g431xx");
+        probe.canbus_frequency_hz = can;
+        probe
+    };
+
+    assert_eq!(
+        prepare_explicit(
+            &probe("CARTOGRAPHER V4 6.0.0", Some(1_000_000)),
+            file(),
+            b"plain binary"
+        ),
+        Err(ExplicitError::Cartographer(
+            "klipper.bin does not suit it: it holds no Cartographer identify dictionary".to_owned()
+        ))
+    );
+    assert!(matches!(
+        prepare_explicit(&probe("CARTOGRAPHER V3", None), file(), b"x"),
+        Err(ExplicitError::Cartographer(reason)) if reason.contains("names no version number")
+    ));
+    assert!(matches!(
+        prepare_explicit(
+            &probe("CARTOGRAPHER V4 6.0.0", Some(500_000)),
+            file(),
+            &cartographer_file(Some(1_000_000))
+        ),
+        Err(ExplicitError::Cartographer(reason)) if reason.contains("does not suit it")
+    ));
+
+    let request = prepare_explicit(
+        &probe("CARTOGRAPHER V4 6.0.0", Some(1_000_000)),
+        file(),
+        &cartographer_file(Some(1_000_000)),
+    )
+    .unwrap()
+    .expect("a suitable image");
+    assert_eq!(request.vendor(), Vendor::Cartographer);
+    assert!(request.vendor().removes_calibration());
+    assert!(matches!(
+        request.protocol(),
+        Protocol::Katapult {
+            application_start: 0x0800_2000,
+            links: PrebuiltLinks::UsbOrCan,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn sends_foci_to_its_boards_katapult_over_usb_only() {
     let build_versions = Some("rust=1.98.1 features=none board=a82de21d".to_owned());
     let mut foci = mcu("mcu servo", "FOCI", "v0.4.0-0-g0fb68e1b", "stm32h723xx");
     foci.build_versions = build_versions.clone();
-    let request = prepare_explicit(&foci, b"any image")
+    let request = prepare_explicit(&foci, file(), b"any image")
         .unwrap()
         .expect("FOCI takes any image");
     assert_eq!(request.vendor(), Vendor::Foci);
+    assert!(!request.vendor().removes_calibration());
     assert!(matches!(
         request.protocol(),
         Protocol::Katapult {
@@ -97,20 +173,19 @@ fn sends_foci_to_its_boards_katapult_over_usb_only() {
     let mut openffboard = mcu("mcu servo", "FOCI", "v0.4.0-0-g0fb68e1b", "stm32f407xx");
     openffboard.build_versions = build_versions;
     assert!(matches!(
-        prepare_explicit(&openffboard, b"any image")
+        prepare_explicit(&openffboard, file(), b"any image")
             .unwrap()
             .unwrap()
             .protocol(),
         Protocol::Katapult {
             application_start: 0x0800_8000,
-            links: PrebuiltLinks::UsbOnly,
             ..
         }
     ));
 
     let unknown = mcu("mcu servo", "FOCI", "v0.4.0-0-g0fb68e1b", "stm32g474xx");
     assert_eq!(
-        prepare_explicit(&unknown, b"any image"),
+        prepare_explicit(&unknown, file(), b"any image"),
         Err(ExplicitError::UnknownFociBoard("stm32g474xx".to_owned())),
         "a recognized MCU the firmware cannot be placed for never falls through"
     );
@@ -119,7 +194,7 @@ fn sends_foci_to_its_boards_katapult_over_usb_only() {
 #[test]
 fn lets_any_file_through_for_firmware_it_builds() {
     let klipper = mcu("mcu", "Klipper", "v0.13.0-770-gce7002bed", "stm32h723xx");
-    assert_eq!(prepare_explicit(&klipper, b"anything"), Ok(None));
+    assert_eq!(prepare_explicit(&klipper, file(), b"anything"), Ok(None));
 }
 
 #[derive(Clone, Default)]
@@ -138,16 +213,18 @@ impl CommandPort for RecordingRunner {
 
 #[test]
 fn refuses_a_request_prepared_for_another_mcu_before_touching_klipper() {
-    let beacon = |name: &str, device: &str| {
-        let mut beacon = mcu(name, "", "Beacon 2.0.1", "samd21g18a");
-        beacon.transport = Some(McuTransport::Serial {
+    let probe = |name: &str, device: &str| {
+        let mut probe = mcu(name, "Cartographer", "CARTOGRAPHER V4 6.0.0", "stm32g431xx");
+        probe.transport = Some(McuTransport::Serial {
             device: device.to_owned(),
         });
-        beacon
+        probe
     };
-    let first = beacon("mcu first", "/dev/serial/by-id/usb-Beacon_1-if00");
-    let second = beacon("mcu second", "/dev/serial/by-id/usb-Beacon_2-if00");
-    let request = prepare_explicit(&first, &beacon_file()).unwrap().unwrap();
+    let first = probe("mcu first", "/dev/serial/by-id/usb-Cartographer_1-if00");
+    let second = probe("mcu second", "/dev/serial/by-id/usb-Cartographer_2-if00");
+    let request = prepare_explicit(&first, file(), &cartographer_file(None))
+        .unwrap()
+        .unwrap();
     let inventory = McuInventory {
         mcus: vec![first, second],
         unreported: Vec::new(),
@@ -209,10 +286,18 @@ fn prepares_each_automatic_update_for_the_protocol_its_vendor_allows() {
     let dir = tempfile::tempdir().unwrap();
     let beacon_path = dir.path().join("revh.dfu");
     std::fs::write(&beacon_path, beacon_file()).unwrap();
+    let carto_path = dir.path().join("usb_full.bin");
+    std::fs::write(&carto_path, cartographer_file(None)).unwrap();
 
     let mut foci = mcu("mcu foci", "FOCI", "v0.4.0-0-g0fb68e1b", "stm32h723xx");
     foci.build_versions = Some("rust=1.98.1 features=none board=a82de21d".to_owned());
     let beacon = mcu("mcu beacon", "", "Beacon 2.0.1", "samd21g18a");
+    let probe = mcu(
+        "mcu probe",
+        "Cartographer",
+        "CARTOGRAPHER V4 6.0.0",
+        "stm32g431xx",
+    );
     let klipper = mcu("mcu", "Klipper", "v0.13.0-770-gce7002bed", "stm32h723xx");
 
     let versions = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()))
@@ -228,9 +313,23 @@ fn prepares_each_automatic_update_for_the_protocol_its_vendor_allows() {
                 }),
             )]
             .into(),
+        })
+        .with_cartographer_targets(aldis::cartographer::Targets {
+            checkout: None,
+            plugin: None,
+            mcus: [(
+                "mcu probe".to_owned(),
+                Ok(aldis::cartographer::Target {
+                    path: carto_path,
+                    version: semver::Version::new(6, 1, 0),
+                    reported: "CARTOGRAPHER V4 6.1.0".to_owned(),
+                    held_back: None,
+                }),
+            )]
+            .into(),
         });
     let inventory = McuInventory {
-        mcus: vec![foci.clone(), beacon.clone(), klipper.clone()],
+        mcus: vec![foci.clone(), beacon.clone(), probe.clone(), klipper.clone()],
         unreported: Vec::new(),
     };
     let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
@@ -252,6 +351,16 @@ fn prepares_each_automatic_update_for_the_protocol_its_vendor_allows() {
             application_start: 0x0802_0000,
             links: PrebuiltLinks::UsbOnly,
         } if image == b"release image"
+    ));
+    let request = prepare(&probe).unwrap().unwrap();
+    assert_eq!(request.vendor(), Vendor::Cartographer);
+    assert!(matches!(
+        request.protocol(),
+        Protocol::Katapult {
+            application_start: 0x0800_2000,
+            links: PrebuiltLinks::UsbOrCan,
+            ..
+        }
     ));
     let request = prepare(&beacon).unwrap().unwrap();
     assert!(matches!(request.protocol(), Protocol::BeaconDfu { .. }));

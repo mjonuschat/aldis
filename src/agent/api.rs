@@ -35,7 +35,8 @@ pub struct Snapshot {
     pub inventory: Option<McuInventory>,
     /// The other printers on this host, as last read; only consulted for USB-CAN bridge updates.
     pub peers: Vec<PeerState>,
-    /// What the FOCI and Beacon MCUs are updated to; empty for a vendor with no MCU here.
+    /// What the FOCI, Beacon and Cartographer MCUs are updated to; empty for a vendor with no
+    /// MCU here. The agent reports a Cartographer's update but never runs it itself.
     pub prebuilt: crate::prebuilt::Targets,
 }
 
@@ -278,7 +279,7 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
 }
 
 /// The state and message for a prebuilt-firmware MCU: current, behind its target, or why it
-/// cannot be compared.
+/// cannot be compared. Updating a Cartographer removes its calibration, so its message says so.
 fn assess_prebuilt(
     firmware: &Running,
     revision: Option<RevisionStatus>,
@@ -331,6 +332,31 @@ fn assess_prebuilt(
             None => (
                 McuState::Indeterminate,
                 format!("running {running}; the latest FOCI release could not be looked up"),
+            ),
+        },
+        Running::Cartographer(_) => match targets.cartographer.mcus.get(&mcu.name) {
+            Some(Ok(target)) if update_required => (
+                McuState::UpdateAvailable,
+                format!(
+                    "running {running}, {} holds {}; it must be recalibrated after the update",
+                    target.path.display(),
+                    target.reported
+                ),
+            ),
+            Some(Ok(target)) => (
+                McuState::Indeterminate,
+                format!(
+                    "running {running}, newer than {} in its cartographer_firmware clone",
+                    target.reported
+                ),
+            ),
+            Some(Err(reason)) => (
+                McuState::Indeterminate,
+                format!("running {running}; no Cartographer firmware image is known: {reason}"),
+            ),
+            None => (
+                McuState::Indeterminate,
+                format!("running {running}; no Cartographer firmware image is known"),
             ),
         },
     }
@@ -565,6 +591,38 @@ mod tests {
             .unwrap()
     }
 
+    fn with_cartographer(mut snapshot: Snapshot, reported: Option<&str>) -> Snapshot {
+        let mut probe = mcu("mcu cartographer", "CARTOGRAPHER V4 6.0.0", "");
+        probe.app = Some("Cartographer".to_owned());
+        probe.mcu = "stm32g431xx".to_owned();
+        snapshot.inventory.as_mut().unwrap().mcus.push(probe);
+        let target = reported.map_or(
+            Err(crate::cartographer::Unavailable::NoCheckout),
+            |reported| {
+                Ok(crate::cartographer::Target {
+                    path: std::path::PathBuf::from("/home/pi/cartographer_firmware/firmware/x.bin"),
+                    version: crate::cartographer::parse_version(reported).unwrap(),
+                    reported: reported.to_owned(),
+                    held_back: None,
+                })
+            },
+        );
+        snapshot
+            .prebuilt
+            .cartographer
+            .mcus
+            .insert("mcu cartographer".to_owned(), target);
+        snapshot
+    }
+
+    fn cartographer_entry(snapshot: &Snapshot) -> McuEntry {
+        assess(snapshot)
+            .mcus
+            .into_iter()
+            .find(|entry| entry.name == "cartographer")
+            .unwrap()
+    }
+
     /// Every vendor state at once, as the agent serializes it, so the shared prebuilt-firmware
     /// path cannot alter a state, message or action unnoticed.
     #[test]
@@ -619,6 +677,41 @@ mod tests {
             "samd21g18a",
             None,
         );
+        add(
+            "mcu carto_old",
+            "Cartographer",
+            "CARTOGRAPHER V4 6.0.0",
+            "stm32g431xx",
+            Some(""),
+        );
+        add(
+            "mcu carto_cur",
+            "Cartographer",
+            "CARTOGRAPHER V4 6.1.0",
+            "stm32g431xx",
+            Some(""),
+        );
+        add(
+            "mcu carto_new",
+            "Cartographer",
+            "CARTOGRAPHER V4 6.2.0",
+            "stm32g431xx",
+            Some(""),
+        );
+        add(
+            "mcu carto_none",
+            "Cartographer",
+            "CARTOGRAPHER V4 6.0.0",
+            "stm32g431xx",
+            Some(""),
+        );
+        add(
+            "mcu carto_odd",
+            "",
+            "CARTOGRAPHER V3",
+            "stm32f042x6",
+            Some(""),
+        );
         snapshot.prebuilt.foci = Release::from_tag("v0.4.1");
         let beacon = |bcd: u16| {
             Ok(crate::beacon::Target {
@@ -646,6 +739,33 @@ mod tests {
             "mcu beacon_none".to_owned(),
             Err(crate::beacon::Unavailable::NoCheckout),
         );
+        let carto = |reported: &str| {
+            Ok(crate::cartographer::Target {
+                path: std::path::PathBuf::from("/home/pi/cartographer_firmware/firmware/x.bin"),
+                version: crate::cartographer::parse_version(reported).unwrap(),
+                reported: reported.to_owned(),
+                held_back: None,
+            })
+        };
+        snapshot
+            .prebuilt
+            .cartographer
+            .mcus
+            .insert("mcu carto_old".to_owned(), carto("CARTOGRAPHER V4 6.1.0"));
+        snapshot
+            .prebuilt
+            .cartographer
+            .mcus
+            .insert("mcu carto_cur".to_owned(), carto("CARTOGRAPHER V4 6.1.0"));
+        snapshot
+            .prebuilt
+            .cartographer
+            .mcus
+            .insert("mcu carto_new".to_owned(), carto("CARTOGRAPHER V4 6.1.0"));
+        snapshot.prebuilt.cartographer.mcus.insert(
+            "mcu carto_none".to_owned(),
+            Err(crate::cartographer::Unavailable::NoCheckout),
+        );
 
         let entries: Vec<String> = assess(&snapshot)
             .mcus
@@ -671,8 +791,57 @@ mod tests {
                 "beacon_new | Indeterminate | [] | running Beacon 2.2.0, newer than Beacon 2.1.0 in its beacon_klipper checkout",
                 "beacon_none | Indeterminate | [] | running Beacon 2.0.1; no Beacon firmware image is known: no beacon_klipper checkout was found",
                 "beacon_beta | ExternallyManaged | [] | managed by Beacon",
+                "carto_old | UpdateAvailable | [Update] | running CARTOGRAPHER V4 6.0.0, /home/pi/cartographer_firmware/firmware/x.bin holds CARTOGRAPHER V4 6.1.0; it must be recalibrated after the update",
+                "carto_cur | Current | [] | running CARTOGRAPHER V4 6.1.0",
+                "carto_new | Indeterminate | [] | running CARTOGRAPHER V4 6.2.0, newer than CARTOGRAPHER V4 6.1.0 in its cartographer_firmware clone",
+                "carto_none | Indeterminate | [] | running CARTOGRAPHER V4 6.0.0; no Cartographer firmware image is known: no cartographer_firmware clone was found",
+                "carto_odd | ExternallyManaged | [] | Cartographer version \"CARTOGRAPHER V3\" names no version number",
             ]
             .join("\n")
+        );
+    }
+
+    #[test]
+    fn offers_a_cartographer_update_and_says_it_needs_recalibrating() {
+        let entry = cartographer_entry(&with_cartographer(
+            ready_snapshot(),
+            Some("CARTOGRAPHER V4 6.1.0"),
+        ));
+
+        assert_eq!(entry.state, McuState::UpdateAvailable);
+        assert_eq!(entry.actions, vec![Action::Update]);
+        assert_eq!(
+            entry.message,
+            "running CARTOGRAPHER V4 6.0.0, /home/pi/cartographer_firmware/firmware/x.bin holds \
+             CARTOGRAPHER V4 6.1.0; it must be recalibrated after the update"
+        );
+    }
+
+    #[test]
+    fn reports_a_cartographer_at_newer_or_unknown_firmware_as_indeterminate() {
+        let current = cartographer_entry(&with_cartographer(
+            ready_snapshot(),
+            Some("CARTOGRAPHER V4 6.0.0"),
+        ));
+        assert_eq!(current.state, McuState::Current);
+
+        let newer = cartographer_entry(&with_cartographer(
+            ready_snapshot(),
+            Some("CARTOGRAPHER V4 5.1.0"),
+        ));
+        assert_eq!(newer.state, McuState::Indeterminate);
+        assert_eq!(
+            newer.message,
+            "running CARTOGRAPHER V4 6.0.0, newer than CARTOGRAPHER V4 5.1.0 in its \
+             cartographer_firmware clone"
+        );
+
+        let unknown = cartographer_entry(&with_cartographer(ready_snapshot(), None));
+        assert_eq!(unknown.state, McuState::Indeterminate);
+        assert_eq!(
+            unknown.message,
+            "running CARTOGRAPHER V4 6.0.0; no Cartographer firmware image is known: no \
+             cartographer_firmware clone was found"
         );
     }
 

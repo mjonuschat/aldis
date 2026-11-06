@@ -101,15 +101,15 @@ fn treats_a_klipper_version_at_or_above_the_minimum_as_eligible() {
 
 #[test]
 fn names_third_party_firmware_from_its_version_when_app_is_blank() {
-    // Older Cartographer builds report no `app` and name themselves in `mcu_version` instead
-    // of a git-describe-shaped version.
+    // Firmware that reports no `app` names itself in `mcu_version` instead of a
+    // git-describe-shaped version.
     assert_eq!(
         assess_mcu(
-            &mcu(Some(""), Some("CARTOGRAPHER V4 5.1.0"), ""),
+            &mcu(Some(""), Some("EDDYPROBE 1.2.0"), ""),
             &TargetVersions::klipper(CheckoutRevision::Known("v1".to_owned()))
         )
         .eligibility,
-        Eligibility::ExternallyManaged("CARTOGRAPHER".to_owned())
+        Eligibility::ExternallyManaged("EDDYPROBE".to_owned())
     );
     // A Beacon whose version cannot be compared stays externally managed.
     assert_eq!(
@@ -554,6 +554,142 @@ fn targets_and_confirms_a_beacon_by_its_image_version() {
     assert_eq!(unknown.reached_by(&beacon("Beacon 2.0.1")), None);
 }
 
+fn cartographer(name: &str, version: &str) -> Mcu {
+    let mut probe = mcu(Some("Cartographer"), Some(version), "");
+    probe.name = name.to_owned();
+    probe.mcu = "stm32g431xx".to_owned();
+    probe
+}
+
+fn cartographer_target(reported: &str) -> TargetVersions {
+    let version = aldis::cartographer::parse_version(reported).unwrap();
+    TargetVersions::klipper(CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned()))
+        .with_cartographer_targets(aldis::cartographer::Targets {
+            checkout: Some(std::path::PathBuf::from("/home/pi/cartographer_firmware")),
+            plugin: None,
+            mcus: [(
+                "mcu cartographer".to_owned(),
+                Ok(aldis::cartographer::Target {
+                    path: std::path::PathBuf::from("/home/pi/cartographer_firmware/x.bin"),
+                    version,
+                    reported: reported.to_owned(),
+                    held_back: None,
+                }),
+            )]
+            .into(),
+        })
+}
+
+#[test]
+fn compares_a_cartographer_with_its_image_and_never_downgrades_it() {
+    let versions = cartographer_target("CARTOGRAPHER V4 6.1.0");
+
+    let outdated = assess_mcu(
+        &cartographer("mcu cartographer", "CARTOGRAPHER V4 6.0.0"),
+        &versions,
+    );
+    assert!(matches!(
+        outdated.eligibility,
+        Eligibility::Prebuilt(Running::Cartographer(_))
+    ));
+    assert_eq!(outdated.revision, Some(RevisionStatus::UpdateRequired));
+    assert_eq!(
+        assess_mcu(
+            &cartographer("mcu cartographer", "CARTOGRAPHER V4 6.1.0"),
+            &versions
+        )
+        .revision,
+        Some(RevisionStatus::Current)
+    );
+    assert_eq!(
+        assess_mcu(
+            &cartographer("mcu cartographer", "CARTOGRAPHER v4 6.2.0"),
+            &versions
+        )
+        .revision,
+        Some(RevisionStatus::Indeterminate)
+    );
+    assert_eq!(
+        assess_mcu(
+            &cartographer("mcu cartographer", "CARTOGRAPHER V4 6.0.0"),
+            &TargetVersions::indeterminate()
+        )
+        .revision,
+        Some(RevisionStatus::Indeterminate)
+    );
+}
+
+#[test]
+fn reports_a_cartographer_no_image_can_be_matched_to_as_unsupported() {
+    let status = assess_mcu(
+        &cartographer("mcu cartographer", "CARTOGRAPHER V3"),
+        &TargetVersions::indeterminate(),
+    );
+
+    assert_eq!(
+        status.eligibility,
+        Eligibility::Unsupported(UnsupportedReason::Prebuilt(
+            aldis::prebuilt::Unsupported::Cartographer(
+                aldis::cartographer::Unsupported::UnparsableVersion("CARTOGRAPHER V3".to_owned())
+            )
+        ))
+    );
+    assert_eq!(status.revision, None);
+}
+
+#[test]
+fn selects_a_cartographer_only_with_a_known_image() {
+    let outdated = cartographer("mcu cartographer", "CARTOGRAPHER V4 6.0.0");
+    let versions = cartographer_target("CARTOGRAPHER V4 6.1.0");
+
+    assert!(is_selected(
+        &outdated,
+        &versions,
+        &UpdateSelection::Required
+    ));
+    assert!(!is_selected(
+        &outdated,
+        &TargetVersions::indeterminate(),
+        &UpdateSelection::All
+    ));
+    assert!(aldis::eligibility::removes_calibration(&outdated));
+    assert!(!aldis::eligibility::removes_calibration(&mcu(
+        Some("Klipper"),
+        Some("v0.13.0-770-gce7002bed"),
+        "CONFIG=x\n"
+    )));
+}
+
+#[test]
+fn confirms_a_cartographer_by_the_exact_version_its_image_reports() {
+    let versions = cartographer_target("CARTOGRAPHER V4 6.1.0 lite");
+
+    assert_eq!(
+        versions.label_for(&cartographer(
+            "mcu cartographer",
+            "CARTOGRAPHER V4 6.0.0 Lite"
+        )),
+        "CARTOGRAPHER V4 6.1.0 lite"
+    );
+    assert_eq!(
+        versions.reached_by(&cartographer(
+            "mcu cartographer",
+            "CARTOGRAPHER V4 6.1.0 lite"
+        )),
+        Some(true)
+    );
+    assert_eq!(
+        versions.reached_by(&cartographer("mcu cartographer", "CARTOGRAPHER V4 6.1.0")),
+        Some(false),
+        "the full build is not the lite one"
+    );
+    assert_eq!(
+        TargetVersions::indeterminate()
+            .reached_by(&cartographer("mcu cartographer", "CARTOGRAPHER V4 6.1.0")),
+        None
+    );
+}
+
 /// The selection of every prebuilt vendor with the running firmware older than, equal to and
 /// newer than its target, under each selection. Frozen from the behavior before the shared
 /// prebuilt-firmware path, so that path cannot change who gets offered or forced an update.
@@ -594,4 +730,21 @@ fn selects_prebuilt_vendors_by_how_the_running_version_compares_with_the_target(
     // No silent Beacon downgrade: a newer running Beacon is never offered the older image, even
     // by --all or --force; only `aldis flash` with the file itself installs it.
     assert_eq!(selections(&beacon("Beacon 2.2.0"), &image), (false, false));
+
+    // Cartographer (running 6.0.0 / 6.1.0 / 6.2.0 against an image reporting 6.1.0).
+    let image = cartographer_target("CARTOGRAPHER V4 6.1.0");
+    let probe = |version: &str| cartographer("mcu cartographer", version);
+    assert_eq!(
+        selections(&probe("CARTOGRAPHER V4 6.0.0"), &image),
+        (true, true)
+    );
+    assert_eq!(
+        selections(&probe("CARTOGRAPHER V4 6.1.0"), &image),
+        (false, true)
+    );
+    assert_eq!(
+        selections(&probe("CARTOGRAPHER V4 6.2.0"), &image),
+        (false, true),
+        "a newer probe is not offered, but naming it with --force still reflashes"
+    );
 }
