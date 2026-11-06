@@ -305,7 +305,7 @@ mod tests {
                 "  version:      Beacon 2.0.1\n",
                 "  model:        samd21g18a\n",
                 "  connection:   serial (/dev/serial/by-id/usb-Beacon_Beacon_RevH-if00)\n",
-                "  supported:    yes (revh.dfu holds Beacon 2.1.0)\n",
+                "  supported:    yes\n",
                 "  needs update: yes\n",
             )),
             "{output}"
@@ -395,8 +395,7 @@ mod tests {
                 "  version:      CARTOGRAPHER V4 6.0.0\n",
                 "  model:        stm32g431xx\n",
                 "  connection:   serial (/dev/serial/by-id/usb-Cartographer_614e-if00)\n",
-                "  supported:    yes (usb_full.bin holds CARTOGRAPHER V4 6.1.0; ",
-                "6.2.0 needs cartographer3d-plugin 1.6.0 or newer)\n",
+                "  supported:    yes (6.2.0 needs cartographer3d-plugin 1.6.0 or newer)\n",
                 "  needs update: yes\n",
             )),
             "{output}"
@@ -537,7 +536,7 @@ mod tests {
                 "  version:      v0.4.0-0-g0fb68e1b\n",
                 "  model:        stm32h723xx\n",
                 "  connection:   serial (/dev/serial/by-id/usb-foci_Ouroboros-if00)\n",
-                "  supported:    yes (FOCI ouroboros-fw prod release builds)\n",
+                "  supported:    yes\n",
                 "  needs update: yes\n",
                 "\n",
                 "mcu servo\n",
@@ -553,7 +552,7 @@ mod tests {
                 "  version:      Beacon 2.0.1\n",
                 "  model:        samd21g18a\n",
                 "  connection:   serial (/dev/serial/by-id/usb-Beacon_Beacon_RevH-if00)\n",
-                "  supported:    yes (revh.dfu holds Beacon 2.1.0)\n",
+                "  supported:    yes\n",
                 "  needs update: yes\n",
                 "\n",
                 "mcu beacon sensor beta\n",
@@ -577,7 +576,7 @@ mod tests {
                 "  version:      CARTOGRAPHER V4 6.0.0\n",
                 "  model:        stm32g431xx\n",
                 "  connection:   serial (/dev/serial/by-id/usb-Cartographer_614e-if00)\n",
-                "  supported:    yes (usb_full.bin holds CARTOGRAPHER V4 6.1.0)\n",
+                "  supported:    yes\n",
                 "  needs update: yes\n",
                 "\n",
                 "mcu probe\n",
@@ -714,9 +713,7 @@ mod tests {
             "{found}"
         );
         assert!(
-            found.contains(
-                "  supported:    yes (FOCI ouroboros-fw prod release builds)\n  needs update: yes\n"
-            ),
+            found.contains("  supported:    yes\n  needs update: yes\n"),
             "{found}"
         );
 

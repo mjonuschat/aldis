@@ -85,47 +85,23 @@ impl Running {
     pub fn supported_label(&self, targets: &Targets, name: &str) -> String {
         match self {
             Self::Beacon(_) => match targets.beacon.mcus.get(name) {
-                Some(Ok(target)) => format!(
-                    "yes ({} holds {})",
-                    file_label(&target.path),
-                    crate::beacon::reported(&target.version)
-                ),
+                Some(Ok(_)) => "yes".to_owned(),
                 Some(Err(reason)) => format!("yes (no Beacon image known: {reason})"),
                 None => "yes (no Beacon image known)".to_owned(),
             },
             Self::Cartographer(_) => match targets.cartographer.mcus.get(name) {
-                Some(Ok(target)) => {
-                    let mut label = format!(
-                        "yes ({} holds {}",
-                        file_label(&target.path),
-                        target.reported
-                    );
-                    if let Some((version, plugin)) = &target.held_back {
-                        label.push_str(&format!(
-                            "; {version} needs cartographer3d-plugin {plugin} or newer"
-                        ));
+                Some(Ok(target)) => match &target.held_back {
+                    Some((version, plugin)) => {
+                        format!("yes ({version} needs cartographer3d-plugin {plugin} or newer)")
                     }
-                    label.push(')');
-                    label
-                }
+                    None => "yes".to_owned(),
+                },
                 Some(Err(reason)) => format!("yes (no image known: {reason})"),
                 None => "yes (no image known)".to_owned(),
             },
-            Self::Foci(firmware) => format!(
-                "yes (FOCI {} {} release builds)",
-                firmware.board.crate_name(),
-                firmware.flavor.label()
-            ),
+            Self::Foci(_) => "yes".to_owned(),
         }
     }
-}
-
-/// The name of an image file, for display.
-fn file_label(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
 }
 
 impl Targets {
