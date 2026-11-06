@@ -265,7 +265,14 @@ impl SystemSerialIo {
         retry_until_available(timeout, poll_interval, || {
             let identity = usb_identity(usb_path);
             last_identity = identity.clone();
-            if identity != initial_identity && identity.is_complete() {
+            // A disappearing bridge may briefly retain its VID:PID while its
+            // manufacturer attribute vanishes; that is not a new USB device.
+            let changed = if initial_identity.usb_id == "1d50:606f" {
+                identity.usb_id != initial_identity.usb_id
+            } else {
+                identity != initial_identity
+            };
+            if changed && identity.is_complete() {
                 match observed_if_ready(usb_path, &identity) {
                     Some(observed) => Ok(observed),
                     None => {
@@ -474,6 +481,33 @@ mod tests {
         writer.join().expect("writer thread should not panic");
         assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
 
+        fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn waits_through_transient_bridge_manufacturer_loss() {
+        let usb_path = unique_temporary_path();
+        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
+        write_identity(&usb_path, "1d50:606f", "");
+        let watched_path = usb_path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            write_tty(&watched_path, "ttyACM0");
+            write_identity(&watched_path, "1d50:6177", "katapult");
+        });
+
+        let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            "1d50:606f",
+            "klipper",
+            Duration::from_secs(2),
+            Duration::from_millis(5),
+        )
+        .expect("transient bridge identity should not be treated as a bootloader");
+
+        writer.join().expect("writer thread should not panic");
+        assert_eq!(observed.usb_id, "1d50:6177");
+        assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
         fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
     }
 
