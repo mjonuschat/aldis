@@ -245,3 +245,31 @@ fn describes_each_transport_the_way_users_are_told_about_it() {
         "CAN (can0, e7819ed8e7d3)"
     );
 }
+
+#[test]
+fn reads_the_app_and_version_names_a_firmware_reports() {
+    let mcu = |app: Option<&str>, version: Option<&str>| aldis::moonraker::Mcu {
+        name: "mcu".to_owned(),
+        app: app.map(str::to_owned),
+        version: version.map(str::to_owned),
+        mcu: "test".to_owned(),
+        canbus_frequency_hz: None,
+        build_versions: None,
+        transport: None,
+        kconfig: String::new(),
+    };
+
+    assert_eq!(mcu(Some(" Klipper "), None).app_name(), Some("Klipper"));
+    assert_eq!(
+        mcu(Some("  "), None).app_name(),
+        None,
+        "blank counts as absent"
+    );
+    assert_eq!(mcu(None, None).app_name(), None);
+    assert_eq!(
+        mcu(None, Some("Beacon 2.1.0")).version_name(),
+        Some("Beacon")
+    );
+    assert_eq!(mcu(None, Some("  ")).version_name(), None);
+    assert_eq!(mcu(None, None).version_name(), None);
+}

@@ -69,6 +69,23 @@ pub enum McuTransport {
     },
 }
 
+impl Mcu {
+    /// The `app` the firmware reports, trimmed. Real Klipper and Kalico always fill it in;
+    /// third-party firmware such as Beacon reports an empty string, which counts as absent.
+    pub fn app_name(&self) -> Option<&str> {
+        self.app
+            .as_deref()
+            .map(str::trim)
+            .filter(|app| !app.is_empty())
+    }
+
+    /// The first word of the reported version, which is how firmware that leaves `app` blank
+    /// names itself (`Beacon 2.1.0`).
+    pub fn version_name(&self) -> Option<&str> {
+        self.version.as_deref()?.split_whitespace().next()
+    }
+}
+
 impl McuTransport {
     /// The transport as people are told about it: `serial (/dev/serial/by-id/...)` or
     /// `CAN (can0, e7819ed8e7d3)`.

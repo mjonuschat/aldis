@@ -184,12 +184,7 @@ fn is_klipper_build_timestamp(candidate: &str) -> bool {
 pub fn classify_mcu(mcu: &Mcu) -> Eligibility {
     // Real Klipper and Kalico always populate `app`; third-party firmware such as Beacon
     // reports it as an empty string instead of omitting it, so treat blank the same as absent.
-    match mcu
-        .app
-        .as_deref()
-        .map(str::trim)
-        .filter(|app| !app.is_empty())
-    {
+    match mcu.app_name() {
         Some(app) if app.eq_ignore_ascii_case("klipper") => {
             classify_known_firmware(mcu, FirmwareKind::Klipper, KLIPPER_MINIMUM_VERSION)
         }
@@ -211,7 +206,7 @@ pub fn classify_mcu(mcu: &Mcu) -> Eligibility {
 fn classify_unidentified(mcu: &Mcu) -> Eligibility {
     if let Some(version) = mcu.version.as_deref()
         && !looks_like_git_describe(version)
-        && let Some(name) = version.split_whitespace().next()
+        && let Some(name) = mcu.version_name()
     {
         return Eligibility::ExternallyManaged(name.to_owned());
     }
