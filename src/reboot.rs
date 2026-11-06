@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use aldis::flash::beacon_dfu::{self, ObservedBootloader};
 use aldis::flash::katapult::bootstrap::leave_serial;
 use aldis::flash::picoboot;
 use aldis::flash::reboot::{
@@ -30,10 +31,12 @@ pub(crate) fn reboot(arguments: RebootArgs, mut ui: UpdateUi) -> ExitCode {
     };
     let root = Path::new(USB_SYSFS_ROOT);
     let mut detected = detect_bootloaders(root);
-    if detected.is_empty() {
+    let mut beacons = beacon_dfu::scan_bootloaders(root);
+    if detected.is_empty() && beacons.is_empty() {
         detected = wait_for_any_bootloader(root, WATCH_TIMEOUT, WATCH_POLL_INTERVAL);
+        beacons = beacon_dfu::scan_bootloaders(root);
     }
-    if detected.is_empty() {
+    if detected.is_empty() && beacons.is_empty() {
         ui.block("no bootloader detected; power-cycle the board and try again\n");
         return ExitCode::SUCCESS;
     }
@@ -41,6 +44,19 @@ pub(crate) fn reboot(arguments: RebootArgs, mut ui: UpdateUi) -> ExitCode {
     let mut all_resolved = true;
     for bootloader in detected {
         if !leave_one(&bootloader, arguments.yes, &mut ui) {
+            all_resolved = false;
+        }
+    }
+    let checkout = (!beacons.is_empty())
+        .then(|| {
+            aldis::beacon::find_checkout(
+                arguments.beacon_source.as_deref(),
+                Some(&crate::default_klipper_source()),
+            )
+        })
+        .flatten();
+    for bootloader in beacons {
+        if !recover_beacon(&bootloader, checkout.as_deref(), arguments.yes, &mut ui) {
             all_resolved = false;
         }
     }
@@ -96,6 +112,59 @@ fn leave_one(bootloader: &DetectedBootloader, skip_prompt: bool, ui: &mut Update
                 .and_then(|port| reboot_into_application(port).map_err(|error| error.to_string()));
             report_leave_result(result, &observed.sysfs_path, ui)
         }
+    }
+}
+
+/// Flashes a Beacon left in its bootloader with the image for its revision from `checkout`,
+/// which is the only way its bootloader starts the application again. Returns whether the
+/// Beacon ended up resolved.
+fn recover_beacon(
+    bootloader: &ObservedBootloader,
+    checkout: Option<&Path>,
+    skip_prompt: bool,
+    ui: &mut UpdateUi,
+) -> bool {
+    ui.heading(&format!(
+        "Beacon bootloader at {} ({})",
+        bootloader.usb_id(),
+        bootloader.sysfs_path.display()
+    ));
+    let request = match aldis::prebuilt::prepare_beacon_recovery(checkout, bootloader) {
+        Ok(request) => request,
+        Err(reason) => {
+            ui.block(&format!(
+                "  cannot recover it: {reason}; flash it with beacon_klipper's \
+                 update_firmware.py\n"
+            ));
+            return false;
+        }
+    };
+    if !confirm(
+        ui,
+        &format!(
+            "A Beacon leaves its bootloader only by being flashed. Flash {} ({})?",
+            request.path().display(),
+            aldis::beacon::reported(&request.image().version)
+        ),
+        skip_prompt,
+    ) {
+        return true;
+    }
+    ui.begin("flashing Beacon firmware");
+    match aldis::flash::system::flash_beacon_recovery(&request, |_| {}) {
+        Ok(result) => ui.finish_success(format!("flashed {} bytes", result.padded_bytes)),
+        Err(error) => {
+            ui.finish_failure();
+            ui.block(&format!("  flash failed: {}\n", aldis::error_chain(&error)));
+            return false;
+        }
+    }
+    if beacon_dfu::wait_until_left(&bootloader.sysfs_path, WATCH_TIMEOUT, WATCH_POLL_INTERVAL) {
+        ui.block("  left its bootloader; restart Klipper (FIRMWARE_RESTART) to reconnect it\n");
+        true
+    } else {
+        ui.block("  still in its bootloader; power-cycle the Beacon\n");
+        false
     }
 }
 
@@ -156,4 +225,38 @@ fn confirm(ui: &mut UpdateUi, text: &str, skip_prompt: bool) -> bool {
         return true;
     }
     ui.confirm(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recover_beacon;
+    use aldis::flash::beacon_dfu::ObservedBootloader;
+
+    fn stuck(product: &str) -> ObservedBootloader {
+        ObservedBootloader {
+            sysfs_path: std::path::PathBuf::from("/nonexistent/1-1"),
+            vendor_id: 0x04d8,
+            product_id: 0xbea1,
+            product: product.to_owned(),
+        }
+    }
+
+    #[test]
+    fn leaves_a_beacon_it_cannot_find_an_image_for_unresolved() {
+        let mut ui = crate::ui::UpdateUi::new(crate::cli::ColorMode::Never, true);
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(!recover_beacon(
+            &stuck("Beacon RevH Bootloader"),
+            None,
+            true,
+            &mut ui
+        ));
+        assert!(!recover_beacon(
+            &stuck("Beacon RevH Bootloader"),
+            Some(dir.path()),
+            true,
+            &mut ui
+        ));
+    }
 }

@@ -45,7 +45,9 @@ pub(crate) enum CliCommand {
     Update(UpdateArgs),
     /// Install or verify the host permissions required for unprivileged updates.
     Setup(SetupArgs),
-    /// Exit any MCU already sitting in a bootloader, without reflashing it.
+    /// Exit any MCU already sitting in a bootloader, without reflashing it. A Beacon, which
+    /// leaves its bootloader only by being flashed, is flashed with its image from the
+    /// beacon_klipper checkout.
     Reboot(RebootArgs),
     /// Flash an explicit firmware file to one MCU, bypassing Klipper's build pipeline.
     #[command(hide = true)]
@@ -134,9 +136,14 @@ pub(crate) struct FlashArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct RebootArgs {
-    /// Reboot every detected bootloader without prompting.
+    /// Reboot every detected bootloader without prompting, and flash every Beacon bootloader
+    /// with its image.
     #[arg(long)]
     pub(crate) yes: bool,
+    /// beacon_klipper checkout to recover a Beacon from. Defaults to the checkout
+    /// ~/klipper/klippy/extras/beacon.py is linked from, then ~/beacon_klipper.
+    #[arg(long, env = "ALDIS_BEACON_SOURCE")]
+    pub(crate) beacon_source: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
