@@ -99,12 +99,6 @@ pub fn names_itself_beacon(mcu: &Mcu) -> bool {
             .is_some_and(|word| word.eq_ignore_ascii_case(NAME))
 }
 
-/// Whether an update may replace the running Beacon with the image holding `target`: never with
-/// an older one. Reflashing the same version is allowed.
-pub fn admits(running: &Version, target: &Version) -> bool {
-    target >= running
-}
-
 /// The settings section that configures the Beacon whose MCU object is `object`: `beacon.py`
 /// names the MCU `mcu <section>` for its `[beacon]` and `[beacon sensor <name>]` sections.
 pub fn config_section(object: &str) -> Option<&str> {

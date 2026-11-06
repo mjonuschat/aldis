@@ -368,6 +368,9 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
                 &updated,
             ));
         };
+        if let Some(refusal) = crate::eligibility::downgrade_refusal(mcu, request.target_versions) {
+            return Err(fail(hooks, refusal, Some(name), &updated));
+        }
         let current = mcu.version.as_deref().unwrap_or("unknown");
         if !hooks.approve(name, current, &request.target_versions.label_for(mcu)) {
             continue;
@@ -1958,6 +1961,29 @@ mod tests {
             ]
             .map(String::from)
             .to_vec()
+        );
+    }
+
+    #[test]
+    fn refuses_to_downgrade_any_firmware_before_asking_or_touching_klipper() {
+        const REFUSAL: &str = "mcu beacon runs Beacon 2.2.0, newer than the Beacon 2.1.0 in its beacon_klipper checkout, and an update never downgrades it: name the file with `aldis flash beacon <file>` to install the older image";
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("revh.dfu");
+        std::fs::write(&image, beacon_image_file(0x2010)).unwrap();
+        let mut scenario = foci_scenario(foci_can());
+        scenario.mcu = beacon_mcu(foci_can());
+        scenario.mcu.version = Some("Beacon 2.2.0".to_owned());
+        scenario.versions = beacon_targets(&image, 0x2010);
+
+        assert_eq!(
+            trace(scenario),
+            [
+                format!("failed: {REFUSAL}"),
+                format!("detail: {REFUSAL}"),
+                format!("message: {REFUSAL}"),
+                "mcu: Some(\"mcu beacon\"), updated []".to_owned(),
+            ],
+            "nothing is asked, downloaded or run"
         );
     }
 

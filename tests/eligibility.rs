@@ -691,8 +691,8 @@ fn confirms_a_cartographer_by_the_exact_version_its_image_reports() {
 }
 
 /// The selection of every prebuilt vendor with the running firmware older than, equal to and
-/// newer than its target, under each selection. Frozen from the behavior before the shared
-/// prebuilt-firmware path, so that path cannot change who gets offered or forced an update.
+/// newer than its target, under each selection. An update never downgrades firmware, so a newer
+/// running version is selected by no selection; only `aldis flash` with the file itself does.
 /// Each row is `(required, all)`.
 #[test]
 fn selects_prebuilt_vendors_by_how_the_running_version_compares_with_the_target() {
@@ -715,7 +715,8 @@ fn selects_prebuilt_vendors_by_how_the_running_version_compares_with_the_target(
     );
     assert_eq!(
         selections(&foci("v0.4.2-0-g0fb68e1b", FOCI_PROD), &release),
-        (false, true)
+        (false, false),
+        "no selection replaces a newer build with an older release"
     );
     assert_eq!(
         selections(&foci("v0.4.0-3-gabcdef12", FOCI_PROD), &release),
@@ -727,8 +728,6 @@ fn selects_prebuilt_vendors_by_how_the_running_version_compares_with_the_target(
     let image = beacon_target(0x2010);
     assert_eq!(selections(&beacon("Beacon 2.0.1"), &image), (true, true));
     assert_eq!(selections(&beacon("Beacon 2.1.0"), &image), (false, true));
-    // No silent Beacon downgrade: a newer running Beacon is never offered the older image, even
-    // by --all or --force; only `aldis flash` with the file itself installs it.
     assert_eq!(selections(&beacon("Beacon 2.2.0"), &image), (false, false));
 
     // Cartographer (running 6.0.0 / 6.1.0 / 6.2.0 against an image reporting 6.1.0).
@@ -744,8 +743,7 @@ fn selects_prebuilt_vendors_by_how_the_running_version_compares_with_the_target(
     );
     assert_eq!(
         selections(&probe("CARTOGRAPHER V4 6.2.0"), &image),
-        (false, true),
-        "a newer probe is not offered, but naming it with --force still reflashes"
+        (false, false)
     );
 }
 

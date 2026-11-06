@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use crate::coordinator::{PendingBuild, UpdateProgress};
-use crate::eligibility::{RevisionStatus, TargetVersions};
+use crate::eligibility::{Downgrade, RevisionStatus, TargetVersions};
 use crate::flash::beacon_dfu::ObservedBootloader;
 use crate::flash::request::{FlashRequest, RecoveryRequest, Vendor};
 use crate::flash::system::PrebuiltLinks;
@@ -237,34 +237,36 @@ impl Targets {
         }
     }
 
-    /// Whether an update may replace `running`, the MCU named `name`, with its target. A Beacon
-    /// is never downgraded by an update, whatever the selection; `flash` with a named file is the
-    /// only way. True when no target is known (there is nothing to refuse), and for the vendors
-    /// that have no such rule.
-    pub fn admits(&self, running: &Running, name: &str) -> bool {
-        match (running, self.target(running, name)) {
-            (Running::Beacon(firmware), Some(Target::Beacon(target))) => {
-                crate::beacon::admits(&firmware.version, &target.version)
+    /// What `running`, the MCU named `name`, would be downgraded to by an update: its target, when
+    /// the target is older than what it runs.
+    pub fn downgrade(&self, running: &Running, name: &str) -> Option<Downgrade> {
+        let advice = || {
+            format!(
+                "name the file with `aldis flash {} <file>` to install the older image",
+                crate::agent::api::display_name(name)
+            )
+        };
+        match (running, self.target(running, name)?) {
+            (Running::Foci(firmware), Target::Foci(release)) => {
+                (firmware.version.package > release.version).then(|| Downgrade {
+                    description: format!("the latest FOCI release, {}", release.tag),
+                    advice: advice(),
+                })
             }
-            _ => true,
-        }
-    }
-
-    /// Why an update will not replace `running`, the MCU named `name`, with its target, when it
-    /// is because that would be a downgrade.
-    pub fn downgrade_refusal(&self, running: &Running, name: &str) -> Option<String> {
-        match (running, self.target(running, name)) {
-            (Running::Beacon(firmware), Some(Target::Beacon(target)))
-                if !crate::beacon::admits(&firmware.version, &target.version) =>
-            {
-                Some(format!(
-                    "{name} runs Beacon {}, newer than the Beacon {} in its beacon_klipper \
-                     checkout, and an update never downgrades it: name the file with `aldis \
-                     flash {} <file>` to install the older image",
-                    firmware.version,
-                    target.version,
-                    crate::agent::api::display_name(name)
-                ))
+            (Running::Beacon(firmware), Target::Beacon(target)) => {
+                (firmware.version > target.version).then(|| Downgrade {
+                    description: format!(
+                        "the {} in its beacon_klipper checkout",
+                        crate::beacon::reported(&target.version)
+                    ),
+                    advice: advice(),
+                })
+            }
+            (Running::Cartographer(firmware), Target::Cartographer(target)) => {
+                (firmware.version > target.version).then(|| Downgrade {
+                    description: format!("{} in its cartographer_firmware clone", target.reported),
+                    advice: advice(),
+                })
             }
             _ => None,
         }
@@ -380,10 +382,8 @@ pub fn prepare_automatic(
                 )
             })
         }
-        Ok(Running::Beacon(firmware)) => {
-            read_beacon_image(&firmware, versions, pending, progress, name)
-                .map(|image| FlashRequest::beacon(mcu, image))
-        }
+        Ok(Running::Beacon(_)) => read_beacon_image(versions, pending, progress, name)
+            .map(|image| FlashRequest::beacon(mcu, image)),
         // Recognized but not matched to an update image: never fall through to a build.
         Err(reason) => Err(reason.to_string()),
     })
@@ -486,7 +486,6 @@ fn download_foci_firmware(
 /// run's other artifacts. Returns the failure's description when there is no image to flash,
 /// including when the checkout changed to another version since the image was assessed.
 fn read_beacon_image(
-    running: &crate::beacon::Firmware,
     versions: &TargetVersions,
     pending: &PendingBuild,
     progress: &mut dyn FnMut(UpdateProgress),
@@ -505,13 +504,6 @@ fn read_beacon_image(
             target.path.display(),
             image.version,
             target.version
-        ));
-    }
-    if !crate::beacon::admits(&running.version, &image.version) {
-        return Err(format!(
-            "refusing to downgrade {name} from Beacon {} to Beacon {}; name the file with \
-             `aldis flash` to install an older image",
-            running.version, image.version
         ));
     }
     progress(UpdateProgress::FirmwareRead);

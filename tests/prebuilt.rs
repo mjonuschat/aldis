@@ -401,7 +401,7 @@ fn prepares_a_recovery_image_only_for_the_bootloader_it_names() {
 }
 
 #[test]
-fn never_prepares_a_beacon_downgrade_but_reflashes_the_same_version() {
+fn prepares_a_beacon_update_for_the_same_or_an_older_version() {
     use aldis::eligibility::{CheckoutRevision, TargetVersions};
     use aldis::prebuilt::prepare_automatic;
 
@@ -443,11 +443,6 @@ fn never_prepares_a_beacon_downgrade_but_reflashes_the_same_version() {
         .unwrap()
     };
 
-    assert_eq!(
-        prepare("Beacon 2.2.0").unwrap_err(),
-        "refusing to downgrade mcu beacon from Beacon 2.2.0 to Beacon 2.1.0; name the file with \
-         `aldis flash` to install an older image"
-    );
     assert!(
         prepare("Beacon 2.1.0").is_ok(),
         "the same version may be reflashed"
@@ -457,8 +452,7 @@ fn never_prepares_a_beacon_downgrade_but_reflashes_the_same_version() {
 
 #[test]
 fn says_why_an_update_leaves_a_newer_beacon_alone() {
-    use aldis::eligibility::{CheckoutRevision, TargetVersions};
-    use aldis::prebuilt::Running;
+    use aldis::eligibility::{CheckoutRevision, TargetVersions, downgrade_refusal};
 
     let versions = TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned()))
         .with_beacon_targets(aldis::beacon::Targets {
@@ -473,16 +467,10 @@ fn says_why_an_update_leaves_a_newer_beacon_alone() {
             )]
             .into(),
         });
-    let running = |version: &str| {
-        Running::Beacon(aldis::beacon::Firmware {
-            version: aldis::beacon::parse_reported(version).unwrap(),
-        })
-    };
+    let beacon = |version: &str| mcu("mcu beacon", "", version, "samd21g18a");
 
     assert_eq!(
-        versions
-            .prebuilt
-            .downgrade_refusal(&running("Beacon 2.2.0"), "mcu beacon"),
+        downgrade_refusal(&beacon("Beacon 2.2.0"), &versions),
         Some(
             "mcu beacon runs Beacon 2.2.0, newer than the Beacon 2.1.0 in its beacon_klipper \
              checkout, and an update never downgrades it: name the file with `aldis flash \
@@ -491,11 +479,6 @@ fn says_why_an_update_leaves_a_newer_beacon_alone() {
         )
     );
     for version in ["Beacon 2.1.0", "Beacon 2.0.1"] {
-        assert_eq!(
-            versions
-                .prebuilt
-                .downgrade_refusal(&running(version), "mcu beacon"),
-            None
-        );
+        assert_eq!(downgrade_refusal(&beacon(version), &versions), None);
     }
 }

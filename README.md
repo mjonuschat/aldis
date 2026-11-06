@@ -97,7 +97,7 @@ Flashing a USB-CAN bridge resets its CAN bus, so aldis refuses while another pri
 
 `update` requires the host permissions installed by `~/aldis/aldis setup` (see above). A few flags interact:
 
-- `--force` alone updates every eligible MCU, same as `--all`. Combined with specific `<mcu>` names, it force-updates just those, even if already current. `update` never replaces Klipper firmware with an older build, even with `--force`.
+- `--force` alone updates every eligible MCU, same as `--all`. Combined with specific `<mcu>` names, it force-updates just those, even if already current. `update` never replaces firmware with an older build or image, even with `--force`.
 - `--pull` can be combined with specific `<mcu>` names too.
 - `--auto` already implies `--pull` and can't be combined with `--pull`, `--force`, `--all`, or explicit MCU names.
 

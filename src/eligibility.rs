@@ -212,46 +212,61 @@ fn compare_revisions(running: &str, selected: &str) -> RevisionStatus {
     }
 }
 
-/// Whether the MCU runs a newer Klipper revision than the checkout it would be rebuilt from.
-fn downgrades_klipper(mcu: &Mcu, versions: &TargetVersions) -> bool {
-    matches!(
-        (&mcu.version, &versions.klipper),
-        (Some(running), CheckoutRevision::Known(selected))
-            if compare_revisions(running, selected) == RevisionStatus::Indeterminate
-    )
+/// An update that would replace newer firmware with an older build or image.
+pub struct Downgrade {
+    /// What the MCU would be updated to, for "newer than ...".
+    pub description: String,
+    /// What to do instead.
+    pub advice: String,
+}
+
+/// What `mcu` would be downgraded to by an update, when its target is older than what it runs.
+fn downgrade_of(mcu: &Mcu, versions: &TargetVersions) -> Option<Downgrade> {
+    match classify_mcu(mcu) {
+        Eligibility::Eligible => match (&mcu.version, &versions.klipper) {
+            (Some(running), CheckoutRevision::Known(selected))
+                if compare_revisions(running, selected) == RevisionStatus::Indeterminate =>
+            {
+                Some(Downgrade {
+                    description: format!("the {} checkout", selected),
+                    advice: "update the checkout first".to_owned(),
+                })
+            }
+            _ => None,
+        },
+        Eligibility::Prebuilt(running) => versions.prebuilt.downgrade(&running, &mcu.name),
+        _ => None,
+    }
 }
 
 /// Why an update will not replace `mcu`'s firmware with the build or image it would otherwise
-/// get, when it is because that would be a downgrade.
+/// get, when it is because that would be a downgrade. No update downgrades firmware, whatever
+/// the selection.
 pub fn downgrade_refusal(mcu: &Mcu, versions: &TargetVersions) -> Option<String> {
-    match classify_mcu(mcu) {
-        Eligibility::Eligible if downgrades_klipper(mcu, versions) => Some(format!(
-            "{} runs {}, newer than the {} checkout, and an update never downgrades it: update \
-             the checkout first",
-            mcu.name,
-            mcu.version.as_deref().unwrap_or("unknown"),
-            versions.klipper.label()
-        )),
-        Eligibility::Prebuilt(running) => versions.prebuilt.downgrade_refusal(&running, &mcu.name),
-        _ => None,
-    }
+    let downgrade = downgrade_of(mcu, versions)?;
+    Some(format!(
+        "{} runs {}, newer than {}, and an update never downgrades it: {}",
+        mcu.name,
+        mcu.version.as_deref().unwrap_or("unknown"),
+        downgrade.description,
+        downgrade.advice
+    ))
 }
 
 /// Returns whether one MCU is eligible for the requested update selection.
 pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelection) -> bool {
     let status = assess_mcu(mcu, versions);
     let updatable = match status.eligibility {
-        // A Klipper MCU is never replaced with an older build, whatever the selection.
-        Eligibility::Eligible => !downgrades_klipper(mcu, versions),
+        Eligibility::Eligible => true,
         // Prebuilt firmware is flashed with its target image, so even `All` needs one to be
         // known: the FOCI release, or the Beacon's or Cartographer's image from its checkout.
         Eligibility::Prebuilt(ref running) => {
             versions.prebuilt.target(running, &mcu.name).is_some()
-                && versions.prebuilt.admits(running, &mcu.name)
         }
         _ => false,
     };
-    if !updatable {
+    // No selection downgrades firmware.
+    if !updatable || downgrade_of(mcu, versions).is_some() {
         return false;
     }
     match selection {
