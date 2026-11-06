@@ -345,7 +345,7 @@ fn post_flash_failure(
     )
 }
 
-/// Builds (or, for FOCI, downloads) and flashes each approved target in order, then starts
+/// Builds (or, for FOCI and Beacon, downloads or reads) and flashes each approved target in order, then starts
 /// Klipper and waits for every updated MCU to reconnect at its target version. The first failure
 /// ends the run.
 pub fn run_updates<B: CommandPort, S: CommandPort>(
@@ -1230,6 +1230,207 @@ mod tests {
         assert!(runner.0.lock().unwrap().is_empty());
     }
 
+    /// CRC-32 without its final inversion, as a DFU suffix stores it.
+    fn dfu_crc(bytes: &[u8]) -> u32 {
+        bytes.iter().fold(u32::MAX, |crc, &byte| {
+            (0..8).fold(crc ^ u32::from(byte), |crc, _| {
+                if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                }
+            })
+        })
+    }
+
+    fn beacon_image_file(bcd: u16) -> Vec<u8> {
+        let mut file = vec![0x5a; 32];
+        for word in [bcd, 0xbea1, 0x04d8, 0x0100] {
+            file.extend_from_slice(&word.to_le_bytes());
+        }
+        file.extend_from_slice(b"UFD");
+        file.push(16);
+        let crc = dfu_crc(&file);
+        file.extend_from_slice(&crc.to_le_bytes());
+        file
+    }
+
+    fn beacon_mcu(transport: McuTransport) -> Mcu {
+        Mcu {
+            name: "mcu beacon".to_owned(),
+            app: Some(String::new()),
+            version: Some("Beacon 2.0.1".to_owned()),
+            mcu: "samd21g18a".to_owned(),
+            canbus_frequency_hz: None,
+            build_versions: None,
+            transport: Some(transport),
+            kconfig: String::new(),
+        }
+    }
+
+    /// Targets with `mcu beacon` updated to the image at `path`, said to hold `bcd`.
+    fn beacon_targets(path: &Path, bcd: u16) -> TargetVersions {
+        TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())).with_beacon_targets(
+            crate::beacon::Targets {
+                checkout: path.parent().map(Path::to_owned),
+                mcus: [(
+                    "mcu beacon".to_owned(),
+                    Ok(crate::beacon::Target {
+                        revision: "h".to_owned(),
+                        path: path.to_owned(),
+                        version: crate::beacon::version_from_bcd(bcd),
+                    }),
+                )]
+                .into(),
+            },
+        )
+    }
+
+    fn run_beacon(
+        transport: McuTransport,
+        versions: &TargetVersions,
+        runner: &InactiveKlipper,
+        workspace: &RunWorkspace,
+    ) -> RunFailure {
+        let inventory = McuInventory {
+            mcus: vec![beacon_mcu(transport)],
+            unreported: Vec::new(),
+        };
+        let coordinator = BuildCoordinator::new("/nonexistent", runner.clone(), runner.clone());
+        run_updates(
+            &coordinator,
+            &Printer(PrintState::Standby),
+            &inventory,
+            workspace,
+            RunRequest {
+                targets: &["mcu beacon".to_owned()],
+                target_versions: versions,
+                foci_releases: &NoReleases,
+                clean: false,
+            },
+            &mut approving(),
+        )
+        .unwrap_err()
+    }
+
+    #[test]
+    fn reads_the_beacon_image_from_the_checkout_and_flashes_it_over_usb_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let image = dir.path().join("revh.dfu");
+        std::fs::write(&image, beacon_image_file(0x2010)).unwrap();
+        let runner = InactiveKlipper::default();
+
+        let failure = run_beacon(
+            McuTransport::Can {
+                interface: "can0".to_owned(),
+                uuid: 0xe781_9ed8_e7d3,
+            },
+            &beacon_targets(&image, 0x2010),
+            &runner,
+            &workspace,
+        );
+
+        let paths = workspace.build_paths("mcu beacon").unwrap();
+        assert_eq!(
+            std::fs::read(paths.artifact_path.with_file_name("revh.dfu")).unwrap(),
+            beacon_image_file(0x2010),
+            "the run keeps the image it flashed"
+        );
+        assert!(
+            failure
+                .detail
+                .starts_with("Beacon firmware is flashed only over USB"),
+            "{}",
+            failure.detail
+        );
+        assert!(
+            failure
+                .message
+                .ends_with("Klipper has been left in its state from before this update"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            runner
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|command| !format!("{command:?}").contains("make")),
+            "a Beacon update never builds"
+        );
+    }
+
+    #[test]
+    fn refuses_a_beacon_image_that_changed_since_it_was_assessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let image = dir.path().join("revh.dfu");
+        std::fs::write(&image, beacon_image_file(0x2020)).unwrap();
+        let runner = InactiveKlipper::default();
+
+        let failure = run_beacon(
+            McuTransport::Serial {
+                device: "/dev/serial/by-id/usb-Beacon_Beacon_RevH-if00".to_owned(),
+            },
+            &beacon_targets(&image, 0x2010),
+            &runner,
+            &workspace,
+        );
+
+        assert_eq!(
+            failure.detail,
+            format!(
+                "{} now holds Beacon 2.2.0, not the Beacon 2.1.0 mcu beacon was to be updated to",
+                image.display()
+            )
+        );
+        assert_eq!(failure.mcu.as_deref(), Some("mcu beacon"));
+        assert!(
+            failure
+                .message
+                .ends_with("Klipper has been left in its state from before this update"),
+            "{}",
+            failure.message
+        );
+    }
+
+    #[test]
+    fn refuses_a_beacon_update_without_a_readable_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = RunWorkspace::create(dir.path().join("run")).unwrap();
+        let serial = McuTransport::Serial {
+            device: "/dev/serial/by-id/usb-Beacon_Beacon_RevH-if00".to_owned(),
+        };
+
+        let missing = run_beacon(
+            serial.clone(),
+            &beacon_targets(&dir.path().join("revh.dfu"), 0x2010),
+            &InactiveKlipper::default(),
+            &workspace,
+        );
+        assert!(
+            missing.detail.starts_with(&format!(
+                "could not read {}",
+                dir.path().join("revh.dfu").display()
+            )),
+            "{}",
+            missing.detail
+        );
+
+        let unknown = run_beacon(
+            serial,
+            &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
+            &InactiveKlipper::default(),
+            &workspace,
+        );
+        assert_eq!(
+            unknown.detail,
+            "no Beacon firmware image is known to update mcu beacon with"
+        );
+    }
+
     fn fixture() -> (
         tempfile::TempDir,
         RunWorkspace,
@@ -1575,5 +1776,30 @@ mod tests {
             .map(String::from)
             .to_vec()
         );
+    }
+
+    #[test]
+    fn traces_a_beacon_update_that_stops_at_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let beacon = dir.path().join("revh.dfu");
+        std::fs::write(&beacon, beacon_image_file(0x2010)).unwrap();
+        let mut scenario = foci_scenario(foci_can());
+        scenario.mcu = beacon_mcu(foci_can());
+        scenario.versions = beacon_targets(&beacon, 0x2010);
+        assert_eq!(trace(scenario), [
+                "approve mcu beacon: Beacon 2.0.1 -> Beacon 2.1.0",
+                "progress mcu beacon: ReadingFirmware",
+                "progress mcu beacon: FirmwareRead",
+                "command: sudo -n /bin/systemctl is-active klipper",
+                "progress mcu beacon: StoppingKlipper",
+                "command: sudo -n /bin/systemctl stop klipper",
+                "command: sudo -n /bin/systemctl is-active klipper",
+                "command: sudo -n /bin/systemctl start klipper",
+                "command: sudo -n /bin/systemctl is-active klipper",
+                "failed: Beacon firmware is flashed only over USB, and the Beacon is configured on CAN (can0, e7819ed8e7d3)",
+                "detail: Beacon firmware is flashed only over USB, and the Beacon is configured on CAN (can0, e7819ed8e7d3)",
+                "message: update failed: Beacon firmware is flashed only over USB, and the Beacon is configured on CAN (can0, e7819ed8e7d3). Klipper has been left in its state from before this update",
+                "mcu: Some(\"mcu beacon\"), updated []",
+            ].map(String::from).to_vec());
     }
 }

@@ -71,6 +71,10 @@ pub(crate) struct ConnectionArgs {
     /// Klipper source checkout.
     #[arg(long)]
     pub(crate) klipper_source: Option<PathBuf>,
+    /// beacon_klipper checkout to flash Beacon firmware from. Defaults to the checkout
+    /// klippy/extras/beacon.py is linked from, then ~/beacon_klipper.
+    #[arg(long, env = "ALDIS_BEACON_SOURCE")]
+    pub(crate) beacon_source: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

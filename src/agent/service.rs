@@ -473,6 +473,8 @@ impl<B: AgentBackend> RunHooks for AgentHooks<'_, B> {
         let (phase, message) = match progress {
             UpdateProgress::DownloadingFirmware => (Phase::Build, "downloading firmware"),
             UpdateProgress::FirmwareDownloaded => (Phase::Build, "downloaded firmware"),
+            UpdateProgress::ReadingFirmware => (Phase::Build, "reading firmware image"),
+            UpdateProgress::FirmwareRead => (Phase::Build, "read firmware image"),
             UpdateProgress::StoppingKlipper => (Phase::StopKlipper, "stopping Klipper"),
             UpdateProgress::ConfiguringFirmware => (Phase::Build, "configuring firmware"),
             UpdateProgress::CompilingFirmware => (Phase::Build, "compiling firmware"),
@@ -809,6 +811,52 @@ mod tests {
         assert_eq!(
             *service.backend.seen_targets.lock().unwrap(),
             vec!["mcu ouroboros"]
+        );
+    }
+
+    #[test]
+    fn updates_a_beacon_by_name_once_its_image_is_known() {
+        let mut snapshot = snapshot(PrintState::Standby);
+        let mut beacon = mcu("mcu beacon", "Beacon 2.0.1", "");
+        beacon.app = Some(String::new());
+        snapshot.inventory.as_mut().unwrap().mcus.push(beacon);
+
+        let unknown = AgentService::new(
+            FakeBackend::new(snapshot.clone(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+        let error = unknown
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["beacon".to_owned()],
+            })
+            .unwrap_err();
+        assert_eq!(reason(&error), "not_updatable");
+
+        snapshot.prebuilt.beacon.mcus.insert(
+            "mcu beacon".to_owned(),
+            Ok(crate::beacon::Target {
+                revision: "h".to_owned(),
+                path: std::path::PathBuf::from("/home/pi/beacon_klipper/firmware/revh.dfu"),
+                version: crate::beacon::version_from_bcd(0x2010),
+            }),
+        );
+        let backend = FakeBackend::new(
+            snapshot,
+            Ok(RunOutcome {
+                updated: vec!["mcu beacon".to_owned()],
+            }),
+        );
+        let service = AgentService::new(backend, sink().0);
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["beacon".to_owned()],
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+        assert_eq!(
+            *service.backend.seen_targets.lock().unwrap(),
+            vec!["mcu beacon"]
         );
     }
 

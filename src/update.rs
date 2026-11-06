@@ -10,7 +10,9 @@ use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use aldis::config::{FleetConfig, instance_urls};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
-use aldis::eligibility::{CheckoutRevision, TargetVersions, UpdateSelection, is_selected};
+use aldis::eligibility::{
+    CheckoutRevision, TargetVersions, UpdateSelection, classify_mcu, is_selected,
+};
 use aldis::fleet::peer::{check_bridge, peers_excluding};
 use aldis::fleet::system::{other_urls, probe_peer};
 use aldis::logging::{self, LoggingCommandAdapter};
@@ -138,7 +140,12 @@ fn run_update(
     let versions = TargetVersions::klipper(
         checkout_revision(&source).unwrap_or(CheckoutRevision::Indeterminate),
     )
-    .with_prebuilt(crate::discovery::prebuilt_targets(&inventory, &releases));
+    .with_prebuilt(crate::discovery::prebuilt_targets(
+        &inventory,
+        &releases,
+        arguments.connection.beacon_source.as_deref(),
+        &source,
+    ));
     ui.block(&format_status(
         &source,
         &versions,
@@ -147,6 +154,17 @@ fn run_update(
     ));
     // `--force` offers every eligible MCU among the named ones (or all of them), as `--all` does.
     let selection = selection_for(arguments.all || arguments.force);
+    for mcu in inventory
+        .mcus
+        .iter()
+        .filter(|mcu| arguments.targets.contains(&mcu.name))
+    {
+        if let aldis::eligibility::Eligibility::Prebuilt(running) = classify_mcu(mcu)
+            && let Some(refusal) = versions.prebuilt.downgrade_refusal(&running, &mcu.name)
+        {
+            ui.block(&format!("\n{refusal}\n"));
+        }
+    }
     let offered = inventory
         .mcus
         .iter()

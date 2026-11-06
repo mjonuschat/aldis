@@ -45,12 +45,14 @@ pub(crate) fn probe_unreported_with(
     }
 }
 
-/// What the prebuilt-firmware MCUs of `inventory` are updated to: the latest FOCI release when
-/// `inventory` has a FOCI MCU to compare with it. A failed lookup is reported and leaves the FOCI
-/// MCUs indeterminate rather than failing the command.
+/// What the prebuilt-firmware MCUs of `inventory` are updated to: the latest FOCI release (a
+/// failed lookup is reported and leaves the FOCI MCUs indeterminate rather than failing the
+/// command) and the Beacon images from their checkout. Looks only for the vendors present.
 pub(crate) fn prebuilt_targets(
     inventory: &McuInventory,
     releases: &impl aldis::foci::ReleasePort,
+    beacon_source: Option<&std::path::Path>,
+    klipper_source: &std::path::Path,
 ) -> aldis::prebuilt::Targets {
     let foci = aldis::foci::release_for(inventory, releases)
         .inspect_err(|error| {
@@ -61,7 +63,14 @@ pub(crate) fn prebuilt_targets(
         })
         .ok()
         .flatten();
-    aldis::prebuilt::resolve_targets(inventory, &aldis::prebuilt::ResolveContext { foci })
+    aldis::prebuilt::resolve_targets(
+        inventory,
+        &aldis::prebuilt::ResolveContext {
+            foci,
+            beacon_source,
+            klipper_source: Some(klipper_source),
+        },
+    )
 }
 
 const TIMEOUT: Duration = Duration::from_secs(15);

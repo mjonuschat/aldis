@@ -48,15 +48,23 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         ui.action(&format!("error: {reason}"));
         anyhow::bail!(reason);
     }
-    // Prebuilt firmware (FOCI) takes only a file that suits the MCU, sent by the protocol its
-    // vendor allows; refuse anything else before the MCU is touched.
+    // Prebuilt firmware (FOCI, Beacon) takes only a file that suits the MCU, sent by the
+    // protocol its vendor allows; refuse anything else before the MCU is touched.
     let prebuilt = match inventory
         .mcus
         .iter()
         .find(|mcu| mcu.name == arguments.target)
     {
         Some(mcu) => aldis::prebuilt::prepare_explicit(mcu, &firmware)
-            .map_err(|error| anyhow::anyhow!("refusing to flash {}: {error}", arguments.target))
+            .map_err(|error| match error {
+                aldis::prebuilt::ExplicitError::NotBeaconImage(_) => anyhow::Error::new(error)
+                    .context(format!(
+                        "refusing to flash {}: {} is not a Beacon firmware image",
+                        arguments.target,
+                        arguments.firmware.display()
+                    )),
+                error => anyhow::anyhow!("refusing to flash {}: {error}", arguments.target),
+            })
             .inspect_err(|error| ui.action(&format!("error: {error:#}")))?,
         None => None,
     };

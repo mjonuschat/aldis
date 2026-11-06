@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::beacon::FirmwareImage;
 use crate::build::CommandPort;
 use crate::eligibility::kconfig_machine;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
+use crate::flash::beacon_dfu::{self, BeaconDfuError};
 use crate::flash::katapult::adapter::KatapultAdapter;
 use crate::flash::katapult::adapter::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{
@@ -171,6 +173,15 @@ pub enum SystemFlashError {
         /// The MCU transport that was asked to enter its bootloader.
         transport: String,
     },
+    /// Entering or flashing Beacon's bootloader failed.
+    BeaconDfu(BeaconDfuError),
+    /// The Beacon bootloader that appeared is not the one the firmware image is for.
+    BeaconImageMismatch {
+        /// The bootloader's USB id.
+        bootloader: String,
+        /// The USB id the image's DFU suffix names.
+        image: String,
+    },
 }
 
 impl fmt::Display for SystemFlashError {
@@ -302,6 +313,13 @@ impl fmt::Display for SystemFlashError {
                 "{transport} entered {bootloader}, but this firmware is flashed only through \
                  Katapult; run `aldis reboot` to leave the bootloader"
             ),
+            Self::BeaconDfu(error) => write!(f, "{error}"),
+            Self::BeaconImageMismatch { bootloader, image } => write!(
+                f,
+                "refusing to flash: the Beacon's bootloader is {bootloader} but the firmware \
+                 image is for {image}; the Beacon is left in its bootloader, so flash it with \
+                 beacon_klipper's update_firmware.py or power-cycle it"
+            ),
         }
     }
 }
@@ -312,6 +330,7 @@ impl std::error::Error for SystemFlashError {
             Self::MissingTransport
             | Self::LinkRefused { .. }
             | Self::NotKatapult { .. }
+            | Self::BeaconImageMismatch { .. }
             | Self::UnrecognizedFirmwareTarget
             | Self::Stm32TargetMismatch { .. }
             | Self::Stm32AmbiguousApplication { .. } => None,
@@ -332,6 +351,7 @@ impl std::error::Error for SystemFlashError {
             Self::LinuxHost(error) => std::error::Error::source(error),
             Self::CanSocket(error) => Some(error),
             Self::CanUsbTopology(error) => Some(error),
+            Self::BeaconDfu(error) => std::error::Error::source(error),
         }
     }
 }
@@ -721,24 +741,29 @@ pub fn katapult_route(
 pub enum PrebuiltRoute {
     /// Through Katapult on a USB serial device only.
     KatapultUsb,
+    /// Through Beacon's own bootloader over USB only.
+    BeaconUsb,
 }
 
 impl PrebuiltRoute {
     fn subject(self) -> &'static str {
         match self {
             Self::KatapultUsb => "this firmware",
+            Self::BeaconUsb => "Beacon firmware",
         }
     }
 
     fn allowed(self) -> &'static str {
         match self {
             Self::KatapultUsb => "through Katapult on a USB serial device",
+            Self::BeaconUsb => "over USB",
         }
     }
 
     fn device(self) -> &'static str {
         match self {
             Self::KatapultUsb => "MCU",
+            Self::BeaconUsb => "Beacon",
         }
     }
 }
@@ -798,6 +823,59 @@ pub fn flash_prebuilt_katapult_with_progress(
         Some(application_start),
         &mut progress,
     )
+}
+
+/// Flashes a Beacon firmware image to the Beacon on a USB serial device: asks it to enter its
+/// DFU bootloader with a 1200-baud touch, refuses a bootloader the image's DFU suffix does not
+/// name (which also keeps one revision's image off another's board), and downloads the image.
+pub fn flash_beacon_with_progress(
+    prepared: &PreparedBuild,
+    image: &FirmwareImage,
+    options: SystemFlashOptions,
+    mut progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    let device = usb_serial_device(
+        prepared
+            .transport
+            .as_ref()
+            .ok_or(SystemFlashError::MissingTransport)?,
+        PrebuiltRoute::BeaconUsb,
+    )?;
+    progress(SystemFlashProgress::EnteringBootloader);
+    let bootloader = beacon_dfu::request_and_observe_bootloader(
+        Path::new(device),
+        options.katapult.bootloader_timeout,
+        options.katapult.poll_interval,
+    )
+    .map_err(SystemFlashError::BeaconDfu)?;
+    progress(SystemFlashProgress::BootloaderReady);
+    flash_beacon_bootloader(&bootloader, image, progress)
+}
+
+/// Flashes a recovery image to the Beacon in the bootloader it was prepared for.
+pub fn flash_beacon_recovery(
+    request: &crate::flash::request::RecoveryRequest,
+    progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    flash_beacon_bootloader(request.bootloader(), request.image(), progress)
+}
+
+/// Flashes a Beacon firmware image to a Beacon already in its bootloader, refusing a bootloader
+/// the image's DFU suffix does not name.
+pub fn flash_beacon_bootloader(
+    bootloader: &beacon_dfu::ObservedBootloader,
+    image: &FirmwareImage,
+    mut progress: impl FnMut(SystemFlashProgress),
+) -> Result<FlashResult, SystemFlashError> {
+    if bootloader.usb_id() != image.usb_id() {
+        return Err(SystemFlashError::BeaconImageMismatch {
+            bootloader: bootloader.usb_id(),
+            image: image.usb_id(),
+        });
+    }
+    wait_for_usb_device_access(&bootloader.sysfs_path)?;
+    progress(SystemFlashProgress::Flashing);
+    beacon_dfu::flash(bootloader, &image.payload).map_err(SystemFlashError::BeaconDfu)
 }
 
 /// The offset the device currently runs its application from, as far as the probe can tell.

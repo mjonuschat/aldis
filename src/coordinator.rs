@@ -6,7 +6,7 @@ use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, Klippe
 use crate::flash::FlashResult;
 use crate::flash::request::{FlashRequest, Protocol};
 use crate::flash::system::{
-    SystemFlashError, SystemFlashOptions, SystemFlashProgress,
+    SystemFlashError, SystemFlashOptions, SystemFlashProgress, flash_beacon_with_progress,
     flash_prebuilt_katapult_with_progress, flash_prepared_firmware_file_with_progress,
     flash_prepared_system_with_progress,
 };
@@ -91,7 +91,7 @@ pub enum FlashCoordinatorError {
 impl FlashCoordinatorError {
     /// Whether Klipper can safely be restarted after this failure. A USB MCU may
     /// be left in its bootloader, but the host MCU never is, and an MCU on a transport prebuilt
-    /// firmware is not sent over was never asked to enter one.
+    /// or Beacon firmware is not sent over was never asked to enter one.
     pub fn allows_klipper_restore(&self) -> bool {
         match self {
             Self::Flash(error) => matches!(
@@ -151,6 +151,10 @@ pub enum UpdateProgress {
     DownloadingFirmware,
     /// The prebuilt firmware image was downloaded and verified.
     FirmwareDownloaded,
+    /// A firmware image is being read from a local checkout.
+    ReadingFirmware,
+    /// The local firmware image was read and verified.
+    FirmwareRead,
     /// Klipper is expanding the selected MCU configuration.
     ConfiguringFirmware,
     /// Klipper is compiling the selected firmware artifact.
@@ -304,9 +308,9 @@ where
     }
 
     /// Stops Klipper if necessary, then flashes prebuilt firmware to the approved MCU by the
-    /// protocol its request names (see [`flash_prebuilt_katapult_with_progress`]). A request
-    /// prepared for another MCU than the approved one is refused before Klipper is stopped. Like
-    /// every flash, this never restarts Klipper.
+    /// protocol its request names (see [`flash_prebuilt_katapult_with_progress`] and
+    /// [`flash_beacon_with_progress`]). A request prepared for another MCU than the approved one
+    /// is refused before Klipper is stopped. Like every flash, this never restarts Klipper.
     pub fn flash_prebuilt(
         &self,
         approved: ApprovedBuild,
@@ -325,17 +329,22 @@ where
         }
         self.ensure_klipper_stopped(&mut progress)
             .map_err(FlashCoordinatorError::Coordinator)?;
-        let Protocol::Katapult {
-            image,
-            application_start,
-        } = request.protocol();
-        flash_prebuilt_katapult_with_progress(
-            prepared,
-            image,
-            *application_start,
-            options,
-            |stage| progress(update_progress(stage)),
-        )
+        let progress = |stage| progress(update_progress(stage));
+        match request.protocol() {
+            Protocol::Katapult {
+                image,
+                application_start,
+            } => flash_prebuilt_katapult_with_progress(
+                prepared,
+                image,
+                *application_start,
+                options,
+                progress,
+            ),
+            Protocol::BeaconDfu { image } => {
+                flash_beacon_with_progress(prepared, image, options, progress)
+            }
+        }
         .map_err(FlashCoordinatorError::Flash)
     }
 

@@ -9,7 +9,7 @@ pub enum Eligibility {
     /// A Klipper-family MCU with the embedded configuration required to build it.
     Eligible,
     /// Firmware not built from the Klipper checkout that this updater can replace with a
-    /// prebuilt image: a FOCI release build.
+    /// prebuilt image: a FOCI release build or a Beacon.
     Prebuilt(Running),
     /// Firmware managed by another project, named as Moonraker reported it (e.g. "Beacon").
     ExternallyManaged(String),
@@ -94,7 +94,7 @@ impl CheckoutRevision {
 pub struct TargetVersions {
     /// The Klipper checkout revision Klipper-family MCUs are built from.
     pub klipper: CheckoutRevision,
-    /// What the prebuilt-firmware MCUs (FOCI) are updated to.
+    /// What the prebuilt-firmware MCUs (FOCI and Beacon) are updated to.
     pub prebuilt: prebuilt::Targets,
 }
 
@@ -116,6 +116,12 @@ impl TargetVersions {
     /// These targets with FOCI MCUs updated to `release`.
     pub fn with_foci_release(mut self, release: Option<crate::foci::Release>) -> Self {
         self.prebuilt.foci = release;
+        self
+    }
+
+    /// These targets with each Beacon updated to its image in `targets`.
+    pub fn with_beacon_targets(mut self, targets: crate::beacon::Targets) -> Self {
+        self.prebuilt.beacon = targets;
         self
     }
 
@@ -172,8 +178,11 @@ pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelec
     let updatable = match status.eligibility {
         Eligibility::Eligible => true,
         // Prebuilt firmware is flashed with its target image, so even `All` needs one to be
-        // known: the FOCI release.
-        Eligibility::Prebuilt(ref running) => versions.prebuilt.target(running).is_some(),
+        // known: the FOCI release, or the Beacon's image from its checkout.
+        Eligibility::Prebuilt(ref running) => {
+            versions.prebuilt.target(running, &mcu.name).is_some()
+                && versions.prebuilt.admits(running, &mcu.name)
+        }
         _ => false,
     };
     if !updatable {
@@ -198,7 +207,7 @@ pub fn assess_mcu(mcu: &Mcu, versions: &TargetVersions) -> McuStatus {
             (Some(_), CheckoutRevision::Known(_)) => RevisionStatus::UpdateRequired,
             _ => RevisionStatus::Indeterminate,
         }),
-        Eligibility::Prebuilt(running) => Some(versions.prebuilt.compare(running)),
+        Eligibility::Prebuilt(running) => Some(versions.prebuilt.compare(running, &mcu.name)),
         _ => None,
     };
     McuStatus {

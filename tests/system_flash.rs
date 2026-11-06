@@ -180,6 +180,93 @@ fn refuses_prebuilt_firmware_over_can_before_touching_the_mcu() {
     ));
 }
 
+fn beacon_image() -> aldis::beacon::FirmwareImage {
+    aldis::beacon::FirmwareImage {
+        payload: vec![0xab; 8],
+        vendor_id: 0x04d8,
+        product_id: 0xbea1,
+        version: aldis::beacon::version_from_bcd(0x2010),
+    }
+}
+
+#[test]
+fn refuses_beacon_firmware_over_can_before_touching_the_mcu() {
+    let mut stages = Vec::new();
+    let error = aldis::flash::system::flash_beacon_with_progress(
+        &prebuilt(Some(McuTransport::Can {
+            interface: "can0".to_owned(),
+            uuid: 0xe781_9ed8_e7d3,
+        })),
+        &beacon_image(),
+        aldis::update_run::standard_flash_options(),
+        |stage| stages.push(stage),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(&error, SystemFlashError::LinkRefused { route: PrebuiltRoute::BeaconUsb, transport } if transport == "CAN (can0, e7819ed8e7d3)"),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("Beacon firmware is flashed only over USB")
+    );
+    assert!(stages.is_empty());
+    assert!(
+        aldis::coordinator::FlashCoordinatorError::Flash(error).allows_klipper_restore(),
+        "an MCU that was never asked to enter its bootloader lets Klipper be restored"
+    );
+    assert!(matches!(
+        aldis::flash::system::flash_beacon_with_progress(
+            &prebuilt(None),
+            &beacon_image(),
+            aldis::update_run::standard_flash_options(),
+            |_| {},
+        ),
+        Err(SystemFlashError::MissingTransport)
+    ));
+}
+
+#[test]
+fn explains_a_bootloader_the_beacon_image_is_not_for() {
+    let error = SystemFlashError::BeaconImageMismatch {
+        bootloader: "04d8:beac".to_owned(),
+        image: "04d8:bea1".to_owned(),
+    };
+    let message = error.to_string();
+    assert!(message.contains("04d8:beac"), "{message}");
+    assert!(message.contains("update_firmware.py"), "{message}");
+    assert!(
+        !aldis::coordinator::FlashCoordinatorError::Flash(error).allows_klipper_restore(),
+        "the Beacon is left in its bootloader"
+    );
+}
+
+#[test]
+fn refuses_a_beacon_bootloader_the_image_is_not_for_before_opening_it() {
+    let bootloader = aldis::flash::beacon_dfu::ObservedBootloader {
+        sysfs_path: PathBuf::from("/nonexistent/1-1"),
+        vendor_id: 0x04d8,
+        product_id: 0xbeac,
+        product: "Beacon RevD Bootloader".to_owned(),
+    };
+    let mut stages = Vec::new();
+
+    let error =
+        aldis::flash::system::flash_beacon_bootloader(&bootloader, &beacon_image(), |stage| {
+            stages.push(stage)
+        })
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, SystemFlashError::BeaconImageMismatch { bootloader, image }
+            if bootloader == "04d8:beac" && image == "04d8:bea1"),
+        "{error:?}"
+    );
+    assert!(stages.is_empty());
+}
+
 #[test]
 fn explains_prebuilt_firmware_refused_on_a_uart() {
     let uart = SystemFlashError::LinkRefused {
@@ -211,5 +298,10 @@ fn words_each_prebuilt_link_refusal_exactly() {
         refused(PrebuiltRoute::KatapultUsb),
         "this firmware is flashed only through Katapult on a USB serial device, and the MCU is \
          configured on CAN (can0, e7819ed8e7d3)"
+    );
+    assert_eq!(
+        refused(PrebuiltRoute::BeaconUsb),
+        "Beacon firmware is flashed only over USB, and the Beacon is configured on CAN (can0, \
+         e7819ed8e7d3)"
     );
 }

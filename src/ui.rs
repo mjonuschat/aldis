@@ -148,6 +148,11 @@ impl UpdateUi {
                 self.begin("downloading firmware");
             }
             UpdateProgress::FirmwareDownloaded => self.finish_success("downloaded firmware"),
+            UpdateProgress::ReadingFirmware => {
+                self.building = false;
+                self.begin("reading firmware image");
+            }
+            UpdateProgress::FirmwareRead => self.finish_success("read firmware image"),
             UpdateProgress::StoppingKlipper => self.begin("stopping Klipper"),
             UpdateProgress::ConfiguringFirmware => {
                 self.building = true;
@@ -172,7 +177,7 @@ impl UpdateUi {
     }
 
     /// What the step still running when the bootloader is entered did: a build compiles
-    /// firmware last, a downloaded image's flash only stops Klipper first.
+    /// firmware last, a downloaded or read image's flash only stops Klipper first.
     fn finished_before_flash(&self) -> &'static str {
         if self.building {
             "compiled firmware"
@@ -197,8 +202,10 @@ impl UpdateUi {
             UpdateProgress::ConfiguringFirmware
             | UpdateProgress::CompilingFirmware
             | UpdateProgress::DownloadingFirmware
-            | UpdateProgress::FirmwareDownloaded => {
-                unreachable!("flashing a firmware file never reports build or download phases")
+            | UpdateProgress::FirmwareDownloaded
+            | UpdateProgress::ReadingFirmware
+            | UpdateProgress::FirmwareRead => {
+                unreachable!("flashing a firmware file never reports build or image phases")
             }
         }
     }

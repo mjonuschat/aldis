@@ -154,6 +154,8 @@ impl AgentBackend for SystemBackend {
                     &inventory,
                     &crate::prebuilt::ResolveContext {
                         foci: self.foci_release(&inventory),
+                        beacon_source: None,
+                        klipper_source: snapshot.host.info.klipper_path.as_deref(),
                     },
                 );
                 snapshot.inventory = Some(inventory);
