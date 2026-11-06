@@ -389,7 +389,8 @@ fn tty_sysfs_path(tty_root: &Path, device: &Path) -> Option<PathBuf> {
     fs::canonicalize(tty_root.join(tty)).ok()
 }
 
-fn usb_device_path(device: &Path) -> Option<PathBuf> {
+/// The USB device behind the serial port `device`, as its sysfs path.
+pub(crate) fn usb_device_path(device: &Path) -> Option<PathBuf> {
     usb_device_ancestor(&tty_sysfs_path(Path::new(TTY_SYSFS_ROOT), device)?)
 }
 

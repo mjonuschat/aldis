@@ -4,6 +4,7 @@
 compile_error!("aldis supports Linux hosts only");
 
 pub mod agent;
+pub mod beacon;
 pub mod build;
 pub mod checkout;
 pub mod config;
