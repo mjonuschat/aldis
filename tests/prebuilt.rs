@@ -7,6 +7,7 @@ use aldis::beacon::ImageError;
 use aldis::build::{BuildCommand, CommandError, CommandOutput, CommandPort};
 use aldis::coordinator::{BuildCoordinator, CoordinatorError, FlashCoordinatorError};
 use aldis::flash::request::{Protocol, Vendor};
+use aldis::flash::system::PrebuiltLinks;
 use aldis::moonraker::{Mcu, McuInventory, McuTransport};
 use aldis::prebuilt::{ExplicitError, prepare_explicit};
 use aldis::workspace::RunWorkspace;
@@ -89,6 +90,7 @@ fn sends_foci_to_its_boards_katapult_over_usb_only() {
         Protocol::Katapult {
             image,
             application_start: 0x0802_0000,
+            links: PrebuiltLinks::UsbOnly,
         } if image == b"any image"
     ));
 
@@ -101,6 +103,7 @@ fn sends_foci_to_its_boards_katapult_over_usb_only() {
             .protocol(),
         Protocol::Katapult {
             application_start: 0x0800_8000,
+            links: PrebuiltLinks::UsbOnly,
             ..
         }
     ));
@@ -247,6 +250,7 @@ fn prepares_each_automatic_update_for_the_protocol_its_vendor_allows() {
         Protocol::Katapult {
             image,
             application_start: 0x0802_0000,
+            links: PrebuiltLinks::UsbOnly,
         } if image == b"release image"
     ));
     let request = prepare(&beacon).unwrap().unwrap();

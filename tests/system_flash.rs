@@ -158,6 +158,7 @@ fn refuses_prebuilt_firmware_over_can_before_touching_the_mcu() {
         })),
         &[0xab],
         0x0802_0000,
+        aldis::flash::system::PrebuiltLinks::UsbOnly,
         aldis::update_run::standard_flash_options(),
         |stage| stages.push(stage),
     )
@@ -173,6 +174,7 @@ fn refuses_prebuilt_firmware_over_can_before_touching_the_mcu() {
             &prebuilt(None),
             &[0xab],
             0x0802_0000,
+            aldis::flash::system::PrebuiltLinks::UsbOnly,
             aldis::update_run::standard_flash_options(),
             |_| {},
         ),
@@ -268,20 +270,30 @@ fn refuses_a_beacon_bootloader_the_image_is_not_for_before_opening_it() {
 }
 
 #[test]
-fn explains_prebuilt_firmware_refused_on_a_uart() {
+fn explains_prebuilt_firmware_refused_on_a_uart_or_by_a_can_katapult() {
     let uart = SystemFlashError::LinkRefused {
-        route: PrebuiltRoute::KatapultUsb,
+        route: PrebuiltRoute::KatapultUsbOrCan,
         transport: "the UART /dev/ttyAMA0".to_owned(),
     };
     assert_eq!(
         uart.to_string(),
-        "this firmware is flashed only through Katapult on a USB serial device, and the MCU is \
+        "this firmware is flashed only through Katapult over USB or CAN, and the MCU is \
          configured on the UART /dev/ttyAMA0"
     );
     assert!(
         aldis::coordinator::FlashCoordinatorError::Flash(uart).allows_klipper_restore(),
         "an MCU on a UART was never asked to enter its bootloader"
     );
+
+    let mismatch = SystemFlashError::CanFlash(
+        aldis::flash::katapult::adapter::KatapultFlashError::ApplicationStartMismatch {
+            expected: 0x0800_2000,
+            actual: 0x0800_8000,
+        },
+    )
+    .to_string();
+    assert!(mismatch.starts_with("refusing to flash: "), "{mismatch}");
+    assert!(mismatch.ends_with("Katapult was asked to start the existing application"));
 }
 
 #[test]
@@ -297,6 +309,11 @@ fn words_each_prebuilt_link_refusal_exactly() {
     assert_eq!(
         refused(PrebuiltRoute::KatapultUsb),
         "this firmware is flashed only through Katapult on a USB serial device, and the MCU is \
+         configured on CAN (can0, e7819ed8e7d3)"
+    );
+    assert_eq!(
+        refused(PrebuiltRoute::KatapultUsbOrCan),
+        "this firmware is flashed only through Katapult over USB or CAN, and the MCU is \
          configured on CAN (can0, e7819ed8e7d3)"
     );
     assert_eq!(

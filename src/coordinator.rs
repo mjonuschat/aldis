@@ -334,10 +334,12 @@ where
             Protocol::Katapult {
                 image,
                 application_start,
+                links,
             } => flash_prebuilt_katapult_with_progress(
                 prepared,
                 image,
                 *application_start,
+                *links,
                 options,
                 progress,
             ),

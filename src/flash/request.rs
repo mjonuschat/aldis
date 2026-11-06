@@ -1,10 +1,10 @@
 //! A validated request to flash prebuilt firmware: the bytes, how they may be sent, and the one
 //! MCU they were prepared for.
 //!
-//! Prebuilt firmware (FOCI and Beacon) is not built from the Klipper checkout, so
+//! Prebuilt firmware (FOCI, Beacon, Cartographer) is not built from the Klipper checkout, so
 //! nothing but the vendor's own checks stands between a file and a bootloader. A request can be
 //! made only by those checks (see [`crate::prebuilt`]), and it carries what the flash must
-//! respect: the address Katapult must start applications at, the
+//! respect: the address Katapult must start applications at, the links the firmware may take, the
 //! USB identity a Beacon image is for. The coordinator refuses a request that was prepared for a
 //! different MCU than the one approved, before Klipper is stopped.
 
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::beacon::FirmwareImage;
 use crate::flash::beacon_dfu::ObservedBootloader;
+use crate::flash::system::PrebuiltLinks;
 use crate::moonraker::{Mcu, McuTransport};
 use crate::prepare::PreparedBuild;
 
@@ -20,6 +21,15 @@ use crate::prepare::PreparedBuild;
 pub enum Vendor {
     Foci,
     Beacon,
+    Cartographer,
+}
+
+impl Vendor {
+    /// Whether updating this vendor's firmware removes the MCU's calibration, so the user must
+    /// recalibrate it before printing.
+    pub fn removes_calibration(self) -> bool {
+        matches!(self, Self::Cartographer)
+    }
 }
 
 /// The MCU a request was prepared for.
@@ -55,10 +65,12 @@ impl Destination {
 /// How the bytes of a request are sent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Protocol {
-    /// To the MCU's Katapult, which must start applications at `application_start`.
+    /// To the MCU's Katapult, which must start applications at `application_start`, over one of
+    /// `links`.
     Katapult {
         image: Vec<u8>,
         application_start: u32,
+        links: PrebuiltLinks,
     },
     /// To a Beacon's own DFU bootloader, which must be the one the image names.
     BeaconDfu { image: FirmwareImage },
@@ -79,6 +91,7 @@ impl FlashRequest {
         mcu: &Mcu,
         image: Vec<u8>,
         application_start: u32,
+        links: PrebuiltLinks,
     ) -> Self {
         Self {
             vendor,
@@ -86,6 +99,7 @@ impl FlashRequest {
             protocol: Protocol::Katapult {
                 image,
                 application_start,
+                links,
             },
         }
     }

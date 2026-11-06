@@ -95,6 +95,26 @@ pub fn scan_bootloaders(root: &Path) -> Vec<ObservedBootloader> {
         .collect()
 }
 
+/// Whether the device at `usb_path` is a Beacon running its application, with its serial port.
+pub fn application_at(usb_path: &Path) -> bool {
+    let vendor = read_hex_id(&usb_path.join("idVendor"));
+    let product = std::fs::read_to_string(usb_path.join("product")).unwrap_or_default();
+    let product = product.trim();
+    vendor == Some(VENDOR_ID)
+        && product.starts_with("Beacon Rev")
+        && !product.contains("Bootloader")
+        && crate::flash::usb_sysfs::usb_tty(usb_path).is_some()
+}
+
+/// Waits until the Beacon at `usb_path` runs its application again, serial port included.
+/// Returns whether it did before `timeout`.
+pub fn wait_for_application(usb_path: &Path, timeout: Duration, poll_interval: Duration) -> bool {
+    retry_until_available(timeout, poll_interval, || {
+        application_at(usb_path).then_some(()).ok_or(())
+    })
+    .is_ok()
+}
+
 /// Waits until the device at `usb_path` is no longer a Beacon bootloader: it reset into its
 /// application, or left the bus. Returns whether it did before `timeout`.
 pub fn wait_until_left(usb_path: &Path, timeout: Duration, poll_interval: Duration) -> bool {
@@ -240,6 +260,17 @@ mod tests {
         ));
         std::fs::write(stuck.join("product"), "Beacon RevD\n").unwrap();
         assert!(super::wait_until_left(
+            &stuck,
+            short,
+            Duration::from_millis(5)
+        ));
+        assert!(
+            !super::application_at(&stuck),
+            "the application is back only once its serial port is"
+        );
+        let tty = stuck.join("1-1:1.0").join("tty").join("ttyACM0");
+        std::fs::create_dir_all(&tty).unwrap();
+        assert!(super::wait_for_application(
             &stuck,
             short,
             Duration::from_millis(5)

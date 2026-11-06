@@ -12,6 +12,7 @@ use crate::coordinator::{PendingBuild, UpdateProgress};
 use crate::eligibility::{RevisionStatus, TargetVersions};
 use crate::flash::beacon_dfu::ObservedBootloader;
 use crate::flash::request::{FlashRequest, RecoveryRequest, Vendor};
+use crate::flash::system::PrebuiltLinks;
 use crate::foci::ReleasePort;
 use crate::moonraker::{Mcu, McuInventory};
 
@@ -280,7 +281,13 @@ pub fn prepare_automatic(
             &firmware, versions, releases, pending, progress, name,
         )
         .map(|image| {
-            FlashRequest::katapult(Vendor::Foci, mcu, image, firmware.board.application_start())
+            FlashRequest::katapult(
+                Vendor::Foci,
+                mcu,
+                image,
+                firmware.board.application_start(),
+                PrebuiltLinks::UsbOnly,
+            )
         }),
         Ok(Running::Beacon(firmware)) => {
             read_beacon_image(&firmware, versions, pending, progress, name)
@@ -309,6 +316,7 @@ pub fn prepare_explicit(mcu: &Mcu, bytes: &[u8]) -> Result<Option<FlashRequest>,
             mcu,
             bytes.to_vec(),
             board.application_start(),
+            PrebuiltLinks::UsbOnly,
         )));
     }
     Ok(None)
