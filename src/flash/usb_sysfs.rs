@@ -76,6 +76,74 @@ impl UsbIdentity {
     }
 }
 
+/// Consecutive identical reads required before a changed identity counts as settled.
+pub(crate) const SETTLED_IDENTITY_READS: usize = 5;
+
+/// Debounces a USB identity polled from sysfs while a device re-enumerates.
+///
+/// sysfs exposes a device's attributes piecemeal as it tears down and comes back: the
+/// vendor/product ids can be empty, or present while `manufacturer` has already vanished. A
+/// single read is therefore not evidence of a new device. A poll loop feeds every read to
+/// [`observe`](Self::observe), which reports an identity only once it differs from the
+/// pre-reset one, is complete, and has been read identically several times in a row.
+///
+/// A read with the pre-reset vendor:product id and an empty manufacturer is never a new
+/// device: sysfs can drop `manufacturer` for an arbitrarily long stretch while the device
+/// re-enumerates. A same-vendor:product read with a different, non-empty manufacturer is
+/// positive evidence of a new device, which covers a bootloader built with the same custom
+/// USB id as its application and told apart only by its manufacturer string.
+#[derive(Debug)]
+pub(crate) struct UsbIdentitySettler {
+    initial: UsbIdentity,
+    required_reads: usize,
+    candidate: Option<UsbIdentity>,
+    streak: usize,
+}
+
+impl UsbIdentitySettler {
+    /// Watches for the device to settle on an identity other than `initial`.
+    pub(crate) fn new(initial: UsbIdentity) -> Self {
+        Self::with_required_reads(initial, SETTLED_IDENTITY_READS)
+    }
+
+    pub(crate) fn with_required_reads(initial: UsbIdentity, required_reads: usize) -> Self {
+        Self {
+            initial,
+            required_reads: required_reads.max(1),
+            candidate: None,
+            streak: 0,
+        }
+    }
+
+    /// A read that keeps the initial vendor:product id but has lost its manufacturer.
+    fn is_manufacturer_dropout(&self, current: &UsbIdentity) -> bool {
+        current.usb_id == self.initial.usb_id && current.manufacturer.is_empty()
+    }
+
+    /// Records one read; returns the identity once it has settled.
+    pub(crate) fn observe(&mut self, current: &UsbIdentity) -> Option<&UsbIdentity> {
+        if *current == self.initial
+            || !current.is_complete()
+            || self.is_manufacturer_dropout(current)
+        {
+            self.candidate = None;
+            self.streak = 0;
+            return None;
+        }
+        if self.candidate.as_ref() == Some(current) {
+            self.streak += 1;
+        } else {
+            self.candidate = Some(current.clone());
+            self.streak = 1;
+        }
+        if self.streak >= self.required_reads {
+            self.candidate.as_ref()
+        } else {
+            None
+        }
+    }
+}
+
 /// Reads one USB device's identity directly from its sysfs attributes.
 pub(crate) fn usb_identity(usb_path: &Path) -> UsbIdentity {
     UsbIdentity {
@@ -144,7 +212,87 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{usb_device_ancestor, usb_topology_snapshot};
+    use super::{UsbIdentity, UsbIdentitySettler, usb_device_ancestor, usb_topology_snapshot};
+
+    fn identity(usb_id: &str, manufacturer: &str) -> UsbIdentity {
+        UsbIdentity {
+            usb_id: usb_id.to_owned(),
+            manufacturer: manufacturer.to_owned(),
+        }
+    }
+
+    fn settler() -> UsbIdentitySettler {
+        UsbIdentitySettler::with_required_reads(identity("1d50:606f", "klipper"), 3)
+    }
+
+    #[test]
+    fn settles_only_after_the_same_changed_identity_repeats() {
+        let mut settler = settler();
+        let katapult = identity("1d50:6177", "katapult");
+
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), Some(&katapult));
+    }
+
+    #[test]
+    fn a_one_read_manufacturer_loss_does_not_settle() {
+        let mut settler = settler();
+        let katapult = identity("1d50:6177", "katapult");
+
+        assert_eq!(settler.observe(&identity("1d50:606f", "")), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), Some(&katapult));
+    }
+
+    #[test]
+    fn an_interruption_restarts_the_count() {
+        let mut settler = settler();
+        let katapult = identity("1d50:6177", "katapult");
+
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&identity(":", "")), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), Some(&katapult));
+    }
+
+    #[test]
+    fn a_manufacturer_loss_never_settles_however_long_it_lasts() {
+        let mut settler = settler();
+        let stripped = identity("1d50:606f", "");
+
+        for _ in 0..50 {
+            assert_eq!(settler.observe(&stripped), None);
+        }
+        let katapult = identity("1d50:6177", "katapult");
+        for _ in 0..2 {
+            assert_eq!(settler.observe(&katapult), None);
+        }
+        assert_eq!(settler.observe(&katapult), Some(&katapult));
+    }
+
+    #[test]
+    fn a_new_manufacturer_on_the_same_usb_id_settles() {
+        let mut settler = settler();
+        let katapult = identity("1d50:606f", "katapult");
+
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), None);
+        assert_eq!(settler.observe(&katapult), Some(&katapult));
+    }
+
+    #[test]
+    fn the_initial_identity_never_settles() {
+        let mut settler = settler();
+        let initial = identity("1d50:606f", "klipper");
+
+        for _ in 0..10 {
+            assert_eq!(settler.observe(&initial), None);
+        }
+    }
 
     #[test]
     fn finds_the_nearest_ancestor_with_a_complete_usb_identity() {
