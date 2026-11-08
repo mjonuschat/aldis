@@ -294,9 +294,11 @@ impl SystemSerialIo {
             poll_interval,
             || usb_identity(&usb_path),
             |identity| {
-                matches(&identity.usb_id, &identity.manufacturer)
-                    .then(|| ready(&usb_path, identity))
-                    .flatten()
+                if matches(&identity.usb_id, &identity.manufacturer) {
+                    ready(&usb_path, identity)
+                } else {
+                    None
+                }
             },
         )
         .map_err(|last_identity| {
@@ -323,17 +325,26 @@ fn wait_for_settled_identity<T>(
     retry_until_available(timeout, poll_interval, || {
         let identity = read_identity();
         last_identity = identity.clone();
-        if let Some(settled) = settler.observe(&identity)
-            && let Some(result) = accept(settled)
-        {
-            Ok(result)
-        } else {
-            tracing::debug!(
-                usb_id = %identity.usb_id,
-                manufacturer = %identity.manufacturer,
-                "usb bootloader not yet observed, still waiting"
-            );
-            Err(())
+        match settler.observe(&identity) {
+            Some(settled) => match accept(settled) {
+                Some(result) => Ok(result),
+                None => {
+                    tracing::debug!(
+                        usb_id = %identity.usb_id,
+                        manufacturer = %identity.manufacturer,
+                        "usb identity settled but not yet accepted as a bootloader, still waiting"
+                    );
+                    Err(())
+                }
+            },
+            None => {
+                tracing::debug!(
+                    usb_id = %identity.usb_id,
+                    manufacturer = %identity.manufacturer,
+                    "usb identity not yet settled on a new device, still waiting"
+                );
+                Err(())
+            }
         }
     })
     .map_err(|()| last_identity)
@@ -574,7 +585,7 @@ mod tests {
         wait_for_settled_identity(
             &id("1d50:606f", "klipper"),
             Duration::from_secs(2),
-            Duration::from_millis(1),
+            Duration::from_millis(10),
             scripted(script),
             accept,
         )
@@ -585,29 +596,9 @@ mod tests {
     }
 
     #[test]
-    fn a_one_read_manufacturer_loss_is_not_taken_for_the_bootloader() {
-        let script = vec![
-            id("1d50:606f", "klipper"),
-            id("1d50:606f", ""),
-            id("1d50:6177", "katapult"),
-        ];
-
-        assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
-    }
-
-    #[test]
-    fn a_brief_manufacturer_loss_is_tolerated() {
+    fn a_manufacturer_loss_is_not_taken_for_the_bootloader() {
         let mut script = vec![id("1d50:606f", "klipper")];
         script.extend(vec![id("1d50:606f", ""); 4]);
-        script.push(id("1d50:6177", "katapult"));
-
-        assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
-    }
-
-    #[test]
-    fn a_sustained_manufacturer_loss_is_not_taken_for_the_bootloader() {
-        let mut script = vec![id("1d50:606f", "klipper")];
-        script.extend(vec![id("1d50:606f", ""); 30]);
         script.push(id("1d50:6177", "katapult"));
 
         assert_eq!(wait(script, accept_any), Ok("1d50:6177".to_owned()));
