@@ -221,6 +221,111 @@ fn still_requires_matching_dirty_state_against_the_full_build_suffix() {
 }
 
 #[test]
+fn tolerates_klippers_build_suffix_on_a_clean_revision_from_a_tree_without_git() {
+    assert!(revisions_match(
+        "v0.13.0-770-gce7002bed-20261108_190244-randall",
+        "v0.13.0-770-gce7002bed"
+    ));
+    assert!(revisions_match(
+        "v0.13.0-770-gce7002bed-20261108_190244-my-host-1",
+        "v0.13.0-770-gce7002bed1"
+    ));
+    assert!(revisions_match(
+        "v0.13.0-770-gce7002bed1-20261108_190244-randall",
+        "v0.13.0-770-gce7002bed"
+    ));
+}
+
+#[test]
+fn compares_the_tag_and_commit_count_exactly_and_only_the_hash_by_prefix() {
+    assert!(!revisions_match(
+        "abcdef-20261108_190244-board-1-g1111111",
+        "abcdef-20261108_190244-board-2-g2222222"
+    ));
+    assert!(!revisions_match(
+        "abcdef-20261108_190244-board-1-g1111111-20261109_101500-randall",
+        "abcdef-20261108_190244-board-2-g1111111"
+    ));
+    assert!(!revisions_match(
+        "v0.13.0-77-gce7002bed",
+        "v0.13.0-770-gce7002bed"
+    ));
+    assert!(!revisions_match(
+        "v0.13.0-770-gce7002bed",
+        "v0.13.1-770-gce7002bed"
+    ));
+    assert!(revisions_match("v1-good-3-gabc1234", "v1-good-3-gabc12345"));
+}
+
+#[test]
+fn matches_a_timestamp_shaped_tag_against_itself_with_or_without_a_build_suffix() {
+    let tagged = "abcdef-20261108_190244-board-1-g1111111";
+    assert!(revisions_match(tagged, tagged));
+    assert!(revisions_match(
+        &format!("{tagged}-20261109_101500-randall"),
+        tagged
+    ));
+    assert!(revisions_match(
+        &format!("{tagged}-dirty-20261109_101500-my-host"),
+        &format!("{tagged}-dirty")
+    ));
+}
+
+#[test]
+fn does_not_take_a_timestamp_inside_a_tag_for_a_build_suffix() {
+    assert!(!revisions_match(
+        "release-20261108_190244-board-1-gabc1234",
+        "release-20261108_190244-board-2-gdef5678"
+    ));
+    assert!(revisions_match(
+        "release-20261108_190244-board-1-gabc1234-20261109_101500-randall",
+        "release-20261108_190244-board-1-gabc1234"
+    ));
+}
+
+#[test]
+fn tolerates_the_build_suffix_on_a_checkout_without_a_reachable_tag() {
+    assert!(revisions_match(
+        "ce7002bed-dirty-20261108_190244-randall",
+        "ce7002bed-dirty"
+    ));
+    assert!(revisions_match(
+        "ce7002bed-20261108_190244-randall",
+        "ce7002bed1"
+    ));
+    assert!(!revisions_match(
+        "ce7002bed-dirty-20261108_190244-randall",
+        "ce7002bed"
+    ));
+    assert!(!revisions_match(
+        "ce7002bed-20261108_190244-randall",
+        "deadbeef0"
+    ));
+}
+
+#[test]
+fn still_rejects_another_revision_or_dirty_state_under_the_plain_build_suffix() {
+    assert!(!revisions_match(
+        "v0.13.0-770-gce7002bed-20261108_190244-randall",
+        "v0.13.0-771-gabcdef012"
+    ));
+    assert!(
+        !revisions_match(
+            "v0.13.0-770-gce7002bed-20261108_190244-randall",
+            "v0.13.0-770-gce7002bed-dirty"
+        ),
+        "a clean build is not a dirty checkout"
+    );
+    assert!(
+        !revisions_match(
+            "v0.13.0-770-gce7002bed-20261108_190244-randall",
+            "v0.13.0-770-gce7002b0000"
+        ),
+        "the same prefix length is not enough; the hashes must agree"
+    );
+}
+
+#[test]
 fn treats_a_flashed_mcu_at_the_firmwares_own_abbreviation_length_as_current() {
     let status = assess_mcu(
         &mcu(

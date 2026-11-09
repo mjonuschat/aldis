@@ -299,44 +299,71 @@ pub fn assess_mcu(mcu: &Mcu, versions: &TargetVersions) -> McuStatus {
 
 /// Compares a running firmware version against a selected checkout revision.
 ///
-/// The two sides may embed the commit hash at different abbreviation lengths:
-/// `selected` and `running` (Klipper's own build) are computed by separate `git
-/// describe` invocations, possibly with different git versions, so an exact
-/// string match would spuriously report an up-to-date MCU as needing an update.
-/// Any abbreviation of the same commit hash is a prefix of any longer one, so
-/// tolerate a length difference in the hash by comparing prefixes instead.
+/// The two sides may embed the commit hash at different abbreviation lengths: `selected` and
+/// `running` (Klipper's own build) are computed by separate `git describe` invocations, possibly
+/// with different git versions, so an exact string match would spuriously report an up-to-date MCU
+/// as needing an update. Any abbreviation of the same commit hash is a prefix of any longer one,
+/// so the hash alone is compared by prefix; the tag and commit count before it must be equal.
+///
+/// Only `running` carries Klipper's build suffix; `selected` is a checkout's own description.
 pub fn revisions_match(running: &str, selected: &str) -> bool {
+    describes_same_commit(running, selected)
+        || strip_build_suffix(running).is_some_and(|base| describes_same_commit(base, selected))
+}
+
+fn describes_same_commit(running: &str, selected: &str) -> bool {
     let (running_base, running_dirty) = split_dirty_suffix(running);
     let (selected_base, selected_dirty) = split_dirty_suffix(selected);
     if running_dirty != selected_dirty {
         return false;
     }
-    if running_base.len() <= selected_base.len() {
-        selected_base.starts_with(running_base)
-    } else {
-        running_base.starts_with(selected_base)
+    match (commit_parts(running_base), commit_parts(selected_base)) {
+        (Some((running_tag, running_hash)), Some((selected_tag, selected_hash))) => {
+            running_tag == selected_tag
+                && (running_hash.starts_with(selected_hash)
+                    || selected_hash.starts_with(running_hash))
+        }
+        _ => running_base == selected_base,
     }
 }
 
 fn split_dirty_suffix(revision: &str) -> (&str, bool) {
-    if let Some(base) = strip_dirty_build_suffix(revision) {
-        return (base, true);
-    }
     revision
         .strip_suffix("-dirty")
         .map_or((revision, false), |base| (base, true))
 }
 
-/// Strips Klipper's full dirty-build suffix as `buildcommands.py` embeds it
-/// in an MCU's reported version: `"%s-%s-%s" % (version, btime, hostname)`,
-/// where `version` already ends `-dirty` and `btime` is
-/// `time.strftime("%Y%m%d_%H%M%S")`. The hostname may itself contain
-/// hyphens, so only the fixed-shape `-dirty-<15-char timestamp>-` prefix is
-/// matched; everything after it is accepted as the hostname.
-fn strip_dirty_build_suffix(revision: &str) -> Option<&str> {
-    let (base, rest) = revision.split_once("-dirty-")?;
-    let (timestamp, hostname) = rest.split_once('-')?;
-    (is_klipper_build_timestamp(timestamp) && !hostname.is_empty()).then_some(base)
+/// The tag and commit count, and the hash, of a `git describe --long --always` result without its
+/// `-dirty`: `v0.13.0-770-gce7002bed`, or just the hash when no tag is reachable.
+fn commit_parts(revision: &str) -> Option<(&str, &str)> {
+    let is_hash =
+        |hash: &str| !hash.is_empty() && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    match revision.rsplit_once("-g") {
+        Some((tag, hash)) if is_hash(hash) => Some((tag, hash)),
+        _ if is_hash(revision) => Some(("", revision)),
+        _ => None,
+    }
+}
+
+/// Strips the suffix Klipper's `buildcommands.py` adds to the version an MCU reports when the
+/// build is not a clean git checkout: `"%s-%s-%s" % (version, btime, hostname)`, where `btime` is
+/// `time.strftime("%Y%m%d_%H%M%S")`. A dirty checkout gives `...-dirty-<btime>-<host>`, and a tree
+/// without git history that is given its version in `klippy/.version` (a patched copy of Klipper)
+/// gives `<describe>-<btime>-<host>`. The hostname may itself contain hyphens, so only the
+/// fixed-shape timestamp is matched, and only where a git description ends. The rightmost such
+/// place is the suffix, so a tag that happens to contain a timestamp is not taken for one.
+fn strip_build_suffix(revision: &str) -> Option<&str> {
+    revision.rmatch_indices('-').find_map(|(index, _)| {
+        let base = &revision[..index];
+        let (timestamp, hostname) = revision[index + 1..].split_once('-')?;
+        (is_klipper_build_timestamp(timestamp) && !hostname.is_empty() && ends_with_commit(base))
+            .then_some(base)
+    })
+}
+
+/// Whether `revision` ends the way `git describe --long --always` does, before any `-dirty`.
+fn ends_with_commit(revision: &str) -> bool {
+    commit_parts(revision.strip_suffix("-dirty").unwrap_or(revision)).is_some()
 }
 
 fn is_klipper_build_timestamp(candidate: &str) -> bool {
