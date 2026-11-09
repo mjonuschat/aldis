@@ -44,6 +44,11 @@ That includes every client in Moonraker's `trusted_clients` and anyone with a va
 login. Restrict who can reach Moonraker accordingly, because exposing it to an untrusted network also
 exposes firmware flashing.
 
+The agent connects to Moonraker over `http://` or `https://`. For `https://` it verifies the
+certificate against the public web roots, or against `ca_file` when the configuration sets it.
+`insecure_skip_verify = true` turns verification off, so the agent no longer knows it is talking to
+Moonraker.
+
 The agent still refuses to update while the printer is printing, Klippy is starting up or
 disconnected, or Klipper's configuration has an error (see the blocker reasons under `status`), and
 it offers only the methods in this document.

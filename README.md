@@ -32,7 +32,7 @@ The rest of this document assumes this installation: `aldis` is not on `PATH` an
 
 ## Setup
 
-MCU updates need host permissions that a normal user lacks: udev rules that make USB bootloader devices accessible, and a narrow sudoers policy that lets `aldis` stop and start Klipper and install the Linux host MCU without a password prompt mid-update. Install both with:
+MCU updates need host permissions that a normal user lacks. Udev rules make USB bootloader devices accessible. A narrow sudoers policy lets `aldis` stop and start Klipper and install the Linux host MCU without a password prompt mid-update. Install both with:
 
 ```
 sudo ~/aldis/aldis setup
@@ -80,6 +80,17 @@ cartographer_source = "/home/pi/cartographer_firmware"
 Klipper services other than `klipper` (such as `klipper-2` or `klipper@voron`) need sudo 1.9.10 or newer: Debian 12, Raspberry Pi OS Bookworm, Ubuntu 24.04. The default `klipper` service works with any sudo. With several printers configured, `setup --check` prints the sudo version.
 
 Flashing a USB-CAN bridge resets its CAN bus, so aldis refuses while another printer on that bus is printing, starting up, or cannot be checked. It stops nothing on the other printers, but their Klipper may need a `FIRMWARE_RESTART` once the bridge is back. `update` and `flash` run the same check when given `--config PATH` (or `ALDIS_CONFIG`). Without it they look only at the printer named by `--moonraker`.
+
+### HTTPS and TLS
+
+The agent works with an `https://` Moonraker. It checks the certificate against the public web roots. A Moonraker with a self-signed certificate or a private CA needs one of these in the configuration file:
+
+```toml
+ca_file = "/etc/ssl/moonraker.pem"   # PEM certificates to trust instead of the public roots
+insecure_skip_verify = true          # accept any certificate; use only on a network you trust
+```
+
+Set one or the other, not both. With `insecure_skip_verify` the connection is encrypted but the server is not authenticated, so anyone on the network path can impersonate Moonraker and the agent logs a warning at startup. Both settings apply to the agent only. `status`, `update` and the other commands verify an `https://` URL against the public roots.
 
 ## Usage
 
