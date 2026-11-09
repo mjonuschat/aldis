@@ -36,9 +36,21 @@ An event pushed from Moonraker to a connected frontend:
 Names in requests (e.g. `"mcus": ["mcu", "can"]`) are the same display names `status` reports,
 matched case-insensitively.
 
+## Access control
+
+The agent has no authentication of its own. It accepts requests through Moonraker's
+`server.extensions.request`, so anyone Moonraker lets call that method can update and flash MCUs.
+That includes every client in Moonraker's `trusted_clients` and anyone with a valid API key or
+login. Restrict who can reach Moonraker accordingly, because exposing it to an untrusted network also
+exposes firmware flashing.
+
+The agent still refuses to update while the printer is printing, Klippy is starting up or
+disconnected, or Klipper's configuration has an error (see the blocker reasons under `status`), and
+it offers only the methods in this document.
+
 ## `status`
 
-No arguments; read-only.
+No arguments. Read-only.
 
 ```jsonc
 {
@@ -90,23 +102,26 @@ first one that applies wins):
 
 ### MCU states
 
+Each MCU has a target version. For a Klipper MCU it is the running host. For FOCI it is the latest
+FOCI release, and for a Beacon or Cartographer it is the image matched to that device.
+
 | State | Meaning | Actions |
 | --- | --- | --- |
-| `current` | Matches the running host, or for FOCI, the latest FOCI release, or for a Beacon or Cartographer, its image; also newer than it, which no update replaces (the message says so) | none |
-| `update_available` | Older than the running host (or another commit of it), or for FOCI, the latest FOCI release, or for a Beacon or Cartographer, its image | `update` |
-| `indeterminate` | Revision cannot be compared, including a FOCI development build, a FOCI MCU while the latest release could not be looked up, and a Beacon or Cartographer without a known image (the message says why) | none |
-| `externally_managed` | Non-Klipper application, a Beacon whose version cannot be compared, a FOCI build no release matches, or a Cartographer no image can be matched to (the message says why) | none |
+| `current` | Matches the target, or is newer than it. No update replaces a newer version, and the message says so | none |
+| `update_available` | Older than the target, or another commit of it | `update` |
+| `indeterminate` | The revision cannot be compared. Examples are a FOCI development build, a FOCI MCU whose latest release could not be looked up, and a Beacon or Cartographer with no known image (the message says why) | none |
+| `externally_managed` | A non-Klipper application, a Beacon whose version cannot be compared, a FOCI build that matches no release, or a Cartographer that matches no image (the message says why) | none |
 | `unsupported_legacy` | No embedded kconfig | none |
-| `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD51); the message names the family | none |
-| `not_identified` | Empty object; fallback not attempted (CAN, host MCU, or port held) | none |
-| `not_responding` | Empty object; no identify reply. Message points to `aldis reboot` or a power cycle | none |
+| `unsupported_mcu` | The kconfig names an MCU family with no bootloader aldis can drive (e.g. SAMD51), and the message names the family | none |
+| `not_identified` | Empty object, and no fallback was attempted (CAN, host MCU, or port held) | none |
+| `not_responding` | Empty object, with no identify reply. Message points to `aldis reboot` or a power cycle | none |
 
 FOCI MCUs are compared with the latest FOCI release on GitHub, which the agent looks up at most
 once an hour and only while a FOCI MCU is configured. A FOCI update downloads the release image
 instead of building, so its run reports `downloading firmware` and `downloaded firmware`.
 
 Beacons are compared with the image for their revision in the `beacon_klipper` checkout. A Beacon
-newer than that image is `indeterminate` with no action; the agent never downgrades one. A Beacon
+newer than that image is `indeterminate` with no action, because the agent only upgrades a Beacon. A Beacon
 update reads the image instead of building, so its run reports `reading firmware image` and
 `read firmware image`.
 
@@ -118,7 +133,7 @@ empty `actions`, and its `message` says why (e.g. `cannot flash: klipper-2 is pr
 The printer's other MCUs stay updatable. `update` with `all` skips the bridge, and naming it
 returns `not_updatable` with the same message.
 
-The UI never re-implements eligibility: buttons follow `actions`, and "Update All" targets every
+The UI never re-implements eligibility. Buttons follow `actions`, and "Update All" targets every
 MCU whose actions include `update`. Force-updating a `current` MCU remains CLI-only.
 
 ### `run`
@@ -130,16 +145,16 @@ MCU whose actions include `update`. Force-updating a `current` MCU remains CLI-o
 
 The agent keeps only the current or most recent run in memory, with `messages` capped at the
 latest 500 payloads (the final payload is always kept). This history is lost when the agent
-restarts; the run log on disk remains. It lets a reloaded page, or a client that reconnects
-mid-run, repopulate its progress dialog from `status` alone.
+restarts, but the run log on disk remains. A reloaded page, or a client that reconnects
+mid-run, can repopulate its progress dialog from `status` alone.
 
 ## `update`
 
-Arguments: `{"mcus": ["mcu", "can"]}` or `{"all": true}`. The request is validated synchronously,
-then the call returns `{"run_id": "…"}` and the run continues in the background; progress and
+Arguments: `{"mcus": ["mcu", "can"]}` or `{"all": true}`. The agent validates the request synchronously,
+then the call returns `{"run_id": "…"}` and the run continues in the background. Progress and
 completion are reported through `update_response` events (see below) and through `status.run`.
 
-A request is accepted or rejected whole; there are no partial acceptances.
+The agent accepts or rejects a request as a whole.
 
 ### Errors
 
@@ -151,7 +166,7 @@ rejections (everything but the two protocol-level reasons below) use `code` -320
   "data": {"reason": "busy"}}}
 ```
 
-Moonraker (verified against v0.11.0's `common.py`) relays agent errors wrapped: the frontend
+Moonraker (verified against v0.11.0's `common.py`) relays agent errors wrapped, so the frontend
 receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole error object as
 `data`. The reason is therefore at `error.data.data.reason`:
 
@@ -164,9 +179,9 @@ receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole er
 | Reason | Code | Meaning |
 | --- | --- | --- |
 | `busy` | -32000 | An update is running (agent or CLI). When this agent is running it, the message names the printer (`an update is already running on klipper-2`) |
-| `blocked` | -32000 | A blocker applies; `data.blocker` carries it |
+| `blocked` | -32000 | A blocker applies, and `data.blocker` carries it |
 | `unknown_mcu` | -32000 | A named MCU was not discovered |
-| `not_updatable` | -32000 | A named MCU lacks the `update` action; `data.mcus` gives per-MCU reasons |
+| `not_updatable` | -32000 | A named MCU lacks the `update` action, and `data.mcus` gives per-MCU reasons |
 | `nothing_to_update` | -32000 | `mcus` was empty, or `all` matched no MCU |
 | `unavailable` | -32000 | Moonraker discovery failed |
 | `invalid_request` | -32602 | `arguments` deserializes to neither `{"mcus": [...]}` nor `{"all": ...}`, or is `{"all": false}` |
@@ -182,12 +197,12 @@ receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole er
            "mcus": [{"name": "mcu", "state": "current", "message": "running v0.13.0-770-gce7002bed"}]}}}
 ```
 
-`unknown_method` is a protocol-level error: it's raised by dispatch before `update`'s arguments are
-even looked at, so it precedes any lock or blocker check. `invalid_request` has two sources: a
-malformed `arguments` shape is also protocol-level (raised while parsing, before `update` runs),
-but `{"all": false}` is only recognized as invalid once `update` runs, so it is raised *after* the
-busy and blocker checks (request validation needs the discovered MCU inventory to interpret the
-request at all). Both use the standard JSON-RPC code for malformed params.
+`unknown_method` is a protocol-level error. Dispatch raises it before `update`'s arguments are
+read, so it precedes any lock or blocker check. `invalid_request` has two sources. A
+malformed `arguments` shape is also protocol-level: the agent rejects it while parsing, before
+`update` runs. It can only tell that `{"all": false}` is invalid once `update` runs, because it
+needs the discovered MCU inventory to interpret the request. That rejection therefore comes
+*after* the busy and blocker checks. Both use the standard JSON-RPC code for malformed params.
 
 ## Events
 
@@ -207,19 +222,19 @@ frontends can feed it into their existing update dialogs:
 `mcu` is `null` for host-level messages (e.g. `stop-klipper`, `start-klipper`, `done`). `result` is
 present only on the final, `complete: true` payload.
 
-Phases are the stable labels from `update-lifecycle.md`: `discover`, `stop-klipper`, `build`,
+Phases are the labels from `update-lifecycle.md`: `discover`, `stop-klipper`, `build`,
 `enter-bootloader`, `flash`, `verify`, `start-klipper`, `reconnect`, `done`. Messages are one line
-per step; raw build output goes only to the run log.
+per step, and raw build output goes only to the run log.
 
 `klipper_left_stopped: true` means the run deliberately did not restart Klipper (see
-`update-lifecycle.md`'s Error Handling); the final message says so and names the MCU to recover.
+`update-lifecycle.md`'s Error Handling). The final message says so and names the MCU to recover.
 
 ## Multiple printers
 
 One `aldis agent` process can serve several local Moonraker/Klipper pairs. It opens one connection
 per Moonraker, and each connection serves only its own printer with this same API, so a frontend
-sees one printer's MCUs, run and history. `api_version` stays 1. Updates run one at a time across
-the host: the agent rejects a second request, from any printer or the CLI, as `busy`.
+sees one printer's MCUs and run history. `api_version` stays 1. Updates run one at a time across
+the host, and the agent rejects a second request, from any printer or the CLI, as `busy`.
 
 ## Versioning
 
