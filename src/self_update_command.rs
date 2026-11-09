@@ -53,7 +53,10 @@ fn restart_agent_if_running(runner: &impl CommandPort) -> RestartOutcome {
 pub(crate) fn self_update(arguments: SelfUpdateArgs, mut ui: UpdateUi) -> ExitCode {
     match run_self_update(arguments, &mut ui) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => fail(format!("{error:#}")),
+        Err(error) => {
+            ui.finish_failure();
+            fail(format!("{error:#}"))
+        }
     }
 }
 
