@@ -12,6 +12,7 @@ use crate::eligibility::kconfig_machine;
 use crate::flash::FlashPort;
 use crate::flash::FlashResult;
 use crate::flash::beacon_dfu::{self, BeaconDfuError};
+use crate::flash::indx_dfu;
 use crate::flash::katapult::adapter::KatapultAdapter;
 use crate::flash::katapult::adapter::KatapultFlashError;
 use crate::flash::katapult::bootstrap::{
@@ -58,6 +59,8 @@ pub enum SerialFlashRoute {
     },
     /// RP2040/RP2350 PicoBoot at one USB topology.
     PicoBoot { sysfs_path: PathBuf },
+    /// The Bondtech INDX's DFU bootloader at one USB topology.
+    IndxDfu { sysfs_path: PathBuf },
     /// A SAMD21 SAM-BA monitor and its Kconfig-derived application target.
     SamBa {
         /// SAM-BA's serial device.
@@ -173,6 +176,12 @@ pub enum SystemFlashError {
         /// The MCU transport that was asked to enter its bootloader.
         transport: String,
     },
+    /// The firmware cannot be flashed to an INDX bootloader.
+    IndxTarget(indx_dfu::TargetError),
+    /// The firmware image is not one the INDX bootloader could start.
+    IndxImage(indx_dfu::ImageError),
+    /// Flashing the INDX bootloader failed.
+    IndxDfu(indx_dfu::IndxDfuError),
     /// Entering or flashing Beacon's bootloader failed.
     BeaconDfu(BeaconDfuError),
     /// The Beacon bootloader that appeared is not the one the firmware image is for.
@@ -319,6 +328,9 @@ impl fmt::Display for SystemFlashError {
                 "{transport} entered {bootloader}, but this firmware is flashed only through \
                  Katapult; run `aldis reboot` to leave the bootloader"
             ),
+            Self::IndxTarget(error) => write!(f, "{error}"),
+            Self::IndxImage(error) => write!(f, "{error}"),
+            Self::IndxDfu(error) => write!(f, "INDX flashing failed: {error}"),
             Self::BeaconDfu(error) => write!(f, "{error}"),
             Self::BeaconImageMismatch { bootloader, image } => write!(
                 f,
@@ -357,6 +369,9 @@ impl std::error::Error for SystemFlashError {
             Self::LinuxHost(error) => std::error::Error::source(error),
             Self::CanSocket(error) => Some(error),
             Self::CanUsbTopology(error) => Some(error),
+            Self::IndxTarget(error) => Some(error),
+            Self::IndxImage(error) => Some(error),
+            Self::IndxDfu(error) => Some(error),
             Self::BeaconDfu(error) => std::error::Error::source(error),
         }
     }
@@ -440,6 +455,10 @@ fn resolve_serial_route(
         }
         Ok(SelectedUsbBootloader::PicoBoot { sysfs_path }) => {
             Ok(SerialFlashRoute::PicoBoot { sysfs_path })
+        }
+        Ok(SelectedUsbBootloader::IndxDfu { sysfs_path }) => {
+            indx_dfu::validate_kconfig(kconfig).map_err(SystemFlashError::IndxTarget)?;
+            Ok(SerialFlashRoute::IndxDfu { sysfs_path })
         }
         Ok(SelectedUsbBootloader::SamBa { serial_device, .. }) => Ok(SerialFlashRoute::SamBa {
             serial_device,
@@ -685,6 +704,12 @@ fn dispatch_serial_route(
                 .flash(firmware)
                 .map_err(SystemFlashError::PicoBoot)
         }
+        SerialFlashRoute::IndxDfu { sysfs_path } => {
+            let image = indx_dfu::prepare_image(firmware).map_err(SystemFlashError::IndxImage)?;
+            wait_for_usb_device_access(&sysfs_path)?;
+            progress(SystemFlashProgress::Flashing);
+            indx_dfu::flash(&sysfs_path, &image).map_err(SystemFlashError::IndxDfu)
+        }
     }
 }
 
@@ -735,6 +760,7 @@ pub fn katapult_route(
         SelectedUsbBootloader::Stm32Dfu { .. } => "STM32 DFU",
         SelectedUsbBootloader::PicoBoot { .. } => "PicoBoot",
         SelectedUsbBootloader::SamBa { .. } => "SAM-BA",
+        SelectedUsbBootloader::IndxDfu { .. } => "INDX DFU",
     };
     Err(SystemFlashError::NotKatapult {
         bootloader,

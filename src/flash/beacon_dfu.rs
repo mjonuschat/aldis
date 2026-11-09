@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dfu_nusb::DfuNusb;
-
 use crate::beacon::VENDOR_ID;
 use crate::flash::FlashResult;
 use crate::flash::katapult::serial::{SystemSerialIo, usb_device_path};
+use crate::flash::plain_dfu::{self, PlainDfuError};
+use crate::flash::usb_sysfs::has_dfu_interface;
 use crate::retry::retry_until_available;
 
 /// The product ids Beacon's bootloader enumerates with, one per hardware revision family.
@@ -59,13 +59,10 @@ pub enum BeaconDfuError {
     Transport(#[source] dfu_nusb::Error),
 }
 
-/// Whether a USB device with this identity is Beacon's bootloader. As `update_firmware.py`, the
-/// product string must name the bootloader, since the identity alone may not differ from the
-/// application's.
-pub fn is_bootloader(vendor_id: u16, product_id: u16, product: &str) -> bool {
-    vendor_id == VENDOR_ID
-        && BOOTLOADER_PRODUCT_IDS.contains(&product_id)
-        && product.contains("Bootloader")
+/// Whether a USB device with this identity is Beacon's bootloader: Beacon's ids, and a DFU
+/// interface, which its application does not have.
+pub fn is_bootloader(vendor_id: u16, product_id: u16, dfu_interface: bool) -> bool {
+    vendor_id == VENDOR_ID && BOOTLOADER_PRODUCT_IDS.contains(&product_id) && dfu_interface
 }
 
 fn read_hex_id(path: &Path) -> Option<u16> {
@@ -78,7 +75,7 @@ pub fn bootloader_at(usb_path: &Path) -> Option<ObservedBootloader> {
     let product_id = read_hex_id(&usb_path.join("idProduct"))?;
     let product = std::fs::read_to_string(usb_path.join("product")).ok()?;
     let product = product.trim();
-    is_bootloader(vendor_id, product_id, product).then(|| ObservedBootloader {
+    is_bootloader(vendor_id, product_id, has_dfu_interface(usb_path)).then(|| ObservedBootloader {
         sysfs_path: usb_path.to_owned(),
         vendor_id,
         product_id,
@@ -102,7 +99,7 @@ pub fn application_at(usb_path: &Path) -> bool {
     let product = product.trim();
     vendor == Some(VENDOR_ID)
         && product.starts_with("Beacon Rev")
-        && !product.contains("Bootloader")
+        && !has_dfu_interface(usb_path)
         && crate::flash::usb_sysfs::usb_tty(usb_path).is_some()
 }
 
@@ -154,115 +151,88 @@ pub fn flash(
     bootloader: &ObservedBootloader,
     payload: &[u8],
 ) -> Result<FlashResult, BeaconDfuError> {
-    crate::flash::block_on(async {
-        let not_found = || BeaconDfuError::DeviceNotFound(bootloader.usb_id());
-        let mut matches = nusb::list_devices()
-            .await
-            .map_err(BeaconDfuError::Discovery)?
-            .filter(|device| {
-                device.sysfs_path() == bootloader.sysfs_path
-                    && device.vendor_id() == bootloader.vendor_id
-                    && device.product_id() == bootloader.product_id
-            });
-        let device_info = matches.next().ok_or_else(not_found)?;
-        let interface_number = device_info
-            .interfaces()
-            .find(|interface| interface.class() == 0xfe && interface.subclass() == 0x01)
-            .map(|interface| interface.interface_number())
-            .ok_or_else(not_found)?;
-        let device = device_info
-            .open()
-            .await
-            .map_err(BeaconDfuError::Discovery)?;
-        let interface = device
-            .detach_and_claim_interface(interface_number)
-            .await
-            .map_err(BeaconDfuError::Discovery)?;
-        let dfu = DfuNusb::open(device, interface, 0)
-            .await
-            .map_err(BeaconDfuError::Transport)?
-            .into_sync_dfu()
-            .download_without_manifest_from_slice(payload)
-            .map_err(BeaconDfuError::Transport)?;
-        match dfu.manifest() {
-            Ok(_) => {}
-            Err(error) if manifestation_finished_early(&error) => {
-                tracing::debug!(%error, "beacon bootloader finished manifestation before it was polled");
-            }
-            Err(error) => return Err(BeaconDfuError::Transport(error)),
-        }
-        Ok(FlashResult {
-            reported_pages: None,
-            padded_bytes: payload.len(),
-        })
+    plain_dfu::download(
+        &bootloader.sysfs_path,
+        bootloader.vendor_id,
+        bootloader.product_id,
+        payload,
+    )
+    .map_err(|error| match error {
+        PlainDfuError::Discovery(error) => BeaconDfuError::Discovery(error),
+        PlainDfuError::DeviceNotFound => BeaconDfuError::DeviceNotFound(bootloader.usb_id()),
+        PlainDfuError::Transport(error) => BeaconDfuError::Transport(error),
+    })?;
+    Ok(FlashResult {
+        reported_pages: None,
+        padded_bytes: payload.len(),
     })
-}
-
-/// Whether an error from asking for the manifestation only means the bootloader acted on it
-/// before the host could watch: it dropped off the bus to restart into the new firmware, or it
-/// answered the status poll from `DfuIdle`, having already finished (it never reports
-/// `DfuManifest`). The image has been downloaded in full by then; success is confirmed by the
-/// Beacon reporting the image's version once its application runs.
-fn manifestation_finished_early(error: &dfu_nusb::Error) -> bool {
-    use dfu_core::State;
-    match error {
-        dfu_nusb::Error::Transfer(_) | dfu_nusb::Error::Nusb(_) => true,
-        dfu_nusb::Error::Dfu(dfu_core::Error::InvalidState { got, expected }) => {
-            *got == State::DfuIdle
-                && matches!(expected, State::DfuManifest | State::DfuManifestSync)
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bootloader_at, is_bootloader, manifestation_finished_early};
+    use std::path::Path;
+    use std::time::Duration;
 
-    #[test]
-    fn recognizes_the_bootloader_only_by_its_identity_and_product_name() {
-        assert!(is_bootloader(0x04d8, 0xbeac, "Beacon RevD Bootloader"));
-        assert!(is_bootloader(0x04d8, 0xbea1, "Beacon RevH Bootloader"));
-        assert!(!is_bootloader(0x04d8, 0xbea1, "Beacon RevH"));
-        assert!(!is_bootloader(0x04d8, 0x1234, "Beacon RevH Bootloader"));
-        assert!(!is_bootloader(0x0483, 0xbea1, "Beacon RevH Bootloader"));
+    use super::{bootloader_at, is_bootloader};
+
+    fn set_interface(usb: &Path, class: &str, subclass: &str) {
+        let interface = usb.join(format!(
+            "{}:1.0",
+            usb.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&interface).unwrap();
+        std::fs::write(interface.join("bInterfaceClass"), format!("{class}\n")).unwrap();
+        std::fs::write(
+            interface.join("bInterfaceSubClass"),
+            format!("{subclass}\n"),
+        )
+        .unwrap();
+    }
+
+    fn device(root: &Path, name: &str, id: &str, product: &str) -> std::path::PathBuf {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("idVendor"), "04d8\n").unwrap();
+        std::fs::write(path.join("idProduct"), format!("{id}\n")).unwrap();
+        std::fs::write(path.join("product"), format!("{product}\n")).unwrap();
+        path
     }
 
     #[test]
-    fn reads_the_bootloader_identity_from_sysfs() {
+    fn recognizes_the_bootloader_only_by_its_identity_and_dfu_interface() {
+        assert!(is_bootloader(0x04d8, 0xbeac, true));
+        assert!(is_bootloader(0x04d8, 0xbea1, true));
+        assert!(!is_bootloader(0x04d8, 0xbea1, false));
+        assert!(!is_bootloader(0x04d8, 0x1234, true));
+        assert!(!is_bootloader(0x0483, 0xbea1, true));
+    }
+
+    #[test]
+    fn reads_the_bootloader_identity_from_sysfs_whatever_its_product_string_says() {
         let dir = tempfile::tempdir().unwrap();
-        let usb = dir.path();
-        std::fs::write(usb.join("idVendor"), "04d8\n").unwrap();
-        std::fs::write(usb.join("idProduct"), "bea1\n").unwrap();
-        std::fs::write(usb.join("product"), "Beacon RevH\n").unwrap();
+        let usb = device(dir.path(), "1-1", "bea1", "Beacon RevH");
+        set_interface(&usb, "02", "02");
         assert_eq!(
-            bootloader_at(usb),
+            bootloader_at(&usb),
             None,
             "the application is not the bootloader"
         );
 
-        std::fs::write(usb.join("product"), "Beacon RevH Bootloader\n").unwrap();
-        let observed = bootloader_at(usb).unwrap();
+        std::fs::remove_dir_all(usb.join("1-1:1.0")).unwrap();
+        set_interface(&usb, "fe", "01");
+        let observed = bootloader_at(&usb).unwrap();
         assert_eq!(observed.usb_id(), "04d8:bea1");
         assert_eq!(observed.sysfs_path, usb);
-        assert_eq!(observed.product, "Beacon RevH Bootloader");
+        assert_eq!(observed.product, "Beacon RevH");
     }
 
     #[test]
     fn finds_beacon_bootloaders_on_the_bus_and_sees_them_leave() {
-        use std::time::Duration;
-
         let root = tempfile::tempdir().unwrap();
-        let device = |name: &str, id: &str, product: &str| {
-            let path = root.path().join(name);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("idVendor"), "04d8\n").unwrap();
-            std::fs::write(path.join("idProduct"), format!("{id}\n")).unwrap();
-            std::fs::write(path.join("product"), format!("{product}\n")).unwrap();
-            path
-        };
-        let stuck = device("1-1", "beac", "Beacon RevD Bootloader");
-        device("1-2", "bea1", "Beacon RevH");
+        let stuck = device(root.path(), "1-1", "beac", "Beacon RevD Bootloader");
+        set_interface(&stuck, "fe", "01");
+        let running = device(root.path(), "1-2", "bea1", "Beacon RevH");
+        set_interface(&running, "02", "02");
 
         let found = super::scan_bootloaders(root.path());
         assert_eq!(found.len(), 1, "{found:?}");
@@ -275,6 +245,8 @@ mod tests {
             short,
             Duration::from_millis(5)
         ));
+        std::fs::remove_dir_all(stuck.join("1-1:1.0")).unwrap();
+        set_interface(&stuck, "02", "02");
         std::fs::write(stuck.join("product"), "Beacon RevD\n").unwrap();
         assert!(super::wait_until_left(
             &stuck,
@@ -291,34 +263,6 @@ mod tests {
             &stuck,
             short,
             Duration::from_millis(5)
-        ));
-    }
-
-    #[test]
-    fn counts_a_bootloader_that_is_already_idle_after_the_last_block_as_finished() {
-        use dfu_core::State;
-
-        let invalid =
-            |got, expected| dfu_nusb::Error::Dfu(dfu_core::Error::InvalidState { got, expected });
-
-        assert!(manifestation_finished_early(&invalid(
-            State::DfuIdle,
-            State::DfuManifest
-        )));
-        assert!(manifestation_finished_early(&invalid(
-            State::DfuIdle,
-            State::DfuManifestSync
-        )));
-        assert!(
-            !manifestation_finished_early(&invalid(State::DfuError, State::DfuManifest)),
-            "a device in error did not finish"
-        );
-        assert!(
-            !manifestation_finished_early(&invalid(State::DfuIdle, State::DfuDnbusy)),
-            "only the manifestation may end this early"
-        );
-        assert!(!manifestation_finished_early(
-            &dfu_nusb::Error::DeviceNotFound
         ));
     }
 }

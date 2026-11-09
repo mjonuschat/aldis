@@ -15,7 +15,8 @@ use super::session::Transport;
 use super::{AssemblyError, MAX_RESPONSE_FRAME_BYTES, ResponseAssembler};
 use crate::flash::usb_bootloader::{ObservedUsbBootloader, UsbBootloaderKind};
 use crate::flash::usb_sysfs::{
-    UsbIdentity, UsbIdentitySettler, usb_device_ancestor, usb_identity, usb_tty,
+    UsbIdentity, UsbIdentitySettler, has_dfu_interface, has_interfaces, usb_device_ancestor,
+    usb_identity, usb_tty,
 };
 use crate::retry::retry_until_available;
 
@@ -29,26 +30,42 @@ pub const BOOTLOADER_ENTRY_REQUEST: &[u8] = b"~ \x1c Request Serial Bootloader!!
 fn awaiting_serial_device(
     usb_id: &str,
     manufacturer: &str,
+    dfu_interface: bool,
     serial_device: &Option<PathBuf>,
 ) -> bool {
     serial_device.is_none()
         && matches!(
-            crate::flash::usb_bootloader::classify_usb_identity(usb_id, manufacturer),
+            crate::flash::usb_bootloader::classify_usb_identity(
+                usb_id,
+                manufacturer,
+                dfu_interface
+            ),
             Some(UsbBootloaderKind::Katapult | UsbBootloaderKind::SamBa)
         )
 }
 
-/// Builds the observed bootloader at `usb_path`, unless it's a Katapult
-/// identity still waiting on its CDC-ACM tty to enumerate.
+/// Builds the observed bootloader at `usb_path`, unless it is not ready to be classified: a Katapult
+/// identity still waiting on its CDC-ACM tty to enumerate, or an INDX, whose bootloader and
+/// application share their ids, before any of its interfaces is exposed.
 fn observed_if_ready(usb_path: &Path, identity: &UsbIdentity) -> Option<ObservedUsbBootloader> {
     let serial_device = usb_tty(usb_path);
-    if awaiting_serial_device(&identity.usb_id, &identity.manufacturer, &serial_device) {
+    if crate::flash::indx_dfu::has_board_ids(&identity.usb_id) && !has_interfaces(usb_path) {
+        return None;
+    }
+    let dfu_interface = has_dfu_interface(usb_path);
+    if awaiting_serial_device(
+        &identity.usb_id,
+        &identity.manufacturer,
+        dfu_interface,
+        &serial_device,
+    ) {
         return None;
     }
     Some(ObservedUsbBootloader {
         sysfs_path: usb_path.to_path_buf(),
         usb_id: identity.usb_id.clone(),
         manufacturer: identity.manufacturer.clone(),
+        dfu_interface,
         serial_device,
     })
 }
@@ -498,6 +515,41 @@ mod tests {
         assert_eq!(observed.serial_device, Some(PathBuf::from("/dev/ttyACM0")));
 
         fs::remove_dir_all(usb_path).expect("remove sysfs fixture");
+    }
+
+    #[test]
+    fn waits_for_an_indx_interface_before_taking_its_ids_for_a_bootloader() {
+        let usb_path = unique_temporary_path().join("1-1");
+        fs::create_dir_all(&usb_path).expect("create sysfs fixture");
+        write_identity(&usb_path, "04d8:e483", "bondtech ab");
+
+        let watched_path = usb_path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            let interface = watched_path.join("1-1:1.0");
+            fs::create_dir_all(&interface).expect("create interface fixture");
+            thread::sleep(Duration::from_millis(60));
+            fs::write(interface.join("bInterfaceClass"), "fe\n").expect("write class");
+            fs::write(interface.join("bInterfaceSubClass"), "01\n").expect("write subclass");
+        });
+
+        let observed = SystemSerialIo::observe_any_usb_bootloader_at_path(
+            &usb_path,
+            "04d8:e483",
+            "bondtech",
+            Duration::from_millis(500),
+            Duration::from_millis(5),
+        )
+        .expect("the bootloader should be observed once its interface appears");
+
+        writer.join().expect("writer thread should not panic");
+        assert!(observed.dfu_interface);
+        assert_eq!(
+            observed.kind(),
+            Some(crate::flash::usb_bootloader::UsbBootloaderKind::IndxDfu)
+        );
+
+        fs::remove_dir_all(usb_path.parent().unwrap()).expect("remove sysfs fixture");
     }
 
     #[test]

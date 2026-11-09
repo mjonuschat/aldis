@@ -413,7 +413,8 @@ fn classify_known_firmware(
 
 /// Families with a bootloader this updater can drive: Katapult builds only for STM32,
 /// RP2040/RP235x, and LPC176x; STM32 and RP parts also carry ROM DFU and PicoBoot; the Linux
-/// host MCU is installed as a process.
+/// host MCU is installed as a process. The Bondtech INDX toolboard, a SAME51, is the one other
+/// part, recognized by its heater driver (see [`crate::flash::indx_dfu::is_indx_build`]).
 const FLASHABLE_FAMILIES: &[&str] = &["STM32", "RPXXXX", "RP2040", "LPC176X", "LINUX"];
 
 /// The first enabled `CONFIG_MACH_*=y` line of an embedded configuration, or an empty string.
@@ -438,9 +439,11 @@ fn family_support(kconfig: &str) -> FamilySupport {
         .map(str::trim)
         .filter_map(|line| line.strip_prefix("CONFIG_MACH_")?.strip_suffix("=y"))
         .collect();
-    if families.iter().any(|family| {
-        FLASHABLE_FAMILIES.contains(family) || crate::flash::samba::is_flashable_part(family)
-    }) {
+    if crate::flash::indx_dfu::is_indx_build(kconfig)
+        || families.iter().any(|family| {
+            FLASHABLE_FAMILIES.contains(family) || crate::flash::samba::is_flashable_part(family)
+        })
+    {
         FamilySupport::Flashable
     } else if let Some(family) = families.first() {
         FamilySupport::Unflashable((*family).to_owned())

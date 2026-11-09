@@ -14,6 +14,7 @@ fn observed(usb_id: &str) -> ObservedUsbBootloader {
         sysfs_path: PathBuf::from("/sys/devices/pci0000:00/usb1/1-2"),
         usb_id: usb_id.to_owned(),
         manufacturer: String::new(),
+        dfu_interface: false,
         serial_device: Some(PathBuf::from("/dev/ttyACM0")),
     }
 }

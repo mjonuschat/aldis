@@ -69,6 +69,8 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
         None => None,
     };
 
+    refuse_non_indx_firmware(&inventory, &arguments, &firmware, ui)?;
+
     crate::update::bridge_refusal(
         arguments.config.as_deref(),
         moonraker_url,
@@ -192,6 +194,33 @@ fn run_flash(mut arguments: FlashArgs, ui: &mut UpdateUi) -> anyhow::Result<()> 
     }
     ui.finish_success("Klipper ready");
     ui.action("run completed successfully");
+    Ok(())
+}
+
+/// Refuses a file that is not INDX firmware when the target is an INDX, before anything is stopped
+/// or reset: the INDX's bootloader starts any image with a valid length and checksum, and aldis
+/// writes both into the file it is given.
+fn refuse_non_indx_firmware(
+    inventory: &McuInventory,
+    arguments: &FlashArgs,
+    firmware: &[u8],
+    ui: &mut UpdateUi,
+) -> anyhow::Result<()> {
+    let is_indx = inventory.mcus.iter().any(|mcu| {
+        mcu.name == arguments.target && aldis::flash::indx_dfu::is_indx_build(&mcu.kconfig)
+    });
+    if !is_indx {
+        return Ok(());
+    }
+    aldis::flash::indx_dfu::prepare_image(firmware)
+        .with_context(|| {
+            format!(
+                "refusing to flash {}: {}",
+                arguments.target,
+                arguments.firmware.display()
+            )
+        })
+        .inspect_err(|error| ui.action(&format!("error: {error:#}")))?;
     Ok(())
 }
 

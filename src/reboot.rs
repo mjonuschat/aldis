@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use aldis::flash::beacon_dfu::{self, ObservedBootloader};
+use aldis::flash::indx_dfu;
 use aldis::flash::katapult::bootstrap::leave_serial;
 use aldis::flash::picoboot;
 use aldis::flash::reboot::{
@@ -114,6 +115,7 @@ fn leave_one(bootloader: &DetectedBootloader, skip_prompt: bool, ui: &mut Update
             report_leave_result(result, &observed.sysfs_path, ui)
         }
         UsbBootloaderKind::Stm32Dfu => leave_stm32_dfu(&observed.sysfs_path, skip_prompt, ui),
+        UsbBootloaderKind::IndxDfu => leave_indx(&observed.sysfs_path, skip_prompt, ui),
         UsbBootloaderKind::SamBa => {
             let Some(serial_device) = &observed.serial_device else {
                 ui.block("  no unique serial device at this topology; power-cycle the board\n");
@@ -280,6 +282,29 @@ fn leave_stm32_dfu(sysfs_path: &Path, skip_prompt: bool, ui: &mut UpdateUi) -> b
     }
     let result = leave_system_at_path(identity, sysfs_path, application_start);
     report_leave_result(result, sysfs_path, ui)
+}
+
+/// Asks the INDX bootloader to start its firmware and waits for the application to enumerate. The
+/// bootloader only starts firmware whose checksum is right, so a board left with a bad or empty
+/// image is back in the bootloader and needs a flash.
+fn leave_indx(sysfs_path: &Path, skip_prompt: bool, ui: &mut UpdateUi) -> bool {
+    if !confirm(ui, "Reboot into application?", skip_prompt) {
+        return true;
+    }
+    if let Err(error) = indx_dfu::leave(sysfs_path) {
+        ui.block(&format!("  reboot failed: {error}\n"));
+        return false;
+    }
+    if indx_dfu::wait_for_application(sysfs_path, WATCH_TIMEOUT, WATCH_POLL_INTERVAL) {
+        ui.block("  rebooted into its application\n");
+        true
+    } else {
+        ui.block(
+            "  still in its bootloader; it has no valid firmware, so flash it or power-cycle the \
+             board\n",
+        );
+        false
+    }
 }
 
 fn report_leave_result(

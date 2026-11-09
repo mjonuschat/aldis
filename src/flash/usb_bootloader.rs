@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::flash::usb_sysfs;
+use crate::flash::{indx_dfu, usb_sysfs};
 
 const KATAPULT_USB_ID: &str = "1d50:6177";
 const STM32_DFU_USB_ID: &str = "0483:df11";
@@ -20,6 +20,8 @@ pub enum UsbBootloaderKind {
     PicoBoot,
     /// A SAMD21 bootloader speaking the SAM-BA monitor protocol over USB CDC.
     SamBa,
+    /// The Bondtech INDX toolboard's USB DFU bootloader.
+    IndxDfu,
 }
 
 /// A bootloader observed at the configured MCU's re-enumerated USB topology.
@@ -31,6 +33,8 @@ pub struct ObservedUsbBootloader {
     pub usb_id: String,
     /// Lowercase USB manufacturer string, when supplied by the device.
     pub manufacturer: String,
+    /// Whether the device has a DFU interface.
+    pub dfu_interface: bool,
     /// USB serial device exposed by the bootloader, when it has exactly one.
     pub serial_device: Option<PathBuf>,
 }
@@ -38,7 +42,7 @@ pub struct ObservedUsbBootloader {
 impl ObservedUsbBootloader {
     /// Returns the supported native backend matching this observed identity.
     pub fn kind(&self) -> Option<UsbBootloaderKind> {
-        classify_usb_identity(&self.usb_id, &self.manufacturer)
+        classify_usb_identity(&self.usb_id, &self.manufacturer, self.dfu_interface)
     }
 }
 
@@ -68,6 +72,11 @@ pub enum SelectedUsbBootloader {
         sysfs_path: PathBuf,
         /// SAM-BA's serial device at that topology.
         serial_device: PathBuf,
+    },
+    /// The INDX toolboard's DFU bootloader at one USB topology.
+    IndxDfu {
+        /// Linux sysfs path identifying the physical USB topology.
+        sysfs_path: PathBuf,
     },
 }
 
@@ -136,6 +145,9 @@ pub fn select_usb_bootloader(
         Some(UsbBootloaderKind::PicoBoot) => Ok(SelectedUsbBootloader::PicoBoot {
             sysfs_path: observed.sysfs_path,
         }),
+        Some(UsbBootloaderKind::IndxDfu) => Ok(SelectedUsbBootloader::IndxDfu {
+            sysfs_path: observed.sysfs_path,
+        }),
         Some(UsbBootloaderKind::SamBa) => {
             let sysfs_path = observed.sysfs_path;
             let serial_device = observed.serial_device.ok_or_else(|| {
@@ -191,19 +203,25 @@ pub fn scan_usb_bootloaders(root: &Path) -> Vec<ObservedUsbBootloader> {
         .into_iter()
         .filter_map(|sysfs_path| {
             let identity = usb_sysfs::usb_identity(&sysfs_path);
-            classify_usb_identity(&identity.usb_id, &identity.manufacturer)?;
+            let dfu_interface = usb_sysfs::has_dfu_interface(&sysfs_path);
+            classify_usb_identity(&identity.usb_id, &identity.manufacturer, dfu_interface)?;
             Some(ObservedUsbBootloader {
                 serial_device: usb_sysfs::usb_tty(&sysfs_path),
                 sysfs_path,
                 usb_id: identity.usb_id,
                 manufacturer: identity.manufacturer,
+                dfu_interface,
             })
         })
         .collect()
 }
 
 /// Classifies one USB bootloader identity without inferring from Kconfig.
-pub fn classify_usb_identity(usb_id: &str, manufacturer: &str) -> Option<UsbBootloaderKind> {
+pub fn classify_usb_identity(
+    usb_id: &str,
+    manufacturer: &str,
+    dfu_interface: bool,
+) -> Option<UsbBootloaderKind> {
     if usb_id.eq_ignore_ascii_case(KATAPULT_USB_ID) || manufacturer.eq_ignore_ascii_case("katapult")
     {
         Some(UsbBootloaderKind::Katapult)
@@ -219,6 +237,8 @@ pub fn classify_usb_identity(usb_id: &str, manufacturer: &str) -> Option<UsbBoot
         .any(|id| usb_id.eq_ignore_ascii_case(id))
     {
         Some(UsbBootloaderKind::SamBa)
+    } else if indx_dfu::is_bootloader(usb_id, dfu_interface) {
+        Some(UsbBootloaderKind::IndxDfu)
     } else {
         None
     }

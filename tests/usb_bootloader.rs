@@ -11,35 +11,67 @@ use aldis::flash::usb_bootloader::{
 #[test]
 fn classifies_supported_usb_bootloaders_case_insensitively() {
     assert_eq!(
-        classify_usb_identity("1D50:6177", "unknown"),
+        classify_usb_identity("1D50:6177", "unknown", false),
         Some(UsbBootloaderKind::Katapult)
     );
     assert_eq!(
-        classify_usb_identity("other", "KATAPULT"),
+        classify_usb_identity("other", "KATAPULT", false),
         Some(UsbBootloaderKind::Katapult)
     );
     assert_eq!(
-        classify_usb_identity("0483:DF11", "STMicroelectronics"),
+        classify_usb_identity("0483:DF11", "STMicroelectronics", false),
         Some(UsbBootloaderKind::Stm32Dfu)
     );
     assert_eq!(
-        classify_usb_identity("2E8A:0003", "Raspberry Pi"),
+        classify_usb_identity("2E8A:0003", "Raspberry Pi", false),
         Some(UsbBootloaderKind::PicoBoot)
     );
     assert_eq!(
-        classify_usb_identity("2e8a:000f", "Raspberry Pi"),
+        classify_usb_identity("2e8a:000f", "Raspberry Pi", false),
         Some(UsbBootloaderKind::PicoBoot)
     );
     assert_eq!(
-        classify_usb_identity("2886:002F", "Seeed Studio"),
+        classify_usb_identity("2886:002F", "Seeed Studio", false),
         Some(UsbBootloaderKind::SamBa)
     );
 }
 
 #[test]
+fn tells_the_indx_bootloader_from_its_application_by_its_dfu_interface() {
+    assert_eq!(
+        classify_usb_identity("04d8:e483", "bondtech ab", true),
+        Some(UsbBootloaderKind::IndxDfu)
+    );
+    assert_eq!(
+        classify_usb_identity("04D8:E483", "anything", true),
+        Some(UsbBootloaderKind::IndxDfu),
+        "the manufacturer string does not matter"
+    );
+    assert_eq!(
+        classify_usb_identity("04d8:e483", "bondtech ab", false),
+        None,
+        "a CDC device that names itself like the bootloader is not one"
+    );
+    assert_eq!(classify_usb_identity("04d8:e483", "bondtech", false), None);
+}
+
+#[test]
+fn selects_the_indx_bootloader_at_the_observed_topology() {
+    let sysfs_path = PathBuf::from("/sys/devices/platform/usb/1-1.2.2");
+    let selected = select_usb_bootloader(ObservedUsbBootloader {
+        sysfs_path: sysfs_path.clone(),
+        usb_id: "04d8:e483".to_owned(),
+        manufacturer: "bondtech".to_owned(),
+        dfu_interface: true,
+        serial_device: None,
+    });
+    assert_eq!(selected, Ok(SelectedUsbBootloader::IndxDfu { sysfs_path }));
+}
+
+#[test]
 fn leaves_unknown_usb_bootloaders_unsupported() {
     assert_eq!(
-        classify_usb_identity("0483:5740", "STMicroelectronics"),
+        classify_usb_identity("0483:5740", "STMicroelectronics", false),
         None
     );
 }
@@ -51,6 +83,7 @@ fn selects_supported_bootloaders_only_at_the_observed_topology() {
         sysfs_path: sysfs_path.clone(),
         usb_id: usb_id.to_owned(),
         manufacturer: String::new(),
+        dfu_interface: false,
         serial_device: Some(PathBuf::from("/dev/ttyACM0")),
     };
 
@@ -79,6 +112,7 @@ fn rejects_unknown_bootloaders_before_a_backend_can_flash() {
         sysfs_path: PathBuf::from("/sys/devices/platform/usb/1-1.3"),
         usb_id: "1209:0001".to_owned(),
         manufacturer: "example".to_owned(),
+        dfu_interface: false,
         serial_device: None,
     };
 
@@ -102,6 +136,7 @@ fn captures_topology_diagnostics_for_an_unsupported_bootloader() {
         sysfs_path: device_dir.clone(),
         usb_id: "1209:0001".to_owned(),
         manufacturer: "example".to_owned(),
+        dfu_interface: false,
         serial_device: None,
     };
 
@@ -134,6 +169,7 @@ fn falls_back_to_unknown_and_none_for_missing_product_and_serial() {
         sysfs_path: device_dir,
         usb_id: "1209:0002".to_owned(),
         manufacturer: "example".to_owned(),
+        dfu_interface: false,
         serial_device: None,
     };
 
@@ -155,6 +191,7 @@ fn rejects_katapult_without_a_serial_device_at_its_topology() {
         sysfs_path: sysfs_path.clone(),
         usb_id: "1d50:6177".to_owned(),
         manufacturer: "katapult".to_owned(),
+        dfu_interface: false,
         serial_device: None,
     };
 

@@ -162,6 +162,42 @@ fn read_sysfs_value(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The interface directories (`<device>:<configuration>.<number>`) of the USB device at `usb_path`
+/// that sysfs has exposed so far. They appear after the device's own attributes, once the device
+/// is configured.
+fn interface_dirs(usb_path: &Path) -> impl Iterator<Item = PathBuf> {
+    let prefix = format!(
+        "{}:",
+        usb_path.file_name().unwrap_or_default().to_string_lossy()
+    );
+    fs::read_dir(usb_path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(move |entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+}
+
+/// Whether sysfs has exposed the class of any interface of the USB device at `usb_path` yet. The
+/// directory of an interface exists a moment before its attributes can be read.
+pub(crate) fn has_interfaces(usb_path: &Path) -> bool {
+    interface_dirs(usb_path).any(|interface| {
+        !read_sysfs_attribute(&interface, "bInterfaceClass").is_empty()
+            && !read_sysfs_attribute(&interface, "bInterfaceSubClass").is_empty()
+    })
+}
+
+/// Whether the USB device at `usb_path` has a DFU interface (class `0xFE`, subclass `1`), which is
+/// what a DFU bootloader exposes and a running application does not. Unlike the device's ids and
+/// strings, which firmware builds choose, this separates a bootloader from the application that
+/// shares its ids.
+pub(crate) fn has_dfu_interface(usb_path: &Path) -> bool {
+    interface_dirs(usb_path).any(|interface| {
+        read_sysfs_attribute(&interface, "bInterfaceClass") == "fe"
+            && read_sysfs_attribute(&interface, "bInterfaceSubClass") == "01"
+    })
+}
+
 /// Finds the bootloader's unique tty device directly under its interface subtree.
 pub(crate) fn usb_tty(usb_path: &Path) -> Option<PathBuf> {
     let prefix = format!("{}:", usb_path.file_name()?.to_string_lossy());
@@ -212,7 +248,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{UsbIdentity, UsbIdentitySettler, usb_device_ancestor, usb_topology_snapshot};
+    use super::{
+        UsbIdentity, UsbIdentitySettler, has_dfu_interface, has_interfaces, usb_device_ancestor,
+        usb_topology_snapshot,
+    };
 
     fn identity(usb_id: &str, manufacturer: &str) -> UsbIdentity {
         UsbIdentity {
@@ -357,5 +396,40 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("aldis-usb-sysfs-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn tells_a_dfu_interface_from_a_cdc_one_whatever_the_device_strings_say() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = dir.path().join("1-1");
+        let interface = |name: &str, class: &str, subclass: &str| {
+            let path = device.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("bInterfaceClass"), format!("{class}\n")).unwrap();
+            std::fs::write(path.join("bInterfaceSubClass"), format!("{subclass}\n")).unwrap();
+        };
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(device.join("manufacturer"), "Bondtech AB\n").unwrap();
+        assert!(!has_dfu_interface(&device), "no interfaces yet");
+        assert!(!has_interfaces(&device));
+
+        std::fs::create_dir_all(device.join("1-1:1.0")).unwrap();
+        assert!(
+            !has_interfaces(&device),
+            "an interface directory is not ready before its attributes are"
+        );
+        std::fs::remove_dir_all(device.join("1-1:1.0")).unwrap();
+
+        interface("1-1:1.0", "02", "02");
+        interface("1-1:1.1", "0a", "00");
+        assert!(!has_dfu_interface(&device), "a CDC device is no bootloader");
+
+        interface("1-1:1.2", "fe", "01");
+        assert!(has_dfu_interface(&device));
+        assert!(has_interfaces(&device));
+        assert!(
+            !has_dfu_interface(&dir.path().join("1-2")),
+            "a missing device"
+        );
     }
 }

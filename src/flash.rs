@@ -1,9 +1,11 @@
 //! Native firmware flashing interfaces and transport implementations.
 
 pub mod beacon_dfu;
+pub mod indx_dfu;
 pub mod katapult;
 pub mod linux_host;
 pub mod picoboot;
+pub mod plain_dfu;
 pub mod reboot;
 pub mod request;
 pub mod samba;

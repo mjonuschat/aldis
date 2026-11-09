@@ -119,7 +119,7 @@ These bootloaders are entered and flashed unattended, directly from the running 
 Every other bootloader identity is reported as unsupported rather than guessed at. MCUs whose
 firmware configuration names a family none of these bootloaders run on (Katapult builds only for
 STM32, RP2040/RP235x, and LPC176x) are reported as unsupported up front and never offered an
-update; SAMD51 and other non-SAMD21 ATSAMD boards are the common case.
+update; SAMD51 and other non-SAMD21 ATSAMD boards, the INDX excepted, are the common case.
 
 A SAMD21 board must have been built with a bootloader offset and, for UF2 bootloaders such as the
 XIAO's, with the matching `Bootloader type` (Kalico) so that the 1200-baud request lands in the

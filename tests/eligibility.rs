@@ -272,6 +272,32 @@ fn rejects_mcu_families_without_a_flashable_bootloader() {
 }
 
 #[test]
+fn accepts_the_indx_toolboard_but_not_other_same51_parts() {
+    let versions =
+        TargetVersions::klipper(CheckoutRevision::Known("v0.13.0-770-gce7002bed".to_owned()));
+    let indx = mcu(
+        Some("Kalico"),
+        Some("v2026.11.00-30-g991e1823"),
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAME51J19=y\nCONFIG_CLOCK_REF_X25M_XOSC0=y\n\
+         CONFIG_WANT_INDX_HEATER=y\n",
+    );
+    assert_eq!(
+        assess_mcu(&indx, &versions).eligibility,
+        Eligibility::Eligible
+    );
+
+    let other = mcu(
+        Some("Klipper"),
+        Some("v0.13.0-770-gce7002bed"),
+        "CONFIG_MACH_ATSAMD=y\nCONFIG_MACH_SAME51J19=y\nCONFIG_CLOCK_REF_X25M_XOSC0=y\n",
+    );
+    assert_eq!(
+        assess_mcu(&other, &versions).eligibility,
+        Eligibility::UnsupportedMcu("ATSAMD".to_owned())
+    );
+}
+
+#[test]
 fn rejects_the_samd21_parts_whose_ram_cannot_stage_a_transfer() {
     for part in ["SAMD21E15", "SAMD21E16", "SAMD21G17"] {
         let status = assess_mcu(

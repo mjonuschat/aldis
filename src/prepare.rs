@@ -33,6 +33,15 @@ pub enum PreparationError {
         #[source]
         source: InvalidKconfig,
     },
+    /// The MCU is an INDX, and its firmware is not built to run where the INDX bootloader places it.
+    #[error("refusing to build {target:?} for the INDX bootloader")]
+    IndxPlacement {
+        /// Moonraker's configured MCU object name.
+        target: String,
+        /// What is wrong with the configuration.
+        #[source]
+        source: crate::flash::indx_dfu::TargetError,
+    },
 }
 
 /// Prepares a build request without writing files or invoking Klipper.
@@ -55,6 +64,15 @@ pub fn prepare_build(
             source,
         }
     })?;
+
+    if crate::flash::indx_dfu::is_indx_build(&discovered_mcu.kconfig) {
+        crate::flash::indx_dfu::validate_kconfig(&discovered_mcu.kconfig).map_err(|source| {
+            PreparationError::IndxPlacement {
+                target: target_name.to_owned(),
+                source,
+            }
+        })?;
+    }
 
     Ok(PreparedBuild {
         target_name: target_name.to_owned(),
