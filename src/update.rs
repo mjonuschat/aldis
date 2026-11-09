@@ -46,7 +46,8 @@ pub(crate) fn bridge_refusal(
     if urls.is_empty() {
         return Ok(());
     }
-    let peers = urls.iter().map(|url| probe_peer(url)).collect();
+    let tls = aldis::tls::Tls::default();
+    let peers = urls.iter().map(|url| probe_peer(url, &tls)).collect();
     let peers = peers_excluding(own_unit.as_str(), peers);
     check_bridge(inventory, targets, &peers)
         .map_err(|message| anyhow::anyhow!("refusing to flash: {message}"))

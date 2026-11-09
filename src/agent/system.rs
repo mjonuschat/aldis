@@ -19,10 +19,11 @@ use crate::identify::{SerialIdentify, resolve_unreported, should_probe};
 use crate::lock::{LockError, UpdateLock};
 use crate::logging::{LoggingCommandAdapter, RunLogSink};
 use crate::moonraker::{
-    HostInfo, HostPort, KlippyState, McuInventory, MoonrakerAdapter, MoonrakerError,
-    PrinterStatePort,
+    DEFAULT_TIMEOUT, HostInfo, HostPort, KlippyState, McuInventory, MoonrakerAdapter,
+    MoonrakerError, PrinterStatePort,
 };
 use crate::service::{DEFAULT_KLIPPER_UNIT, KlipperService, KlipperUnit, ServiceState};
+use crate::tls::Tls;
 use crate::update_run::{RunFailure, RunHooks, RunOutcome, RunRequest, run_updates};
 use crate::workspace::RunWorkspace;
 
@@ -37,6 +38,7 @@ pub struct SystemBackend {
     peer_urls: Vec<String>,
     foci_release: Mutex<ReleaseCache>,
     sources: crate::config::FirmwareSources,
+    tls: Tls,
 }
 
 impl SystemBackend {
@@ -48,7 +50,13 @@ impl SystemBackend {
             peer_urls: Vec::new(),
             foci_release: Mutex::default(),
             sources: crate::config::FirmwareSources::default(),
+            tls: Tls::default(),
         }
+    }
+
+    pub fn with_tls(mut self, tls: Tls) -> Self {
+        self.tls = tls;
+        self
     }
 
     /// Sets where firmware that is not built from Klipper is read from.
@@ -64,12 +72,16 @@ impl SystemBackend {
     }
 
     fn peers(&self, own_unit: Option<&str>) -> Vec<PeerState> {
-        let peers = self.peer_urls.iter().map(|url| probe_peer(url)).collect();
+        let peers = self
+            .peer_urls
+            .iter()
+            .map(|url| probe_peer(url, &self.tls))
+            .collect();
         peers_excluding(own_unit.unwrap_or(DEFAULT_KLIPPER_UNIT), peers)
     }
 
     fn adapter(&self) -> MoonrakerAdapter {
-        MoonrakerAdapter::new(&self.url)
+        MoonrakerAdapter::with_tls(&self.url, DEFAULT_TIMEOUT, &self.tls)
     }
 
     /// The latest FOCI release when `inventory` has a FOCI MCU, through the cache so that

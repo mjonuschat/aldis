@@ -22,6 +22,13 @@ pub struct FleetConfig {
     /// `~/cartographer_firmware`.
     #[serde(default)]
     pub cartographer_source: Option<PathBuf>,
+    /// A PEM file of the certificates to trust for an `https://` Moonraker, in place of the
+    /// public roots.
+    #[serde(default)]
+    pub ca_file: Option<PathBuf>,
+    /// Accept any certificate from an `https://` Moonraker without checking it.
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
 }
 
 /// Where firmware that is not built from Klipper is read from on this host; `None` looks in
@@ -38,6 +45,15 @@ impl FirmwareSources {
         Self {
             beacon: file.and_then(|file| file.beacon_source.clone()),
             cartographer: file.and_then(|file| file.cartographer_source.clone()),
+        }
+    }
+}
+
+impl FleetConfig {
+    pub fn tls_options(&self) -> crate::tls::TlsOptions {
+        crate::tls::TlsOptions {
+            ca_file: self.ca_file.clone(),
+            insecure_skip_verify: self.insecure_skip_verify,
         }
     }
 }
@@ -101,12 +117,11 @@ pub fn instance_urls(file: Option<FleetConfig>, flags: &[String]) -> Vec<String>
     urls
 }
 
-/// The first URL the agent cannot serve. The agent reaches Moonraker over a plain-HTTP websocket
-/// (its websocket client is built without TLS), so every instance URL must start with `http://`.
-pub fn non_http_url(urls: &[String]) -> Option<&str> {
+/// The first URL the agent cannot serve: one that starts with neither `http://` nor `https://`.
+pub fn unsupported_url(urls: &[String]) -> Option<&str> {
     urls.iter()
         .map(String::as_str)
-        .find(|url| !url.starts_with("http://"))
+        .find(|url| !url.starts_with("http://") && !url.starts_with("https://"))
 }
 
 #[cfg(test)]
@@ -115,18 +130,42 @@ mod tests {
 
     #[test]
     fn names_the_first_url_the_agent_cannot_connect_to() {
-        assert_eq!(non_http_url(&strings(&["http://127.0.0.1:7125"])), None);
         assert_eq!(
-            non_http_url(&strings(&[
-                "http://127.0.0.1:7125",
-                "https://127.0.0.1:7130",
-                "127.0.0.1:7126",
-            ])),
-            Some("https://127.0.0.1:7130")
+            unsupported_url(&strings(&["http://127.0.0.1:7125", "https://printer.lan"])),
+            None
         );
         assert_eq!(
-            non_http_url(&strings(&["127.0.0.1:7126"])),
+            unsupported_url(&strings(&[
+                "http://127.0.0.1:7125",
+                "ws://127.0.0.1:7130",
+                "127.0.0.1:7126",
+            ])),
+            Some("ws://127.0.0.1:7130")
+        );
+        assert_eq!(
+            unsupported_url(&strings(&["127.0.0.1:7126"])),
             Some("127.0.0.1:7126")
+        );
+    }
+
+    #[test]
+    fn reads_the_certificate_verification_settings() {
+        let config = FleetConfig::parse(
+            "ca_file = \"/etc/ssl/moonraker.pem\"\nmoonraker = [\"https://printer.lan\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.tls_options(),
+            crate::tls::TlsOptions {
+                ca_file: Some(PathBuf::from("/etc/ssl/moonraker.pem")),
+                insecure_skip_verify: false,
+            }
+        );
+        let config = FleetConfig::parse("insecure_skip_verify = true\n").unwrap();
+        assert!(config.tls_options().insecure_skip_verify);
+        assert_eq!(
+            FleetConfig::default().tls_options(),
+            crate::tls::TlsOptions::default()
         );
     }
 

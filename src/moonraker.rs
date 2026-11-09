@@ -4,6 +4,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::tls::Tls;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McuInventory {
     pub mcus: Vec<Mcu>,
@@ -235,6 +237,9 @@ pub fn parse_klipper_unit(response: &str) -> Result<Option<String>, MoonrakerErr
         .map(str::to_owned))
 }
 
+/// How long one request to Moonraker may take.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct MoonrakerAdapter {
     base_url: String,
     agent: ureq::Agent,
@@ -264,13 +269,18 @@ impl PrinterStatePort for MoonrakerAdapter {
 
 impl MoonrakerAdapter {
     pub fn new(base_url: impl Into<String>) -> Self {
-        Self::with_timeout(base_url, Duration::from_secs(5))
+        Self::with_timeout(base_url, DEFAULT_TIMEOUT)
     }
 
     /// Like [`Self::new`] with a custom per-request timeout.
     pub fn with_timeout(base_url: impl Into<String>, timeout: Duration) -> Self {
+        Self::with_tls(base_url, timeout, &Tls::default())
+    }
+
+    pub fn with_tls(base_url: impl Into<String>, timeout: Duration, tls: &Tls) -> Self {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(timeout))
+            .tls_config(tls.rest_config())
             .build();
 
         Self {

@@ -18,12 +18,25 @@ pub(crate) fn agent(arguments: AgentArgs, verbose: u8) -> ExitCode {
         Err(error) => return fail(format!("{error:#}")),
     };
     let sources = aldis::config::FirmwareSources::from_config(file.as_ref());
-    let urls = instance_urls(file, &arguments.moonraker);
+    let options = file
+        .as_ref()
+        .map(aldis::config::FleetConfig::tls_options)
+        .unwrap_or_default();
     // Fail at startup rather than logging a failed connection every retry forever.
-    if let Some(url) = aldis::config::non_http_url(&urls) {
+    let tls = match aldis::tls::Tls::new(&options) {
+        Ok(tls) => tls,
+        Err(error) => return fail(aldis::error_chain(&error)),
+    };
+    if options.insecure_skip_verify {
+        tracing::warn!(
+            "insecure_skip_verify is set: the certificate of an https:// Moonraker is not checked"
+        );
+    }
+    let urls = instance_urls(file, &arguments.moonraker);
+    if let Some(url) = aldis::config::unsupported_url(&urls) {
         return fail(format!(
-            "the agent connects to Moonraker over plain HTTP and cannot use {url}; configure an http:// URL"
+            "the agent connects to Moonraker over http:// or https:// and cannot use {url}"
         ));
     }
-    aldis::agent::runtime::run_instances(urls, sources, sink)
+    aldis::agent::runtime::run_instances(urls, sources, tls, sink)
 }

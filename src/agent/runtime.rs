@@ -8,8 +8,9 @@ use crate::agent::service::{AgentService, LockHolders};
 use crate::agent::system::SystemBackend;
 use crate::fleet::system::other_urls;
 use crate::logging::RunLogSink;
-use crate::moonraker::{HostPort, MoonrakerAdapter};
+use crate::moonraker::{DEFAULT_TIMEOUT, HostPort, MoonrakerAdapter};
 use crate::service::DEFAULT_KLIPPER_UNIT;
+use crate::tls::Tls;
 
 /// A configured Moonraker and the Klipper unit it manages, when that could be established.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,12 +44,13 @@ pub fn dedupe_by_unit(found: Vec<Found>) -> (Vec<Found>, Vec<Found>) {
 pub fn run_instances(
     urls: Vec<String>,
     sources: crate::config::FirmwareSources,
+    tls: Tls,
     sink: RunLogSink,
 ) -> ! {
     let found = urls
         .into_iter()
         .map(|url| {
-            let unit = match MoonrakerAdapter::new(&url).klipper_unit() {
+            let unit = match MoonrakerAdapter::with_tls(&url, DEFAULT_TIMEOUT, &tls).klipper_unit() {
                 Ok(unit) => Some(unit.unwrap_or_else(|| DEFAULT_KLIPPER_UNIT.to_owned())),
                 Err(error) => {
                     tracing::warn!(%url, error = %crate::error_chain(&error), "could not ask Moonraker which Klipper service it manages");
@@ -77,11 +79,13 @@ pub fn run_instances(
         let service = AgentService::new(
             SystemBackend::new(instance.url.clone(), sink.clone())
                 .with_peers(other_urls(&instance.url, &kept_urls))
-                .with_firmware_sources(sources.clone()),
+                .with_firmware_sources(sources.clone())
+                .with_tls(tls.clone()),
             Arc::clone(&events),
         )
         .with_identity(name, holders.clone());
-        std::thread::spawn(move || run_forever(&instance.url, service, events));
+        let tls = tls.clone();
+        std::thread::spawn(move || run_forever(&instance.url, &tls, service, events));
     }
     loop {
         std::thread::park();

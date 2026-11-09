@@ -27,6 +27,7 @@ pub mod prepare;
 pub mod retry;
 pub mod self_update;
 pub mod service;
+pub mod tls;
 pub mod update_run;
 pub mod workspace;
 

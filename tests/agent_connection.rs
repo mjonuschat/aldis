@@ -1,3 +1,5 @@
+mod tls_support;
+
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -101,7 +103,7 @@ fn identifies_then_answers_relayed_requests_until_moonraker_closes() {
     let events: EventSink = Arc::new(Mutex::new(None));
     let service = AgentService::new(Idle, Arc::clone(&events));
 
-    serve(&url, &service, &events).expect("connection ends cleanly");
+    serve(&url, &aldis::tls::Tls::default(), &service, &events).expect("connection ends cleanly");
     let (identify, status, busy, unknown) = moonraker.join().unwrap();
 
     assert_eq!(identify["params"]["type"], "agent");
@@ -113,4 +115,72 @@ fn identifies_then_answers_relayed_requests_until_moonraker_closes() {
         events.lock().unwrap().is_none(),
         "sink is cleared when the connection ends"
     );
+}
+
+/// A Moonraker behind TLS that reads the agent's identify message, then closes. `None` when the
+/// agent refused the certificate and the handshake never finished.
+fn identify_over_tls(
+    identity: &tls_support::Identity,
+) -> (String, thread::JoinHandle<Option<Value>>) {
+    let (address, server) = tls_support::serve_once(identity, |stream| {
+        let mut socket = tungstenite::accept(stream).ok()?;
+        let identify = text(socket.read().ok()?);
+        socket.close(None).ok()?;
+        let _ = socket.read();
+        Some(identify)
+    });
+    (format!("https://{address}"), server)
+}
+
+fn serve_to(url: &str, tls: &aldis::tls::Tls) -> Result<(), tungstenite::Error> {
+    let events: EventSink = Arc::new(Mutex::new(None));
+    let service = AgentService::new(Idle, Arc::clone(&events));
+    serve(url, tls, &service, &events)
+}
+
+fn trusting(pem: &str) -> (tempfile::TempDir, aldis::tls::Tls) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("moonraker.pem");
+    std::fs::write(&path, pem).unwrap();
+    let tls = aldis::tls::Tls::new(&aldis::tls::TlsOptions {
+        ca_file: Some(path),
+        insecure_skip_verify: false,
+    })
+    .unwrap();
+    (directory, tls)
+}
+
+#[test]
+fn connects_to_a_wss_moonraker_whose_certificate_is_in_ca_file() {
+    let identity = tls_support::identity();
+    let (_directory, tls) = trusting(&identity.certificate_pem);
+    let (url, server) = identify_over_tls(&identity);
+
+    serve_to(&url, &tls).expect("connection ends cleanly");
+
+    assert_eq!(server.join().unwrap().unwrap()["params"]["type"], "agent");
+}
+
+#[test]
+fn refuses_a_wss_moonraker_with_an_untrusted_certificate() {
+    let identity = tls_support::identity();
+    let (url, server) = identify_over_tls(&identity);
+
+    assert!(serve_to(&url, &aldis::tls::Tls::default()).is_err());
+    assert_eq!(server.join().unwrap(), None);
+}
+
+#[test]
+fn connects_to_a_wss_moonraker_when_verification_is_skipped() {
+    let identity = tls_support::identity();
+    let tls = aldis::tls::Tls::new(&aldis::tls::TlsOptions {
+        ca_file: None,
+        insecure_skip_verify: true,
+    })
+    .unwrap();
+    let (url, server) = identify_over_tls(&identity);
+
+    serve_to(&url, &tls).expect("connection ends cleanly");
+
+    assert_eq!(server.join().unwrap().unwrap()["params"]["type"], "agent");
 }

@@ -7,13 +7,14 @@ use crate::moonraker::{
     HostPort, KlippyState, McuInventory, MoonrakerAdapter, MoonrakerError, PrinterStatePort,
 };
 use crate::service::DEFAULT_KLIPPER_UNIT;
+use crate::tls::Tls;
 
 const PEER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Reads `url`'s Moonraker now. Anything that cannot be established is `None`, never assumed idle.
 /// A Klipper that failed to load its config owns no MCUs, so it reads as an empty inventory.
-pub fn probe_peer(url: &str) -> PeerState {
-    let adapter = MoonrakerAdapter::with_timeout(url, PEER_TIMEOUT);
+pub fn probe_peer(url: &str, tls: &Tls) -> PeerState {
+    let adapter = MoonrakerAdapter::with_tls(url, PEER_TIMEOUT, tls);
     let unit = match adapter.klipper_unit() {
         Ok(Some(unit)) => Some(unit),
         Ok(None) => Some(DEFAULT_KLIPPER_UNIT.to_owned()),
@@ -76,7 +77,7 @@ mod tests {
     #[test]
     fn an_unreachable_moonraker_is_reported_as_unknown_not_idle() {
         // Port 1 on loopback refuses connections immediately.
-        let peer = probe_peer("http://127.0.0.1:1");
+        let peer = probe_peer("http://127.0.0.1:1", &Tls::default());
         assert_eq!(peer.name, "http://127.0.0.1:1");
         assert_eq!(peer.unit, None);
         assert_eq!(peer.klippy, None);
