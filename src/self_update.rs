@@ -20,7 +20,7 @@ pub const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum ReleaseError {
     /// The GitHub API request failed.
-    #[error("GitHub request failed")]
+    #[error("GitHub request failed: {0}")]
     Http(#[from] ureq::Error),
     /// The archive response kept going past [`MAX_ARCHIVE_BYTES`].
     #[error("the release archive is larger than the {0} bytes aldis will download")]
@@ -89,6 +89,7 @@ pub struct GithubReleaseAdapter {
     agent: ureq::Agent,
     repo: String,
     user_agent: &'static str,
+    attempts: u32,
 }
 
 impl GithubReleaseAdapter {
@@ -98,11 +99,12 @@ impl GithubReleaseAdapter {
             agent: ureq::Agent::new_with_defaults(),
             repo: repo.into(),
             user_agent: "aldis-self-update",
+            attempts: MAX_ATTEMPTS,
         }
     }
 
-    /// Creates an adapter for `repo` that sends `user_agent` and gives up on any request that
-    /// takes longer than `timeout`, for lookups that must not hold up the command making them.
+    /// Creates an adapter for `repo` that sends `user_agent`, makes a single attempt per request,
+    /// and gives up on any request that takes longer than `timeout`, for lookups that must not hold up the command making them.
     pub fn with_timeout(
         repo: impl Into<String>,
         user_agent: &'static str,
@@ -115,6 +117,7 @@ impl GithubReleaseAdapter {
             agent: config.into(),
             repo: repo.into(),
             user_agent,
+            attempts: 1,
         }
     }
 
@@ -126,48 +129,54 @@ impl GithubReleaseAdapter {
             tag_name: String,
         }
 
-        let response = self
-            .agent
-            .get(format!(
-                "https://api.github.com/repos/{}/releases/latest",
-                self.repo
-            ))
-            .header("User-Agent", self.user_agent)
-            .header("Accept", "application/vnd.github+json")
-            .call()?
-            .body_mut()
-            .read_to_string()?;
+        let response = with_retries(self.attempts, || {
+            Ok(self
+                .agent
+                .get(format!(
+                    "https://api.github.com/repos/{}/releases/latest",
+                    self.repo
+                ))
+                .header("User-Agent", self.user_agent)
+                .header("Accept", "application/vnd.github+json")
+                .call()?
+                .body_mut()
+                .read_to_string()?)
+        })?;
         let parsed: Response = serde_json::from_str(&response)?;
         Ok(parsed.tag_name)
     }
 
     /// Downloads release `tag`'s text asset `asset`.
     pub fn download_text(&self, tag: &str, asset: &str) -> Result<String, ReleaseError> {
-        Ok(self
-            .agent
-            .get(asset_url(&self.repo, tag, asset))
-            .header("User-Agent", self.user_agent)
-            .call()?
-            .body_mut()
-            .read_to_string()?)
+        with_retries(self.attempts, || {
+            Ok(self
+                .agent
+                .get(asset_url(&self.repo, tag, asset))
+                .header("User-Agent", self.user_agent)
+                .call()?
+                .body_mut()
+                .read_to_string()?)
+        })
     }
 
     /// Downloads release `tag`'s asset `asset`, refusing one past [`MAX_ARCHIVE_BYTES`].
     pub fn download_bytes(&self, tag: &str, asset: &str) -> Result<Vec<u8>, ReleaseError> {
-        let mut response = self
-            .agent
-            .get(asset_url(&self.repo, tag, asset))
-            .header("User-Agent", self.user_agent)
-            .call()?;
-        // ureq limits encoded bytes before decompressing. Allow a size probe on the wire,
-        // and independently bound the decoded stream that is buffered for verification.
-        read_archive(
-            response
-                .body_mut()
-                .with_config()
-                .limit(MAX_ARCHIVE_BYTES + 1)
-                .reader(),
-        )
+        with_retries(self.attempts, || {
+            let mut response = self
+                .agent
+                .get(asset_url(&self.repo, tag, asset))
+                .header("User-Agent", self.user_agent)
+                .call()?;
+            // ureq limits encoded bytes before decompressing. Allow a size probe on the wire,
+            // and independently bound the decoded stream that is buffered for verification.
+            read_archive(
+                response
+                    .body_mut()
+                    .with_config()
+                    .limit(MAX_ARCHIVE_BYTES + 1)
+                    .reader(),
+            )
+        })
     }
 }
 
@@ -184,6 +193,36 @@ impl ReleasePort for GithubReleaseAdapter {
 
     fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
         self.download_bytes(tag, &archive_name(platform))
+    }
+}
+
+/// Attempts per request, for callers that opt in, before a transient GitHub failure is reported.
+const MAX_ATTEMPTS: u32 = 4;
+
+/// Whether `error` is worth retrying: GitHub 5xx/429 responses and network-level failures.
+fn is_transient(error: &ReleaseError) -> bool {
+    match error {
+        ReleaseError::Http(ureq::Error::StatusCode(code)) => *code == 429 || *code >= 500,
+        ReleaseError::Http(ureq::Error::BodyExceedsLimit(_)) => false,
+        ReleaseError::Http(_) => true,
+        _ => false,
+    }
+}
+
+/// Runs `request`, retrying transient failures (e.g. a 504 from GitHub's CDN) with backoff.
+fn with_retries<T>(
+    attempts: u32,
+    mut request: impl FnMut() -> Result<T, ReleaseError>,
+) -> Result<T, ReleaseError> {
+    let mut attempt = 1;
+    loop {
+        match request() {
+            Err(error) if attempt < attempts && is_transient(&error) => {
+                std::thread::sleep(std::time::Duration::from_secs(1 << (attempt - 1)));
+                attempt += 1;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -357,9 +396,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CHECKSUMS_FILE, GithubReleaseAdapter, MAX_ARCHIVE_BYTES, ReleaseError, ReleasePort,
-        archive_name, asset_url, expected_checksum, is_up_to_date, map_archive_error, read_archive,
-        target_platform, verify_checksum,
+        CHECKSUMS_FILE, GithubReleaseAdapter, MAX_ARCHIVE_BYTES, MAX_ATTEMPTS, ReleaseError,
+        ReleasePort, archive_name, asset_url, expected_checksum, is_up_to_date, map_archive_error,
+        read_archive, target_platform, verify_checksum, with_retries,
     };
 
     // Both line formats `sha256sum` writes (text mode `  `, binary mode ` *`); the digests are
@@ -510,10 +549,33 @@ mod tests {
             agent: config.into(),
             repo: "test/aldis".to_owned(),
             user_agent: "aldis-self-update",
+            attempts: 1,
         };
         let result = adapter.download_archive("v0.4.1", "aarch64-linux");
         server.join().expect("download server");
         result
+    }
+
+    #[test]
+    fn retries_transient_gateway_errors_but_not_client_errors() {
+        let mut calls = 0;
+        let result = with_retries(MAX_ATTEMPTS, || {
+            calls += 1;
+            if calls < 3 {
+                Err(ReleaseError::Http(ureq::Error::StatusCode(504)))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 3);
+
+        let mut calls = 0;
+        let result: Result<(), _> = with_retries(MAX_ATTEMPTS, || {
+            calls += 1;
+            Err(ReleaseError::Http(ureq::Error::StatusCode(404)))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
     }
 
     #[test]
