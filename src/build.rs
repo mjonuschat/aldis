@@ -223,6 +223,21 @@ where
         }
     }
 
+    /// A builder for the same commands in another copy of the Klipper tree.
+    pub fn in_tree(&self, source_dir: impl Into<PathBuf>) -> KlipperBuilder<&R> {
+        KlipperBuilder::new(source_dir, &self.runner)
+    }
+
+    /// The Klipper source tree this builder works in.
+    pub fn source_dir(&self) -> &std::path::Path {
+        &self.source_dir
+    }
+
+    /// Runs one command, such as preparing a copy of the tree, as a build step.
+    pub fn run_step(&self, command: BuildCommand) -> Result<(), BuildError> {
+        self.run(command)
+    }
+
     /// Builds firmware from `request.kconfig` and copies the generated artifact.
     pub fn build(&self, request: &BuildRequest) -> Result<BuildArtifact, BuildError> {
         self.build_with_progress(request, |_| {})
@@ -336,12 +351,15 @@ where
     }
 
     fn run_make(&self, arguments: Vec<String>) -> Result<(), BuildError> {
-        let command = BuildCommand {
+        self.run(BuildCommand {
             program: "make".to_owned(),
             arguments,
             current_dir: Some(self.source_dir.clone()),
             stdin: None,
-        };
+        })
+    }
+
+    fn run(&self, command: BuildCommand) -> Result<(), BuildError> {
         let output = self
             .runner
             .run(&command)

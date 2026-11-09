@@ -17,6 +17,7 @@ pub mod fleet;
 pub mod foci;
 pub mod host;
 pub mod identify;
+pub mod indx_klipper;
 pub mod kconfig;
 pub mod lock;
 pub mod logging;

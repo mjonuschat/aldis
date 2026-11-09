@@ -115,6 +115,7 @@ These bootloaders are entered and flashed unattended, directly from the running 
 - **STM32 ROM DFU** (`0483:df11`)
 - **PicoBoot** (RP2040/RP2350, `2e8a:0003`/`2e8a:000f`)
 - **SAM-BA** on SAMD21 (the Seeed XIAO SAMD21's UF2 bootloader, `2886:002f`)
+- **Bondtech INDX** toolboard (`04d8:e483`)
 
 Every other bootloader identity is reported as unsupported rather than guessed at. MCUs whose
 firmware configuration names a family none of these bootloaders run on (Katapult builds only for

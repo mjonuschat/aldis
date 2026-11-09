@@ -2,7 +2,10 @@ use std::cell::Cell;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::build::{BuildArtifact, BuildError, BuildProgress, CommandPort, KlipperBuilder};
+use crate::build::{
+    BuildArtifact, BuildError, BuildProgress, BuildRequest, CommandPort, KlipperBuilder,
+};
+use crate::eligibility::CheckoutRevision;
 use crate::flash::FlashResult;
 use crate::flash::request::{FlashRequest, Protocol};
 use crate::flash::system::{
@@ -67,6 +70,23 @@ pub enum CoordinatorError {
     /// Klipper's build pipeline failed.
     #[error("Klipper build failed")]
     Build(#[source] BuildError),
+    /// The firmware is for the Bondtech INDX, and this Klipper has no INDX driver, nor is there an
+    /// `indx_klipper` checkout to supply it.
+    #[error(
+        "Klipper has no INDX driver. Clone https://github.com/BondtechAB/indx_klipper and run its \
+         install.sh, or set {} to its location. Kalico needs neither.",
+        crate::indx_klipper::SOURCE_ENV
+    )]
+    IndxSourceMissing,
+    /// `indx_klipper` could not make the patched copy of Klipper that INDX firmware is built in.
+    #[error(
+        "indx_klipper could not prepare this Klipper for INDX firmware. Its patch probably does \
+         not apply to this revision:\n{output}"
+    )]
+    IndxPrepare {
+        /// What the script and the patch tool printed.
+        output: String,
+    },
     /// A request to flash prebuilt firmware was prepared for another MCU than the approved one.
     #[error("the firmware was prepared for {requested}, but {approved} was approved")]
     RequestForAnotherMcu {
@@ -174,6 +194,7 @@ pub struct BuildCoordinator<B, S> {
     builder: KlipperBuilder<B>,
     service: KlipperService<S>,
     first_observed_active: Cell<Option<bool>>,
+    indx_klipper: Option<PathBuf>,
 }
 
 impl<B, S> BuildCoordinator<B, S>
@@ -202,7 +223,28 @@ where
             builder: KlipperBuilder::new(klipper_source_dir, build_runner),
             service: KlipperService::with_unit(service_runner, unit),
             first_observed_active: Cell::new(None),
+            indx_klipper: None,
         }
+    }
+
+    /// Builds INDX firmware with the `indx_klipper` checkout at `path`, instead of looking for one.
+    pub fn with_indx_klipper(mut self, path: impl Into<PathBuf>) -> Self {
+        self.indx_klipper = Some(path.into());
+        self
+    }
+
+    /// The `indx_klipper` checkout `request` is built with, when its firmware is for the INDX and
+    /// this Klipper has no INDX driver of its own.
+    fn indx_overlay(&self, request: &BuildRequest) -> Result<Option<PathBuf>, CoordinatorError> {
+        let source = self.builder.source_dir();
+        if !crate::indx_klipper::needs_overlay(&request.kconfig, source) {
+            return Ok(None);
+        }
+        self.indx_klipper
+            .clone()
+            .or_else(|| crate::indx_klipper::find_checkout(source))
+            .map(Some)
+            .ok_or(CoordinatorError::IndxSourceMissing)
     }
 
     /// Reserves workspace paths and derives a build request without service or Make calls.
@@ -241,14 +283,53 @@ where
         approved: ApprovedBuild,
         mut progress: impl FnMut(UpdateProgress),
     ) -> Result<BuildArtifact, CoordinatorError> {
+        let request = &approved.pending.prepared.request;
+        let indx_tree = self
+            .indx_overlay(request)?
+            .map(|checkout| self.prepare_indx_tree(&checkout))
+            .transpose()?;
         self.ensure_klipper_stopped(&mut progress)?;
 
+        let on_stage = |stage| match stage {
+            BuildProgress::Configuring => progress(UpdateProgress::ConfiguringFirmware),
+            BuildProgress::Compiling => progress(UpdateProgress::CompilingFirmware),
+        };
+        match indx_tree {
+            Some(tree) => self
+                .builder
+                .in_tree(tree)
+                .build_with_progress(request, on_stage),
+            None => self.builder.build_with_progress(request, on_stage),
+        }
+        .map_err(CoordinatorError::Build)
+    }
+
+    /// Makes the patched copy of Klipper that INDX firmware is built in, and gives it Klipper's
+    /// version. Klipper keeps running meanwhile, so a patch that does not apply leaves it alone.
+    fn prepare_indx_tree(&self, checkout: &std::path::Path) -> Result<PathBuf, CoordinatorError> {
         self.builder
-            .build_with_progress(&approved.pending.prepared.request, |stage| match stage {
-                BuildProgress::Configuring => progress(UpdateProgress::ConfiguringFirmware),
-                BuildProgress::Compiling => progress(UpdateProgress::CompilingFirmware),
-            })
-            .map_err(CoordinatorError::Build)
+            .run_step(crate::indx_klipper::prepare_command(
+                checkout,
+                self.builder.source_dir(),
+            ))
+            .map_err(|error| match error {
+                BuildError::CommandFailed { output, .. } => CoordinatorError::IndxPrepare {
+                    output: crate::indx_klipper::report(&output.stdout, &output.stderr),
+                },
+                error => CoordinatorError::Build(error),
+            })?;
+        let tree = crate::indx_klipper::build_dir(checkout);
+        if let Ok(CheckoutRevision::Known(revision)) =
+            crate::checkout::revision(self.builder.source_dir())
+        {
+            crate::indx_klipper::write_version(&tree, &revision).map_err(|source| {
+                CoordinatorError::Build(BuildError::Io {
+                    action: "give the INDX build Klipper's version",
+                    source,
+                })
+            })?;
+        }
+        Ok(tree)
     }
 
     fn ensure_klipper_stopped(
@@ -446,6 +527,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{BuildCoordinator, FlashCoordinatorError, PendingBuild, UpdateProgress};
+
+    const INDX_KCONFIG: &str = "CONFIG_MACH_SAME51J19=y\nCONFIG_WANT_INDX_HEATER=y\n";
     use crate::build::{BuildCommand, BuildRequest, CommandError, CommandOutput, CommandPort};
     use crate::flash::system::SystemKatapultOptions;
     use crate::flash::system::{SystemFlashError, SystemFlashOptions};
@@ -622,6 +705,112 @@ mod tests {
             commands
                 .iter()
                 .all(|command| command.arguments.last().map(String::as_str) == Some("klipper-2"))
+        );
+    }
+
+    #[test]
+    fn builds_indx_firmware_in_a_patched_copy_of_klipper() {
+        let dir = tempfile::tempdir().unwrap();
+        let klipper = dir.path().join("klipper");
+        let checkout = dir.path().join("indx_klipper");
+        let tree = checkout.join("out/klipper-indx");
+        std::fs::create_dir_all(&klipper).unwrap();
+        std::fs::create_dir_all(tree.join("out")).unwrap();
+        std::fs::write(tree.join("out/klipper.bin"), b"firmware").unwrap();
+        let build_runner = FakeRunner::new([success_output(), success_output(), success_output()]);
+        let service_runner = FakeRunner::new([state_output(false, b"inactive\n")]);
+        let coordinator = BuildCoordinator::new(&klipper, build_runner.clone(), service_runner)
+            .with_indx_klipper(&checkout);
+        let mut pending = pending_without_transport();
+        pending.prepared.request = BuildRequest {
+            kconfig: INDX_KCONFIG.to_owned(),
+            config_path: dir.path().join("run/.config"),
+            artifact_path: dir.path().join("run/klipper"),
+            clean: false,
+        };
+        std::fs::create_dir_all(dir.path().join("run")).unwrap();
+
+        let artifact = coordinator.execute(pending.approve()).unwrap();
+
+        assert_eq!(artifact.path, dir.path().join("run/klipper.bin"));
+        let commands = build_runner.commands.lock().expect("runner lock");
+        assert_eq!(commands[0].program, "python3");
+        assert_eq!(
+            commands[0].arguments[1..3],
+            [klipper.display().to_string(), tree.display().to_string()]
+        );
+        assert!(
+            commands[1..].iter().all(|command| command.program == "make"
+                && command.current_dir.as_deref() == Some(tree.as_path())),
+            "make runs in the patched copy, not in the Klipper checkout: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn reports_a_patch_that_does_not_apply_with_what_the_patch_tool_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("indx_klipper");
+        let failed = CommandOutput {
+            success: false,
+            stdout: b"1 out of 3 hunks FAILED\n".to_vec(),
+            stderr: b"Traceback (most recent call last):\nsubprocess.CalledProcessError: exit 1\n"
+                .to_vec(),
+        };
+        let service_runner = FakeRunner::new([]);
+        let coordinator = BuildCoordinator::new(
+            dir.path().join("klipper"),
+            FakeRunner::new([failed]),
+            service_runner.clone(),
+        )
+        .with_indx_klipper(checkout);
+        let mut pending = pending_without_transport();
+        pending.prepared.request.kconfig = INDX_KCONFIG.to_owned();
+
+        let error = coordinator.execute(pending.approve()).unwrap_err();
+
+        let super::CoordinatorError::IndxPrepare { output } = &error else {
+            panic!("expected the patch failure to be reported as such: {error:?}");
+        };
+        assert!(output.contains("1 out of 3 hunks FAILED"), "{output}");
+        assert!(output.contains("CalledProcessError"), "{output}");
+        assert!(
+            service_runner
+                .commands
+                .lock()
+                .expect("runner lock")
+                .is_empty(),
+            "Klipper is not stopped for a build that cannot start"
+        );
+    }
+
+    #[test]
+    fn flashes_a_file_to_an_indx_without_any_indx_klipper_checkout() {
+        let service_runner = FakeRunner::new([
+            state_output(true, b"active\n"),
+            success_output(),
+            state_output(false, b"inactive\n"),
+        ]);
+        let coordinator =
+            BuildCoordinator::new("/nonexistent", FakeRunner::new([]), service_runner);
+        let mut pending = pending_without_transport();
+        pending.prepared.request.kconfig = INDX_KCONFIG.to_owned();
+
+        let result = coordinator.flash_firmware_system_with_progress(
+            pending.approve(),
+            b"firmware",
+            flash_options(),
+            false,
+            |_| {},
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(FlashCoordinatorError::Flash(
+                    SystemFlashError::MissingTransport
+                ))
+            ),
+            "no build runs, so no build source is needed: {result:?}"
         );
     }
 }
