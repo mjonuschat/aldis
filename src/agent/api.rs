@@ -358,6 +358,12 @@ fn assess_prebuilt(
 
 /// Derives the `status` body; `run` is filled in by the service.
 pub fn assess(snapshot: &Snapshot) -> StatusBody {
+    assess_with(snapshot, false)
+}
+
+/// Like [`assess`], but with `allow_downgrade` an MCU running firmware newer than its target is
+/// reported as `update_available`, so an update request may name it. `status` never does.
+pub fn assess_with(snapshot: &Snapshot, allow_downgrade: bool) -> StatusBody {
     let host = &snapshot.host;
     let blocker = blocker(host);
     let software = host.info.software_version.clone();
@@ -374,14 +380,20 @@ pub fn assess(snapshot: &Snapshot) -> StatusBody {
             let running = mcu.version.as_deref().unwrap_or("unknown");
             let status = assess_mcu(mcu, &target);
             let (state, message) = match (&status.eligibility, status.revision) {
-                // Newer than its target: nothing to update.
-                (_, Some(RevisionStatus::Newer)) => (
-                    McuState::Current,
+                // An MCU newer than its target needs no update. A requested downgrade is the exception.
+                (_, Some(RevisionStatus::Newer)) => {
                     match crate::eligibility::newer_than(mcu, &target) {
-                        Some(description) => format!("running {running}, newer than {description}"),
-                        None => format!("running {running}"),
-                    },
-                ),
+                        Some(description) if allow_downgrade => (
+                            McuState::UpdateAvailable,
+                            format!("running {running}, newer than {description}"),
+                        ),
+                        Some(description) => (
+                            McuState::Current,
+                            format!("running {running}, newer than {description}"),
+                        ),
+                        None => (McuState::Current, format!("running {running}")),
+                    }
+                }
                 (Eligibility::Eligible, Some(RevisionStatus::Current)) => {
                     (McuState::Current, format!("running {running}"))
                 }
@@ -525,6 +537,25 @@ mod tests {
             peers: Vec::new(),
             prebuilt: crate::prebuilt::Targets::default(),
         }
+    }
+
+    #[test]
+    fn status_offers_a_downgrade_only_when_asked() {
+        let mut snapshot = ready_snapshot();
+        snapshot.inventory.as_mut().unwrap().mcus.push(mcu(
+            "mcu ahead",
+            "v0.13.0-900-g1111111",
+            "CONFIG_MACH_STM32=y\n",
+        ));
+
+        let plain = assess(&snapshot);
+        let asked = assess_with(&snapshot, true);
+
+        assert_eq!(entry(&plain, "ahead").state, McuState::Current);
+        assert!(entry(&plain, "ahead").actions.is_empty());
+        assert_eq!(entry(&asked, "ahead").state, McuState::UpdateAvailable);
+        assert_eq!(entry(&asked, "ahead").actions, vec![Action::Update]);
+        assert_eq!(entry(&asked, "mcu").state, McuState::Current);
     }
 
     #[test]

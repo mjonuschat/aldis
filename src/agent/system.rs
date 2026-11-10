@@ -207,13 +207,14 @@ impl AgentBackend for SystemBackend {
         lock: UpdateLock,
         snapshot: &Snapshot,
         targets: &[String],
+        allow_downgrade: bool,
         hooks: &mut dyn RunHooks,
     ) -> Result<RunOutcome, RunFailure> {
         let _lock = lock;
         if let Err(error) = self.log_sink.start(log) {
             tracing::warn!(?error, path = %log.display(), "could not open the run log");
         }
-        let result = self.run_logged(snapshot, targets, hooks);
+        let result = self.run_logged(snapshot, targets, allow_downgrade, hooks);
         self.log_sink.stop();
         result
     }
@@ -247,6 +248,7 @@ impl SystemBackend {
         &self,
         snapshot: &Snapshot,
         targets: &[String],
+        allow_downgrade: bool,
         hooks: &mut dyn RunHooks,
     ) -> Result<RunOutcome, RunFailure> {
         let setup_failure = |message: String| RunFailure {
@@ -297,6 +299,7 @@ impl SystemBackend {
                     .with_prebuilt(snapshot.prebuilt.clone()),
                 foci_releases: &GithubReleases::new(),
                 clean: false,
+                allow_downgrade,
             },
             hooks,
         );

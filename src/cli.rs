@@ -118,6 +118,10 @@ pub(crate) struct UpdateArgs {
     /// Update even when the MCU already reports the checkout revision.
     #[arg(long)]
     pub(crate) force: bool,
+    /// Flash a target older than the firmware an MCU runs, which an update otherwise refuses.
+    /// Needs MCU names or `--all`.
+    #[arg(long, requires = "selection", conflicts_with = "auto")]
+    pub(crate) allow_downgrade: bool,
     /// Fast-forward the configured Klipper checkout before assessing MCUs.
     #[arg(long)]
     pub(crate) pull: bool,
@@ -404,6 +408,24 @@ mod tests {
         assert_eq!(arguments.target, "mcu");
         assert_eq!(arguments.firmware, std::path::PathBuf::from("firmware.bin"));
         assert!(!arguments.force);
+    }
+
+    #[test]
+    fn allow_downgrade_needs_mcu_names_or_all_and_never_combines_with_auto() {
+        assert!(Cli::try_parse_from(["aldis", "update", "--allow-downgrade"]).is_err());
+        assert!(Cli::try_parse_from(["aldis", "update", "--auto", "--allow-downgrade"]).is_err());
+        for arguments in [
+            ["aldis", "update", "--all", "--allow-downgrade"].as_slice(),
+            ["aldis", "update", "mcu", "--allow-downgrade"].as_slice(),
+        ] {
+            let CliCommand::Update(parsed) = Cli::try_parse_from(arguments)
+                .expect("parse update --allow-downgrade")
+                .command
+            else {
+                panic!("expected update command");
+            };
+            assert!(parsed.allow_downgrade);
+        }
     }
 
     #[test]

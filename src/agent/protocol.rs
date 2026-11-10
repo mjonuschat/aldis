@@ -182,6 +182,39 @@ mod tests {
     }
 
     #[test]
+    fn allow_downgrade_defaults_to_false_and_is_read_when_given() {
+        let all = |request| {
+            matches!(
+                request,
+                UpdateRequest::All {
+                    allow_downgrade: true,
+                    ..
+                }
+            )
+        };
+        assert!(!all(parse_update(json!({"all": true})).unwrap()));
+        assert!(all(parse_update(
+            json!({"all": true, "allow_downgrade": true})
+        )
+        .unwrap()));
+        assert_eq!(
+            parse_update(json!({"mcus": ["mcu"]})).unwrap(),
+            UpdateRequest::Mcus {
+                mcus: vec!["mcu".to_owned()],
+                allow_downgrade: false
+            }
+        );
+        assert_eq!(
+            parse_update(json!({"mcus": ["mcu"], "allow_downgrade": true})).unwrap(),
+            UpdateRequest::Mcus {
+                mcus: vec!["mcu".to_owned()],
+                allow_downgrade: true
+            }
+        );
+        assert!(parse_update(json!({"all": true, "other": 1})).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_methods_and_malformed_update_arguments() {
         assert_eq!(
             parse_update(json!({"mcus": "mcu"})).unwrap_err().data["reason"],

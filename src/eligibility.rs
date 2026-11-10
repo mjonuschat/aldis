@@ -256,8 +256,20 @@ pub fn downgrade_refusal(mcu: &Mcu, versions: &TargetVersions) -> Option<String>
     ))
 }
 
-/// Returns whether one MCU is eligible for the requested update selection.
+/// Returns whether one MCU is eligible for the requested update selection. No selection
+/// downgrades firmware. See [`is_selected_allowing_downgrade`] for that.
 pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelection) -> bool {
+    is_selected_allowing_downgrade(mcu, versions, selection, false)
+}
+
+/// Like [`is_selected`], but with `allow_downgrade` an MCU running firmware newer than its target
+/// is selected too, under either selection, because replacing it is what was asked for.
+pub fn is_selected_allowing_downgrade(
+    mcu: &Mcu,
+    versions: &TargetVersions,
+    selection: &UpdateSelection,
+    allow_downgrade: bool,
+) -> bool {
     let status = assess_mcu(mcu, versions);
     let updatable = match status.eligibility {
         Eligibility::Eligible => true,
@@ -268,9 +280,11 @@ pub fn is_selected(mcu: &Mcu, versions: &TargetVersions, selection: &UpdateSelec
         }
         _ => false,
     };
-    // No selection downgrades firmware.
-    if !updatable || downgrade_of(mcu, versions).is_some() {
+    if !updatable {
         return false;
+    }
+    if downgrade_of(mcu, versions).is_some() {
+        return allow_downgrade;
     }
     match selection {
         UpdateSelection::Required => status.revision == Some(RevisionStatus::UpdateRequired),

@@ -51,6 +51,7 @@ impl AgentBackend for Idle {
         _: UpdateLock,
         _: &Snapshot,
         _: &[String],
+        _: bool,
         _: &mut dyn RunHooks,
     ) -> Result<RunOutcome, RunFailure> {
         unreachable!("no update is accepted in this test")

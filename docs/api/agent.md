@@ -126,7 +126,7 @@ once an hour and only while a FOCI MCU is configured. A FOCI update downloads th
 instead of building, so its run reports `downloading firmware` and `downloaded firmware`.
 
 Beacons are compared with the image for their revision in the `beacon_klipper` checkout. A Beacon
-newer than that image is `indeterminate` with no action, because the agent only upgrades a Beacon. A Beacon
+newer than that image is `current` with no action, unless the `update` request sets `allow_downgrade`. A Beacon
 update reads the image instead of building, so its run reports `reading firmware image` and
 `read firmware image`.
 
@@ -159,6 +159,12 @@ Arguments: `{"mcus": ["mcu", "can"]}` or `{"all": true}`. The agent validates th
 then the call returns `{"run_id": "…"}` and the run continues in the background. Progress and
 completion are reported through `update_response` events (see below) and through `status.run`.
 
+Either form accepts an optional `"allow_downgrade": true`; it defaults to `false`. By default an MCU
+that runs firmware newer than its target is `current` and has no `update` action, so naming it is
+rejected with `not_updatable`, and `all` skips it. With `allow_downgrade` the agent treats such an MCU
+as updatable for that request: `all` includes it, a named request is accepted, and the run flashes the
+older target. `status` does not report this and is unchanged.
+
 The agent accepts or rejects a request as a whole.
 
 ### Errors
@@ -189,7 +195,7 @@ receives `code` 424, `message` "Agent aldis RPC error", and the agent's whole er
 | `not_updatable` | -32000 | A named MCU lacks the `update` action, and `data.mcus` gives per-MCU reasons |
 | `nothing_to_update` | -32000 | `mcus` was empty, or `all` matched no MCU |
 | `unavailable` | -32000 | Moonraker discovery failed |
-| `invalid_request` | -32602 | `arguments` deserializes to neither `{"mcus": [...]}` nor `{"all": ...}`, or is `{"all": false}` |
+| `invalid_request` | -32602 | `arguments` deserializes to neither `{"mcus": [...]}` nor `{"all": ...}` (each with an optional `allow_downgrade`), or is `{"all": false}` |
 | `unknown_method` | -32601 | `method` is neither `status` nor `update` |
 
 ```jsonc

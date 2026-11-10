@@ -270,6 +270,7 @@ pub struct RunRequest<'a> {
     /// Where FOCI MCUs' firmware is downloaded from.
     pub foci_releases: &'a dyn ReleasePort,
     pub clean: bool,
+    pub allow_downgrade: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -368,7 +369,10 @@ pub fn run_updates<B: CommandPort, S: CommandPort>(
                 &updated,
             ));
         };
-        if let Some(refusal) = crate::eligibility::downgrade_refusal(mcu, request.target_versions) {
+        if !request.allow_downgrade
+            && let Some(refusal) =
+                crate::eligibility::downgrade_refusal(mcu, request.target_versions)
+        {
             return Err(fail(hooks, refusal, Some(name), &updated));
         }
         let current = mcu.version.as_deref().unwrap_or("unknown");
@@ -1107,6 +1111,7 @@ mod tests {
                 target_versions: &foci_target(),
                 foci_releases: &releases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut hooks,
         )
@@ -1184,6 +1189,7 @@ mod tests {
                 target_versions: &foci_target(),
                 foci_releases: &releases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut hooks,
         )
@@ -1225,6 +1231,7 @@ mod tests {
                 target_versions: &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
                 foci_releases: &NoReleases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut hooks,
         )
@@ -1314,6 +1321,7 @@ mod tests {
                 target_versions: versions,
                 foci_releases: &NoReleases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut approving(),
         )
@@ -1521,6 +1529,7 @@ mod tests {
                 target_versions: versions,
                 foci_releases: &NoReleases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut approving(),
         )
@@ -1673,6 +1682,7 @@ mod tests {
                 target_versions: &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
                 foci_releases: &NoReleases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut hooks,
         );
@@ -1700,6 +1710,7 @@ mod tests {
                 target_versions: &TargetVersions::klipper(CheckoutRevision::Known("v2".to_owned())),
                 foci_releases: &NoReleases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut hooks,
         )
@@ -1867,6 +1878,7 @@ mod tests {
                 target_versions: &scenario.versions,
                 foci_releases: &releases,
                 clean: false,
+                allow_downgrade: false,
             },
             &mut hooks,
         );

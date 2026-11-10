@@ -992,6 +992,20 @@ fn never_selects_a_klipper_mcu_for_an_older_build_than_it_runs() {
     }
     assert!(is_selected(&older, &versions, &UpdateSelection::Required));
     assert!(is_selected(&older, &versions, &UpdateSelection::All));
+    for selection in [UpdateSelection::Required, UpdateSelection::All] {
+        assert!(aldis::eligibility::is_selected_allowing_downgrade(
+            &newer, &versions, &selection, true
+        ));
+        assert!(!aldis::eligibility::is_selected_allowing_downgrade(
+            &newer, &versions, &selection, false
+        ));
+    }
+    assert!(aldis::eligibility::is_selected_allowing_downgrade(
+        &older,
+        &versions,
+        &UpdateSelection::Required,
+        true
+    ));
     assert_eq!(
         downgrade_refusal(&newer, &versions),
         Some(

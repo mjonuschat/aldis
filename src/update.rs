@@ -10,7 +10,9 @@ use aldis::build::SystemCommandAdapter;
 use aldis::checkout::{refresh as refresh_checkout, revision as checkout_revision};
 use aldis::config::{FleetConfig, instance_urls};
 use aldis::coordinator::{BuildCoordinator, UpdateProgress};
-use aldis::eligibility::{CheckoutRevision, TargetVersions, UpdateSelection, is_selected};
+use aldis::eligibility::{
+    CheckoutRevision, TargetVersions, UpdateSelection, is_selected_allowing_downgrade, newer_than,
+};
 use aldis::fleet::peer::{check_bridge, peers_excluding};
 use aldis::fleet::system::{other_urls, probe_peer};
 use aldis::logging::{self, LoggingCommandAdapter};
@@ -160,17 +162,34 @@ fn run_update(
         .iter()
         .filter(|mcu| arguments.targets.contains(&mcu.name))
     {
+        if arguments.allow_downgrade {
+            continue;
+        }
         if let Some(refusal) = aldis::eligibility::downgrade_refusal(mcu, &versions) {
-            ui.block(&format!("\n{refusal}\n"));
+            ui.block(&format!(
+                "\n{refusal}\nTo install it anyway, run again with --allow-downgrade.\n"
+            ));
         }
     }
     let offered = inventory
         .mcus
         .iter()
         .filter(|mcu| arguments.targets.is_empty() || arguments.targets.contains(&mcu.name))
-        .filter(|mcu| is_selected(mcu, &versions, &selection))
+        .filter(|mcu| {
+            is_selected_allowing_downgrade(mcu, &versions, &selection, arguments.allow_downgrade)
+        })
         .map(|mcu| mcu.name.clone())
         .collect::<Vec<_>>();
+    let downgrades = if arguments.allow_downgrade {
+        inventory
+            .mcus
+            .iter()
+            .filter(|mcu| offered.contains(&mcu.name) && newer_than(mcu, &versions).is_some())
+            .map(|mcu| mcu.name.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let offered = aldis::flash_order::flash_order(&inventory, &offered);
     if offered.is_empty() {
         ui.block("\nno eligible MCUs require an update\n");
@@ -193,6 +212,7 @@ fn run_update(
     let mut hooks = CliHooks {
         ui,
         auto: arguments.auto,
+        downgrades,
     };
     let outcome = aldis::update_run::run_updates(
         &coordinator,
@@ -204,6 +224,7 @@ fn run_update(
             target_versions: &versions,
             foci_releases: &releases,
             clean: arguments.clean,
+            allow_downgrade: arguments.allow_downgrade,
         },
         &mut hooks,
     )
@@ -227,17 +248,23 @@ fn run_update(
 struct CliHooks<'a> {
     ui: &'a mut UpdateUi,
     auto: bool,
+    downgrades: Vec<String>,
 }
 
 impl RunHooks for CliHooks<'_> {
     fn approve(&mut self, name: &str, current: &str, next: &str) -> bool {
+        let verb = if self.downgrades.iter().any(|downgraded| downgraded == name) {
+            "Downgrade"
+        } else {
+            "Update"
+        };
         if self.auto {
             self.ui
-                .heading(&format!("Update {name} from {current} to {next}"));
+                .heading(&format!("{verb} {name} from {current} to {next}"));
             true
         } else {
             self.ui
-                .confirm(&format!("Update {name} from {current} to {next}?"))
+                .confirm(&format!("{verb} {name} from {current} to {next}?"))
         }
     }
 

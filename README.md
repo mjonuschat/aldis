@@ -108,7 +108,8 @@ Set one or the other, not both. With `insecure_skip_verify` the connection is en
 
 `update` requires the host permissions installed by `~/aldis/aldis setup` (see above). A few flags interact:
 
-- `--force` alone updates every eligible MCU, like `--all`. With specific `<mcu>` names, it force-updates only those, even when they are already current. `update` never replaces firmware with an older build or image, even with `--force`.
+- `--force` alone updates every eligible MCU, like `--all`. With specific `<mcu>` names, it force-updates only those, even when they are already current. `update` never replaces firmware with an older build or image, even with `--force`; `--allow-downgrade` is the only way, and it asks for confirmation before each one.
+- `--allow-downgrade` also flashes MCUs that run firmware newer than the checkout, the FOCI release or the Beacon or Cartographer image. It needs `<mcu>` names or `--all` and cannot be combined with `--auto`.
 - `--pull` also combines with specific `<mcu>` names.
 - `--auto` implies `--pull` and cannot be combined with `--pull`, `--force`, `--all`, or explicit MCU names.
 

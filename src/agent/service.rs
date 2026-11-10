@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::agent::api::{
     Action, McuOutcome, McuOutcomeBody, Outcome, Phase, RunBody, RunResultBody, RunState, Snapshot,
-    StatusBody, UpdateResponse, assess, display_name, klippy_state_label,
+    StatusBody, UpdateResponse, assess, assess_with, display_name, klippy_state_label,
 };
 use crate::coordinator::UpdateProgress;
 use crate::flash_order::flash_order;
@@ -32,6 +32,7 @@ pub trait AgentBackend: Send + Sync + 'static {
         lock: UpdateLock,
         snapshot: &Snapshot,
         targets: &[String],
+        allow_downgrade: bool,
         hooks: &mut dyn RunHooks,
     ) -> Result<RunOutcome, RunFailure>;
     /// Whether the `klipper` unit is active; `None` when it cannot be queried.
@@ -74,8 +75,30 @@ impl ApiError {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum UpdateRequest {
-    Mcus { mcus: Vec<String> },
-    All { all: bool },
+    Mcus {
+        mcus: Vec<String>,
+        /// Also flash a target older than what an MCU runs. Off unless the request says so.
+        #[serde(default)]
+        allow_downgrade: bool,
+    },
+    All {
+        all: bool,
+        #[serde(default)]
+        allow_downgrade: bool,
+    },
+}
+
+impl UpdateRequest {
+    fn allow_downgrade(&self) -> bool {
+        match self {
+            Self::Mcus {
+                allow_downgrade, ..
+            }
+            | Self::All {
+                allow_downgrade, ..
+            } => *allow_downgrade,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -212,7 +235,8 @@ impl<B: AgentBackend> AgentService<B> {
             return Err(ApiError::rejected("busy", "an update is already running"));
         }
         let snapshot = self.backend.snapshot();
-        let body = assess(&snapshot);
+        let allow_downgrade = request.allow_downgrade();
+        let body = assess_with(&snapshot, allow_downgrade);
         if let Some(blocker) = &body.blocker {
             return Err(ApiError::new(
                 REJECTED,
@@ -228,12 +252,12 @@ impl<B: AgentBackend> AgentService<B> {
             ));
         };
         let entries: Vec<_> = match &request {
-            UpdateRequest::All { all: true } => body
+            UpdateRequest::All { all: true, .. } => body
                 .mcus
                 .iter()
                 .filter(|m| m.actions.contains(&Action::Update))
                 .collect(),
-            UpdateRequest::All { all: false } => {
+            UpdateRequest::All { all: false, .. } => {
                 return Err(ApiError::new(
                     INVALID_PARAMS,
                     "invalid_request",
@@ -241,7 +265,7 @@ impl<B: AgentBackend> AgentService<B> {
                     Value::Null,
                 ));
             }
-            UpdateRequest::Mcus { mcus } => {
+            UpdateRequest::Mcus { mcus, .. } => {
                 let mut entries = Vec::new();
                 for name in mcus {
                     let entry = body
@@ -314,7 +338,9 @@ impl<B: AgentBackend> AgentService<B> {
         }
         let service = self.clone();
         let id = run_id.clone();
-        std::thread::spawn(move || service.execute(&id, lock, holder, &snapshot, &targets));
+        std::thread::spawn(move || {
+            service.execute(&id, lock, holder, &snapshot, &targets, allow_downgrade)
+        });
         Ok(json!({ "run_id": run_id }))
     }
 
@@ -352,6 +378,7 @@ impl<B: AgentBackend> AgentService<B> {
         holder: HolderGuard,
         snapshot: &Snapshot,
         targets: &[String],
+        allow_downgrade: bool,
     ) {
         let names: Vec<_> = targets.iter().map(|target| display_name(target)).collect();
         self.emit(UpdateResponse {
@@ -369,7 +396,9 @@ impl<B: AgentBackend> AgentService<B> {
             mcu: None,
             phase: Phase::Discover,
         };
-        let result = self.backend.run(&log, lock, snapshot, targets, &mut hooks);
+        let result = self
+            .backend
+            .run(&log, lock, snapshot, targets, allow_downgrade, &mut hooks);
         drop(holder);
         let (outcome, updated, failed) = match &result {
             Ok(outcome) => (Outcome::Success, outcome.updated.clone(), None),
@@ -581,6 +610,7 @@ mod tests {
         result: Mutex<Option<Result<RunOutcome, RunFailure>>>,
         gate: Mutex<Option<mpsc::Receiver<()>>>,
         seen_targets: Mutex<Vec<String>>,
+        seen_allow_downgrade: Mutex<bool>,
         klipper_active: Option<bool>,
     }
 
@@ -592,6 +622,7 @@ mod tests {
                 result: Mutex::new(Some(result)),
                 gate: Mutex::new(None),
                 seen_targets: Mutex::new(Vec::new()),
+                seen_allow_downgrade: Mutex::new(false),
                 klipper_active: Some(true),
             }
         }
@@ -610,9 +641,11 @@ mod tests {
             lock: UpdateLock,
             _: &Snapshot,
             targets: &[String],
+            allow_downgrade: bool,
             hooks: &mut dyn RunHooks,
         ) -> Result<RunOutcome, RunFailure> {
             *self.seen_targets.lock().unwrap() = targets.to_vec();
+            *self.seen_allow_downgrade.lock().unwrap() = allow_downgrade;
             for target in targets {
                 hooks.approve(target, "v1", "v2");
             }
@@ -654,7 +687,10 @@ mod tests {
         let service = AgentService::new(backend, sink().0).with_identity("klipper", holders);
 
         let error = service
-            .update(UpdateRequest::All { all: true })
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
             .unwrap_err();
 
         assert_eq!(reason(&error), "busy");
@@ -668,10 +704,116 @@ mod tests {
         let service = AgentService::new(backend, sink().0);
 
         let error = service
-            .update(UpdateRequest::All { all: true })
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
             .unwrap_err();
 
         assert_eq!(error.message, "an update is already running");
+    }
+
+    fn ahead_snapshot() -> Snapshot {
+        let mut snap = snapshot(PrintState::Standby);
+        snap.host.info.software_version = Some("v0.13.0-800-g2222222".to_owned());
+        snap.host.checkout_version =
+            Some(CheckoutRevision::Known("v0.13.0-800-g2222222".to_owned()));
+        snap.inventory.as_mut().unwrap().mcus.push(mcu(
+            "mcu ahead",
+            "v0.13.0-900-g1111111",
+            "CONFIG_MACH_STM32=y\n",
+        ));
+        snap
+    }
+
+    #[test]
+    fn a_downgrade_is_rejected_unless_the_request_allows_it() {
+        let service = AgentService::new(
+            FakeBackend::new(ahead_snapshot(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+
+        let error = service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["ahead".to_owned()],
+                allow_downgrade: false,
+            })
+            .unwrap_err();
+
+        assert_eq!(error.data["reason"], "not_updatable");
+    }
+
+    #[test]
+    fn a_request_may_name_an_mcu_to_downgrade() {
+        let service = AgentService::new(
+            FakeBackend::new(ahead_snapshot(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+
+        service
+            .update(UpdateRequest::Mcus {
+                mcus: vec!["ahead".to_owned()],
+                allow_downgrade: true,
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+
+        assert_eq!(
+            *service.backend.seen_targets.lock().unwrap(),
+            vec!["mcu ahead".to_owned()]
+        );
+        assert!(*service.backend.seen_allow_downgrade.lock().unwrap());
+    }
+
+    #[test]
+    fn all_with_allow_downgrade_includes_every_mcu_ahead_of_its_target() {
+        let service = AgentService::new(
+            FakeBackend::new(ahead_snapshot(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+
+        service
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: true,
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+
+        assert!(
+            service
+                .backend
+                .seen_targets
+                .lock()
+                .unwrap()
+                .contains(&"mcu ahead".to_owned())
+        );
+    }
+
+    #[test]
+    fn all_without_allow_downgrade_leaves_an_mcu_ahead_of_its_target_alone() {
+        let service = AgentService::new(
+            FakeBackend::new(ahead_snapshot(), Ok(RunOutcome::default())),
+            sink().0,
+        );
+
+        service
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
+            .unwrap();
+        assert!(service.wait_until_idle(Duration::from_secs(5)));
+
+        assert!(
+            !service
+                .backend
+                .seen_targets
+                .lock()
+                .unwrap()
+                .contains(&"mcu ahead".to_owned())
+        );
+        assert!(!*service.backend.seen_allow_downgrade.lock().unwrap());
     }
 
     #[test]
@@ -691,6 +833,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["mcu".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         assert_eq!(holders.current().as_deref(), Some("klipper"));
@@ -721,7 +864,12 @@ mod tests {
         );
         let service = AgentService::new(backend, sink().0);
 
-        service.update(UpdateRequest::All { all: true }).unwrap();
+        service
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
+            .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
         assert_eq!(
             *service.backend.seen_targets.lock().unwrap(),
@@ -731,6 +879,7 @@ mod tests {
         let error = service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["mcu".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap_err();
         assert_eq!(reason(&error), "not_updatable");
@@ -753,7 +902,12 @@ mod tests {
         let (events, rx) = sink();
         let service = AgentService::new(backend, events);
 
-        let accepted = service.update(UpdateRequest::All { all: true }).unwrap();
+        let accepted = service
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
+            .unwrap();
         assert!(accepted["run_id"].is_string());
         assert!(service.wait_until_idle(Duration::from_secs(5)));
 
@@ -790,6 +944,7 @@ mod tests {
         let error = unknown
             .update(UpdateRequest::Mcus {
                 mcus: vec!["ouroboros".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap_err();
         assert_eq!(reason(&error), "not_updatable");
@@ -806,6 +961,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["ouroboros".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
@@ -829,6 +985,7 @@ mod tests {
         let error = unknown
             .update(UpdateRequest::Mcus {
                 mcus: vec!["beacon".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap_err();
         assert_eq!(reason(&error), "not_updatable");
@@ -852,6 +1009,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["beacon".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
@@ -876,6 +1034,7 @@ mod tests {
         let error = unknown
             .update(UpdateRequest::Mcus {
                 mcus: vec!["cartographer".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap_err();
         assert_eq!(reason(&error), "not_updatable");
@@ -900,6 +1059,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["cartographer".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
@@ -922,6 +1082,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["rp2040".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
@@ -945,6 +1106,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["rp2040".to_owned(), "RP2040".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
@@ -963,18 +1125,23 @@ mod tests {
         let error = service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["rp2040".to_owned(), "nope".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap_err();
         assert_eq!(reason(&error), "unknown_mcu");
         let error = service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["rp2040".to_owned(), "current".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap_err();
         assert_eq!(reason(&error), "not_updatable");
         assert_eq!(error.data["mcus"][0]["name"], "current");
         let error = service
-            .update(UpdateRequest::All { all: false })
+            .update(UpdateRequest::All {
+                all: false,
+                allow_downgrade: false,
+            })
             .unwrap_err();
         assert_eq!(reason(&error), "invalid_request");
         assert!(service.backend.seen_targets.lock().unwrap().is_empty());
@@ -985,7 +1152,10 @@ mod tests {
         let backend = FakeBackend::new(snapshot(PrintState::Printing), Ok(RunOutcome::default()));
         let service = AgentService::new(backend, sink().0);
         let error = service
-            .update(UpdateRequest::All { all: true })
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
             .unwrap_err();
         assert_eq!(reason(&error), "blocked");
         assert_eq!(error.data["blocker"]["reason"], "printing");
@@ -996,7 +1166,10 @@ mod tests {
         assert_eq!(
             reason(
                 &service
-                    .update(UpdateRequest::All { all: true })
+                    .update(UpdateRequest::All {
+                        all: true,
+                        allow_downgrade: false
+                    })
                     .unwrap_err()
             ),
             "busy"
@@ -1017,7 +1190,12 @@ mod tests {
         backend.klipper_active = Some(false);
         let service = AgentService::new(backend, sink().0);
 
-        service.update(UpdateRequest::All { all: true }).unwrap();
+        service
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
+            .unwrap();
         assert!(service.wait_until_idle(Duration::from_secs(5)));
 
         let run = service.status().run.unwrap();
@@ -1063,6 +1241,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["mcu".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -1091,6 +1270,7 @@ mod tests {
         service
             .update(UpdateRequest::Mcus {
                 mcus: vec!["mcu".to_owned()],
+                allow_downgrade: false,
             })
             .unwrap();
 
@@ -1107,7 +1287,10 @@ mod tests {
         }
 
         let error = service
-            .update(UpdateRequest::All { all: true })
+            .update(UpdateRequest::All {
+                all: true,
+                allow_downgrade: false,
+            })
             .unwrap_err();
         assert_eq!(reason(&error), "busy");
 
