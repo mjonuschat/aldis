@@ -28,6 +28,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
+  installer:
+    name: Installer
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y bats shellcheck
+      - run: shellcheck installer/installer.sh install.sh
+      - run: bats installer/tests
+
   lints:
     name: Lints
     if: ${{ github.event_name != 'schedule' }}

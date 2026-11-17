@@ -145,6 +145,12 @@ jobs:
 
           cd dist
           sha256sum -- * > SHA256SUMS
+          cd ..
+
+      - name: Build the installer
+        run: |
+          make installer
+          cp build/aldis-installer.sh build/aldis-installer.sh.sha256 dist/
 
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
