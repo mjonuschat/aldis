@@ -159,6 +159,8 @@ jobs:
           file: dist/*
           file_glob: true
           tag: ${{ github.ref }}
-          release_name: "aldis ${{ github.ref_name }}"
+          # Moonraker compares the release title with the version in release_info.json, so
+          # the title must be the bare tag.
+          release_name: ${{ github.ref_name }}
           overwrite: true
           body: ${{ steps.changelog.outputs.content }}
