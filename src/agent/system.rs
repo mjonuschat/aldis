@@ -257,10 +257,11 @@ impl SystemBackend {
             mcu: None,
             updated: Vec::new(),
         };
+        let target_version = super::api::mcu_target_version(&snapshot.host);
         let (Some(inventory), Some(source), Some(version)) = (
             snapshot.inventory.as_ref(),
             snapshot.host.info.klipper_path.as_ref(),
-            snapshot.host.info.software_version.as_ref(),
+            target_version.as_ref(),
         ) else {
             return Err(setup_failure(
                 "Moonraker did not report the Klipper version and path".to_owned(),

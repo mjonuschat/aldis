@@ -241,8 +241,12 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
         );
     }
     let software = host.info.software_version.as_deref().unwrap_or("unknown");
+    // Klippy appends `-dirty` itself when untracked plugin files or symlinks sit in
+    // klippy/extras, which `git describe --dirty` and Moonraker do not count. Only the commit
+    // decides whether the running host is behind the checkout.
     match &host.checkout_version {
-        Some(CheckoutRevision::Known(checkout)) if revisions_match(software, checkout) => {}
+        Some(CheckoutRevision::Known(checkout))
+            if revisions_match(without_dirty(software), without_dirty(checkout)) => {}
         Some(CheckoutRevision::Known(checkout)) => {
             return block(
                 BlockerReason::RestartPending,
@@ -276,6 +280,26 @@ fn blocker(host: &HostSnapshot) -> Option<Blocker> {
         }
     }
     None
+}
+
+fn without_dirty(revision: &str) -> &str {
+    revision.strip_suffix("-dirty").unwrap_or(revision)
+}
+
+/// The host version MCUs are compared against. The Klipper build versions MCU firmware with
+/// `git describe --dirty` on the checkout, which ignores untracked plugins, so the target is the
+/// host's commit with the checkout's own dirty state rather than Klippy's.
+pub(super) fn mcu_target_version(host: &HostSnapshot) -> Option<String> {
+    let software = host.info.software_version.as_deref()?;
+    let Some(CheckoutRevision::Known(checkout)) = &host.checkout_version else {
+        return Some(software.to_owned());
+    };
+    let base = without_dirty(software);
+    Some(if checkout.ends_with("-dirty") {
+        format!("{base}-dirty")
+    } else {
+        base.to_owned()
+    })
 }
 
 /// The state and message for a prebuilt-firmware MCU: current, behind its target, or why it
@@ -368,9 +392,7 @@ pub fn assess_with(snapshot: &Snapshot, allow_downgrade: bool) -> StatusBody {
     let blocker = blocker(host);
     let software = host.info.software_version.clone();
     let target = TargetVersions::klipper(
-        software
-            .clone()
-            .map_or(CheckoutRevision::Indeterminate, CheckoutRevision::Known),
+        mcu_target_version(host).map_or(CheckoutRevision::Indeterminate, CheckoutRevision::Known),
     )
     .with_prebuilt(snapshot.prebuilt.clone());
     let software_label = software.as_deref().unwrap_or("unknown");
@@ -1089,6 +1111,57 @@ mod tests {
             "v0.13.0-770-gce7002bed-dirty".to_owned(),
         ));
         assert_eq!(assess(&snapshot).blocker, None);
+    }
+
+    #[test]
+    fn ignores_the_dirty_suffix_klippy_adds_for_untracked_plugins() {
+        let mut snapshot = ready_snapshot();
+        snapshot.host.info.software_version = Some("v0.13.0-827-g29d4ec2d-dirty".to_owned());
+        snapshot.host.checkout_version =
+            Some(CheckoutRevision::Known("v0.13.0-827-g29d4ec2d".to_owned()));
+        assert_eq!(assess(&snapshot).blocker, None);
+
+        snapshot.host.info.software_version = Some("v0.13.0-821-gaf81d23f-dirty".to_owned());
+        assert_eq!(
+            assess(&snapshot).blocker.map(|b| b.reason),
+            Some(BlockerReason::RestartPending)
+        );
+    }
+
+    #[test]
+    fn compares_clean_mcus_with_the_commit_of_a_plugin_dirty_host() {
+        let mut snapshot = ready_snapshot();
+        snapshot.host.info.software_version = Some("v0.13.0-770-gce7002bed-dirty".to_owned());
+        let body = assess(&snapshot);
+        assert_eq!(entry(&body, "mcu").state, McuState::Current);
+        assert_eq!(
+            body.host.software_version.as_deref(),
+            Some("v0.13.0-770-gce7002bed-dirty")
+        );
+    }
+
+    #[test]
+    fn mcu_target_takes_its_dirty_state_from_the_checkout() {
+        let mut host = ready_snapshot().host;
+        host.info.software_version = Some("v0.13.0-770-gce7002bed-dirty".to_owned());
+        assert_eq!(
+            mcu_target_version(&host).as_deref(),
+            Some("v0.13.0-770-gce7002bed")
+        );
+
+        host.checkout_version = Some(CheckoutRevision::Known(
+            "v0.13.0-770-gce7002bed-dirty".to_owned(),
+        ));
+        assert_eq!(
+            mcu_target_version(&host).as_deref(),
+            Some("v0.13.0-770-gce7002bed-dirty")
+        );
+
+        host.info.software_version = Some("v0.13.0-770-gce7002bed".to_owned());
+        assert_eq!(
+            mcu_target_version(&host).as_deref(),
+            Some("v0.13.0-770-gce7002bed-dirty")
+        );
     }
 
     #[test]
