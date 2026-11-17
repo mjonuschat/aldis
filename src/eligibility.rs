@@ -192,9 +192,9 @@ pub enum UpdateSelection {
 }
 
 /// How an MCU's running Klipper revision compares with the checkout's it would be built from.
-/// The same commit is current, whatever the length of its hash. Otherwise an older one is an
-/// update, a newer one needs none and is not replaced by an update, and a different commit at
-/// the same position, or a revision with no tag, is an update.
+/// The same commit is current, whatever the length of its hash or the tag it is described
+/// against. Otherwise an older one is an update, a newer one needs none and is not replaced by an
+/// update, and a different commit at the same position, or a revision with no tag, is an update.
 fn compare_revisions(running: &str, selected: &str) -> RevisionStatus {
     if revisions_match(running, selected) {
         return RevisionStatus::Current;
@@ -311,13 +311,20 @@ pub fn assess_mcu(mcu: &Mcu, versions: &TargetVersions) -> McuStatus {
     }
 }
 
+/// The shortest abbreviated commit hash that `revisions_match` compares by prefix. `git describe`
+/// never prints fewer than 7 characters unless `core.abbrev` is set lower by hand, and a short
+/// prefix could match a different commit by chance.
+const MIN_HASH_LENGTH: usize = 7;
+
 /// Compares a running firmware version against a selected checkout revision.
 ///
-/// The two sides may embed the commit hash at different abbreviation lengths: `selected` and
-/// `running` (Klipper's own build) are computed by separate `git describe` invocations, possibly
-/// with different git versions, so an exact string match would spuriously report an up-to-date MCU
-/// as needing an update. Any abbreviation of the same commit hash is a prefix of any longer one,
-/// so the hash alone is compared by prefix; the tag and commit count before it must be equal.
+/// Both sides describe a commit with `git describe`, and that description is unstable. The
+/// abbreviation length grows with the size of the repository, so separate clones print different
+/// lengths for one commit, and the tag and commit count change when a tag is added to a commit
+/// after the firmware was built. The commit hash is the only part that names the commit, so it
+/// alone decides whether two revisions are the same commit, by prefix, once both sides give at
+/// least [`MIN_HASH_LENGTH`] characters of it. Revisions without a hash that long must be equal as
+/// strings. The tag and count still order different commits, in [`compare_revisions`].
 ///
 /// Only `running` carries Klipper's build suffix; `selected` is a checkout's own description.
 pub fn revisions_match(running: &str, selected: &str) -> bool {
@@ -332,10 +339,10 @@ fn describes_same_commit(running: &str, selected: &str) -> bool {
         return false;
     }
     match (commit_parts(running_base), commit_parts(selected_base)) {
-        (Some((running_tag, running_hash)), Some((selected_tag, selected_hash))) => {
-            running_tag == selected_tag
-                && (running_hash.starts_with(selected_hash)
-                    || selected_hash.starts_with(running_hash))
+        (Some((_, running_hash)), Some((_, selected_hash)))
+            if running_hash.len().min(selected_hash.len()) >= MIN_HASH_LENGTH =>
+        {
+            running_hash.starts_with(selected_hash) || selected_hash.starts_with(running_hash)
         }
         _ => running_base == selected_base,
     }

@@ -237,22 +237,54 @@ fn tolerates_klippers_build_suffix_on_a_clean_revision_from_a_tree_without_git()
 }
 
 #[test]
-fn compares_the_tag_and_commit_count_exactly_and_only_the_hash_by_prefix() {
+fn matches_the_same_commit_described_before_and_after_a_tag_was_added() {
+    // The firmware was built before v2026.11.00 was tagged on its commit.
+    assert!(revisions_match(
+        "v2026.10.00-185-g488b45d5",
+        "v2026.11.00-0-g488b45d5"
+    ));
+    assert!(revisions_match(
+        "v2026.10.00-185-g488b45d5-20261116_101500-printer",
+        "v2026.11.00-0-g488b45d51"
+    ));
+    assert!(!revisions_match(
+        "v2026.10.00-185-g488b45d5",
+        "v2026.11.00-0-g488b45d6"
+    ));
+    assert!(
+        !revisions_match("v2026.10.00-185-g488b45d5-dirty", "v2026.11.00-0-g488b45d5"),
+        "a dirty build is not the clean commit"
+    );
+}
+
+#[test]
+fn does_not_match_a_hash_shorter_than_seven_characters_by_prefix() {
+    assert!(!revisions_match("v1-3-g488b", "v2-0-g488b45d5"));
+    assert!(!revisions_match("v1-3-g488b45", "v2-0-g488b45d5"));
+    assert!(revisions_match("v1-3-g488b45d", "v2-0-g488b45d5"));
+}
+
+#[test]
+fn compares_only_the_commit_hash_whatever_tag_and_count_describe_it() {
     assert!(!revisions_match(
         "abcdef-20261108_190244-board-1-g1111111",
         "abcdef-20261108_190244-board-2-g2222222"
     ));
-    assert!(!revisions_match(
+    assert!(revisions_match(
         "abcdef-20261108_190244-board-1-g1111111-20261109_101500-randall",
         "abcdef-20261108_190244-board-2-g1111111"
     ));
-    assert!(!revisions_match(
+    assert!(revisions_match(
         "v0.13.0-77-gce7002bed",
         "v0.13.0-770-gce7002bed"
     ));
-    assert!(!revisions_match(
+    assert!(revisions_match(
         "v0.13.0-770-gce7002bed",
         "v0.13.1-770-gce7002bed"
+    ));
+    assert!(!revisions_match(
+        "v0.13.0-770-gce7002bed",
+        "v0.13.0-770-gce7002bec"
     ));
     assert!(revisions_match("v1-good-3-gabc1234", "v1-good-3-gabc12345"));
 }
@@ -334,6 +366,21 @@ fn treats_a_flashed_mcu_at_the_firmwares_own_abbreviation_length_as_current() {
             "CONFIG=x\n",
         ),
         &TargetVersions::klipper(CheckoutRevision::Known("v0.13.0-762-g9871eeef".to_owned())),
+    );
+    assert_eq!(status.revision, Some(RevisionStatus::Current));
+}
+
+#[test]
+fn treats_firmware_built_before_its_commit_was_tagged_as_current() {
+    let status = assess_mcu(
+        &mcu(
+            Some("Kalico"),
+            Some("v2026.10.00-185-g488b45d5"),
+            "CONFIG=x\n",
+        ),
+        &TargetVersions::klipper(CheckoutRevision::Known(
+            "v2026.11.00-0-g488b45d5".to_owned(),
+        )),
     );
     assert_eq!(status.revision, Some(RevisionStatus::Current));
 }
