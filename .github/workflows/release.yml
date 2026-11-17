@@ -135,11 +135,16 @@ jobs:
               cp "$dir/LICENSE" "$dir/README.md" "tmp/$pkgname/" 2>/dev/null || true
               chmod +x "tmp/$pkgname/$BIN_NAME"
 
+              # Keep the archive: aldis binaries from before the bare-binary release update
+              # themselves by downloading it and looking it up in SHA256SUMS.
               tar cJf "dist/$pkgname.tar.xz" -C tmp "$pkgname"
+
+              # Moonraker's update manager downloads this bare binary as it is.
+              cp "tmp/$pkgname/$BIN_NAME" "dist/$pkgname"
           done
 
           cd dist
-          sha256sum -- *.tar.xz > SHA256SUMS
+          sha256sum -- * > SHA256SUMS
 
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2

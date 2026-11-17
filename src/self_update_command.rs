@@ -5,8 +5,8 @@ use anyhow::Context;
 use aldis::build::{BuildCommand, CommandPort, SystemCommandAdapter};
 use aldis::logging::LoggingCommandAdapter;
 use aldis::self_update::{
-    CHECKSUMS_FILE, GithubReleaseAdapter, ReleasePort, archive_name, expected_checksum,
-    extract_binary, install_binary, is_up_to_date, target_platform, verify_checksum,
+    CHECKSUMS_FILE, GithubReleaseAdapter, ReleasePort, binary_asset_name, expected_checksum,
+    install_binary, is_up_to_date, target_platform, verify_checksum,
 };
 
 use crate::cli::SelfUpdateArgs;
@@ -50,6 +50,30 @@ fn restart_agent_if_running(runner: &impl CommandPort) -> RestartOutcome {
     }
 }
 
+/// Updates the version in `release_info.json` beside `exe` when the file is there, so Moonraker's
+/// update manager does not offer the release that was just installed. A failure is reported, not
+/// fatal: the binary is already in place.
+fn refresh_release_info(exe: &std::path::Path, asset: &str, tag: &str) {
+    let Some(path) = exe.parent().map(|dir| dir.join("release_info.json")) else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut info) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    if info["asset_name"] != asset {
+        return;
+    }
+    info["version"] = tag.into();
+    let mut text = serde_json::to_string_pretty(&info).unwrap_or_default();
+    text.push('\n');
+    if let Err(error) = std::fs::write(&path, text) {
+        eprintln!("could not update {}: {error}", path.display());
+    }
+}
+
 pub(crate) fn self_update(arguments: SelfUpdateArgs, mut ui: UpdateUi) -> ExitCode {
     match run_self_update(arguments, &mut ui) {
         Ok(()) => ExitCode::SUCCESS,
@@ -84,44 +108,39 @@ fn run_self_update(arguments: SelfUpdateArgs, ui: &mut UpdateUi) -> anyhow::Resu
 
     let platform =
         target_platform(std::env::consts::ARCH).context("cannot self-update on this platform")?;
-    let archive = archive_name(platform);
+    let asset = binary_asset_name(platform);
     ui.begin(format!("downloading {}", latest.tag));
-    // The manifest comes first: a release without one, or without this archive in it, is
-    // refused before the archive is even fetched.
+    // The manifest comes first: a release without one, or without this binary in it, is
+    // refused before the binary is even fetched.
     let manifest = adapter
         .download_checksums(&latest.tag)
         .with_context(|| format!("failed to download the release's {CHECKSUMS_FILE}"))?;
-    let expected = expected_checksum(&manifest, &archive)
-        .context("the release does not publish a usable checksum for this archive")?;
-    let archive_bytes = adapter
-        .download_archive(&latest.tag, platform)
-        .context("failed to download the release archive")?;
-    ui.finish_success(format!("downloaded {} bytes", archive_bytes.len()));
+    let expected = expected_checksum(&manifest, &asset)
+        .context("the release does not publish a usable checksum for this binary")?;
+    let binary_bytes = adapter
+        .download_binary(&latest.tag, platform)
+        .context("failed to download the release binary")?;
+    ui.finish_success(format!("downloaded {} bytes", binary_bytes.len()));
 
     ui.begin("verifying");
-    verify_checksum(&archive, &archive_bytes, &expected)
-        .context("refusing to install the downloaded archive")?;
+    verify_checksum(&asset, &binary_bytes, &expected)
+        .context("refusing to install the downloaded binary")?;
     ui.finish_success(format!("SHA-256 matches the release's {CHECKSUMS_FILE}"));
 
     let workspace = tempfile::Builder::new()
         .prefix("aldis-self-update-")
         .tempdir()
         .context("could not create a temporary directory")?;
-    let archive_path = workspace.path().join("aldis.tar.xz");
-    std::fs::write(&archive_path, &archive_bytes)
-        .context("could not write the downloaded archive")?;
-
-    ui.begin("extracting");
+    let downloaded = workspace.path().join(&asset);
+    std::fs::write(&downloaded, &binary_bytes).context("could not write the downloaded binary")?;
     let runner = LoggingCommandAdapter::new(SystemCommandAdapter);
-    let extracted = extract_binary(&runner, &archive_path, workspace.path())
-        .context("failed to extract the downloaded archive")?;
-    ui.finish_success("extracted");
 
     let current_exe =
         std::env::current_exe().context("could not determine the running executable's path")?;
     ui.begin("installing");
-    install_binary(&extracted, &current_exe).context("failed to install the new binary")?;
+    install_binary(&downloaded, &current_exe).context("failed to install the new binary")?;
     ui.finish_success(format!("installed aldis {}", latest.tag));
+    refresh_release_info(&current_exe, &asset, &latest.tag);
     if std::path::Path::new(AGENT_UNIT_PATH).exists() {
         match restart_agent_if_running(&runner) {
             RestartOutcome::Restarted => {

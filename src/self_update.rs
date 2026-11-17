@@ -3,11 +3,9 @@
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sha2::{Digest, Sha256};
-
-use crate::build::{BuildCommand, CommandError, CommandPort};
 
 /// The checksum manifest published with every release, as written by `sha256sum`.
 pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
@@ -49,15 +47,6 @@ pub enum ReleaseError {
         /// The digest of the bytes actually downloaded, as hex.
         actual: String,
     },
-    /// The downloaded archive could not be extracted.
-    #[error("could not extract the downloaded archive")]
-    Extract(#[source] CommandError),
-    /// `tar` ran but reported failure.
-    #[error("tar failed: {0}")]
-    ExtractFailed(String),
-    /// The extracted archive did not contain an `aldis` binary.
-    #[error("downloaded archive did not contain an aldis binary")]
-    MissingBinary,
     /// Installing the new binary over the running one failed.
     #[error("could not install the new binary")]
     Install(#[source] io::Error),
@@ -79,9 +68,9 @@ pub trait ReleasePort {
     fn latest_release(&self) -> Result<LatestRelease, ReleaseError>;
     /// Downloads the [`CHECKSUMS_FILE`] manifest published with release `tag`.
     fn download_checksums(&self, tag: &str) -> Result<String, ReleaseError>;
-    /// Downloads the release archive for `tag` (e.g. `"v0.2.3"`, from a prior
+    /// Downloads the bare binary for `tag` (e.g. `"v0.2.3"`, from a prior
     /// [`Self::latest_release`] call) and `platform` (e.g. `"aarch64-linux"`).
-    fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError>;
+    fn download_binary(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError>;
 }
 
 /// Fetches releases from a GitHub repository over HTTPS.
@@ -191,8 +180,8 @@ impl ReleasePort for GithubReleaseAdapter {
         self.download_text(tag, CHECKSUMS_FILE)
     }
 
-    fn download_archive(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
-        self.download_bytes(tag, &archive_name(platform))
+    fn download_binary(&self, tag: &str, platform: &str) -> Result<Vec<u8>, ReleaseError> {
+        self.download_bytes(tag, &binary_asset_name(platform))
     }
 }
 
@@ -269,8 +258,8 @@ pub fn is_up_to_date(current_version: &str, latest_tag: &str) -> bool {
     current >= latest
 }
 
-/// Maps the host architecture to the platform suffix release archives are
-/// published under (`aldis-<platform>.tar.xz`), matching the targets
+/// Maps the host architecture to the platform suffix release binaries are
+/// published under (`aldis-<platform>`), matching the targets
 /// `release.yml` builds.
 pub fn target_platform(arch: &str) -> Result<&'static str, ReleaseError> {
     match arch {
@@ -281,9 +270,10 @@ pub fn target_platform(arch: &str) -> Result<&'static str, ReleaseError> {
     }
 }
 
-/// The archive file name a release publishes for `platform`, matching `release.yml`.
-pub fn archive_name(platform: &str) -> String {
-    format!("aldis-{platform}.tar.xz")
+/// The bare binary a release publishes for `platform`, matching `release.yml`. Moonraker's
+/// `executable` update manager downloads this file as it is.
+pub fn binary_asset_name(platform: &str) -> String {
+    format!("aldis-{platform}")
 }
 
 fn asset_url(repo: &str, tag: &str, asset: &str) -> String {
@@ -334,39 +324,6 @@ fn encode_hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Extracts `archive` (a `.tar.xz`, as published) into `dest_dir`, stripping
-/// the archive's own wrapper directory, and returns the extracted binary's path.
-pub fn extract_binary(
-    command_runner: &impl CommandPort,
-    archive: &Path,
-    dest_dir: &Path,
-) -> Result<PathBuf, ReleaseError> {
-    let output = command_runner
-        .run(&BuildCommand {
-            program: "tar".to_owned(),
-            arguments: vec![
-                "xJf".to_owned(),
-                archive.display().to_string(),
-                "-C".to_owned(),
-                dest_dir.display().to_string(),
-                "--strip-components=1".to_owned(),
-            ],
-            current_dir: None,
-            stdin: None,
-        })
-        .map_err(ReleaseError::Extract)?;
-    if !output.success {
-        return Err(ReleaseError::ExtractFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    let binary = dest_dir.join("aldis");
-    if !binary.exists() {
-        return Err(ReleaseError::MissingBinary);
-    }
-    Ok(binary)
-}
-
 /// Atomically replaces `current_exe` with `new_binary`: stages a copy
 /// alongside it (same directory, so the final rename is atomic and stays on
 /// one filesystem), marks it executable, then renames it into place. Safe
@@ -397,8 +354,8 @@ mod tests {
 
     use super::{
         CHECKSUMS_FILE, GithubReleaseAdapter, MAX_ARCHIVE_BYTES, MAX_ATTEMPTS, ReleaseError,
-        ReleasePort, archive_name, asset_url, expected_checksum, is_up_to_date, map_archive_error,
-        read_archive, target_platform, verify_checksum, with_retries,
+        ReleasePort, asset_url, binary_asset_name, expected_checksum, is_up_to_date,
+        map_archive_error, read_archive, target_platform, verify_checksum, with_retries,
     };
 
     // Both line formats `sha256sum` writes (text mode `  `, binary mode ` *`); the digests are
@@ -551,7 +508,7 @@ mod tests {
             user_agent: "aldis-self-update",
             attempts: 1,
         };
-        let result = adapter.download_archive("v0.4.1", "aarch64-linux");
+        let result = adapter.download_binary("v0.4.1", "aarch64-linux");
         server.join().expect("download server");
         result
     }
@@ -587,8 +544,12 @@ mod tests {
     #[test]
     fn downloads_the_assets_for_the_specific_tag_rather_than_whatever_is_latest() {
         assert_eq!(
-            asset_url("mjonuschat/aldis", "v0.2.3", &archive_name("aarch64-linux")),
-            "https://github.com/mjonuschat/aldis/releases/download/v0.2.3/aldis-aarch64-linux.tar.xz"
+            asset_url(
+                "mjonuschat/aldis",
+                "v0.2.3",
+                &binary_asset_name("aarch64-linux")
+            ),
+            "https://github.com/mjonuschat/aldis/releases/download/v0.2.3/aldis-aarch64-linux"
         );
         assert_eq!(
             asset_url("mjonuschat/aldis", "v0.2.3", CHECKSUMS_FILE),
