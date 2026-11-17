@@ -19,40 +19,38 @@ A tool for updating MCU firmware. `aldis` is named after the Aldis lamp, the sig
 
 ## Installation
 
-Download the latest build for your host's architecture (`aarch64`, `armv7l` for 32-bit Raspberry Pi OS, or `x86_64`) and extract it to `~/aldis`:
+On the Klipper host, as the normal user (not root):
 
 ```
-mkdir -p ~/aldis
-curl -fL "https://github.com/mjonuschat/aldis/releases/latest/download/aldis-$(uname -m)-linux.tar.xz" \
-  | tar xJ -C ~/aldis --strip-components=1
-chmod +x ~/aldis/aldis
+curl -fsSL https://raw.githubusercontent.com/mjonuschat/aldis/main/install.sh | bash
 ```
 
-The rest of this document assumes this installation: `aldis` is not on `PATH` and runs as `~/aldis/aldis`.
+The installer puts `aldis` in `~/aldis` and sets up the host permissions and the `aldis` service. It also adds `aldis` to the update panel in Fluidd and Mainsail, so new releases show up there. It refuses to run during a print and is safe to re-run. The rest of this document assumes this layout: `aldis` is not on `PATH` and runs as `~/aldis/aldis`.
+
+Options go after `bash -s --`:
+
+- `--version v0.5.0` installs a specific release.
+- `--no-agent` skips the `aldis` service. Add it later with `sudo ~/aldis/aldis setup --agent`.
 
 ## Setup
 
-MCU updates need host permissions that a normal user lacks. Udev rules make USB bootloader devices accessible. A narrow sudoers policy lets `aldis` stop and start Klipper and install the Linux host MCU without a password prompt mid-update. Install both with:
+The installer runs setup for you. Run it by hand to repair or verify an installation.
+
+MCU updates need host permissions that a normal user lacks. Udev rules make USB bootloader devices accessible. A narrow sudoers policy lets `aldis` stop and start Klipper and install the Linux host MCU without a password prompt mid-update.
 
 ```
-sudo ~/aldis/aldis setup
+sudo ~/aldis/aldis setup           # install the udev rules and the sudoers policy
+~/aldis/aldis setup --check        # verify them without changing anything
 ```
-
-Run `~/aldis/aldis setup --check` to verify that they are in place without changing anything.
 
 ## Agent (web UI integration)
 
-```
-sudo ~/aldis/aldis setup --agent
-```
-
-This installs and starts the `aldis` service under the sudo user, so it survives reboots. It also adds the service to Moonraker's service list (`moonraker.asvc`), so web UIs can manage and restart it from their service menus. Restart Moonraker once afterwards to pick up the new entry.
+The agent is a service that serves MCU status and updates to web frontends. `setup --agent` installs and starts it under the sudo user and adds it to Moonraker's service list (`moonraker.asvc`), so Fluidd and Mainsail can restart it from their service menus. Restart Moonraker once afterwards to show the new entry.
 
 ```
-sudo ~/aldis/aldis setup --agent --remove
+sudo ~/aldis/aldis setup --agent             # install or repair the service
+sudo ~/aldis/aldis setup --agent --remove    # stop and remove it
 ```
-
-This stops and removes the service and drops it from Moonraker's service list.
 
 ### Several printers
 
@@ -115,7 +113,7 @@ Set one or the other, not both. With `insecure_skip_verify` the connection is en
 
 Each build writes the MCU's embedded Kconfig to `.config` in the Klipper checkout and replaces whatever `make menuconfig` left there. Keep a copy of a hand-maintained `.config`. The run's workspace keeps the configuration as `make olddefconfig` expanded it.
 
-`self-update` compares the running binary's version with the latest GitHub release. Unless the binary is current, it downloads the matching platform archive and installs it over the current binary. The archive's SHA-256 digest must match the release's `SHA256SUMS` file, or nothing is installed. `sudo` is not required when the current user can write to `~/aldis`. If the agent service is running, `self-update` restarts it onto the new binary; otherwise it leaves the service alone.
+`self-update` installs the latest GitHub release over the running binary, unless it is already current. It installs nothing when the download does not match the release's `SHA256SUMS`. It needs `sudo` only when you cannot write to `~/aldis`. It restarts the agent when it is running. The update panel does the same job.
 
 `status` also reports MCUs that Klipper configured but could not reach, with their connection info and the reason. `update` and `flash` refuse to run against a remote Moonraker or one whose Klipper service name is not a valid Klipper unit. Only one `update`, `flash`, or `reboot` runs at a time on the host, and a second one fails immediately rather than race the first.
 
